@@ -1,44 +1,52 @@
-# Life Tracker Bot
+# Life Tracker
 
-一个基于 Discord + AI 的生活轨迹记录系统。
+通过 Discord 和 AI 记录日常生活轨迹的个人助手。和它聊天，它会在后台自动记录活动、设置提醒、管理记忆，同时通过网页前端查看时间线。
 
-## 架构
+## 功能
 
+- **Discord 对话**：像和朋友聊天一样，AI 会自动判断是否记录事件
+- **时间线记录**：活动按时间轴存储，支持分类、并行事件、进行中状态
+- **提醒系统**：AI 主动识别提醒时机，到点推送 Discord 消息
+- **记忆管理**：AI 记住重要信息（deadline、偏好等），跨对话保持上下文
+- **网页前端**：查看每日时间线、浏览存储的记忆和提醒
+
+## 快速开始
+
+```bash
+cp .env.example .env      # 填入 Token 和 API Key
+pip install -r requirements.txt
+python main.py
 ```
-Discord ↔ Python进程(Bot + AI + DB + API) ↔ React前端
-```
+
+访问 `http://localhost:8080` 查看前端。
+
+## 环境变量
+
+| 变量 | 说明 |
+|------|------|
+| `DISCORD_TOKEN` | Discord Bot Token |
+| `AI_API_KEY` | OpenAI 或兼容 API 的密钥 |
+| `AI_MODEL` | 模型名称，默认 `gpt-4` |
+| `ALLOWED_USER_ID` | Discord 用户 ID（单用户模式） |
+| `API_PORT` | FastAPI 端口，默认 `8080` |
 
 ## 项目结构
 
 ```
-life-tracker/
 ├── bot/
-│   ├── __init__.py
-│   ├── discord_bot.py    # Discord 机器人：收发消息
-│   ├── ai_engine.py      # AI 引擎：调用大模型 + tool calling
-│   ├── scheduler.py      # 定时调度：随机轮询 + 提醒队列
-│   ├── database.py       # 数据库：SQLite 操作
-│   └── tools.py          # AI 可调用的工具定义
-├── api/
-│   └── server.py         # FastAPI 接口：给前端提供数据
-├── frontend/             # React 前端（单独部署）
-│   └── (稍后搭建)
-├── main.py               # 入口：启动所有模块
-├── config.py             # 配置：Token、API Key 等
-├── requirements.txt
-├── Dockerfile
-└── .env.example
+│   ├── discord_bot.py   # Discord 收发消息
+│   ├── ai_engine.py     # AI 对话 + tool calling
+│   ├── scheduler.py     # 随机 check-in + 提醒轮询
+│   ├── database.py      # SQLite 操作
+│   └── tools.py         # AI 工具定义 + 系统提示词
+├── api/server.py        # FastAPI REST 接口
+├── frontend/index.html  # 网页前端
+└── main.py              # 入口，asyncio.gather 启动所有服务
 ```
 
-## 快速开始
+## Docker
 
-1. 复制 `.env.example` 为 `.env`，填入你的 Token
-2. `pip install -r requirements.txt`
-3. `python main.py`
-
-## 环境变量
-
-- `DISCORD_TOKEN` - Discord Bot Token
-- `AI_API_KEY` - AI 模型 API Key (OpenAI / Anthropic)
-- `AI_MODEL` - 使用的模型名称
-- `ALLOWED_USER_ID` - 你的 Discord 用户 ID（只响应你的消息）
+```bash
+docker build -t life-tracker .
+docker run -e DISCORD_TOKEN=... -e AI_API_KEY=... life-tracker
+```
