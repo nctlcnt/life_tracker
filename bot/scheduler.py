@@ -70,13 +70,14 @@ class Scheduler:
             try:
                 pending = self.db.get_pending_reminders()
                 for reminder in pending:
+                    # 先标记完成，防止下一轮检查重复触发
+                    self.db.mark_reminder_done(reminder["id"])
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
                     reply = await reminder_action(
                         self.db, reminder["action"], timestamp,
                         send_callback=self.send
                     )
                     # reply 已在各轮次中通过 callback 发出
-                    self.db.mark_reminder_done(reminder["id"])
             except Exception as e:
                 print(f"❌ 提醒检查出错: {e}")
 

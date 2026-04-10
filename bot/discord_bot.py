@@ -40,8 +40,22 @@ class LifeTrackerBot(discord.Client):
         # 获取当前时间戳
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         
+        # 处理回复（引用）消息
+        content_to_send = message.content
+        if message.reference and message.reference.message_id:
+            try:
+                # 获取被引用的原消息
+                ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                if ref_msg and ref_msg.content:
+                    # 截断引用消息防止过长
+                    quote = ref_msg.content if len(ref_msg.content) < 200 else ref_msg.content[:200] + "..."
+                    author_name = "你说过" if ref_msg.author == self.user else "我曾发过" 
+                    content_to_send = f'[回复 {author_name} 的消息: "{quote}"]\n{message.content}'
+            except Exception as e:
+                print(f"⚠️ 无法获取引用的消息: {e}")
+
         try:
-            reply = await chat(self.db, message.content, timestamp)
+            reply = await chat(self.db, content_to_send, timestamp)
             # if not reply or not reply.strip():
             # reply = "好的，已记录 ✓"
 

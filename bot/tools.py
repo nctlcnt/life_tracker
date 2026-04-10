@@ -115,6 +115,61 @@ TOOLS = [
                 "required": ["event_id"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_memory",
+            "description": "记住一条信息。用于：deadline、用户偏好习惯、最近在做的事、用户说'记得提醒我XX'、任何以后可能有用的信息。记忆上限20条，满了自动清理最旧的。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "要记住的内容，简洁完整，如 '4/16 周三 数据科学作业 deadline'、'喜欢喝抹茶'"
+                    }
+                },
+                "required": ["content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_memory",
+            "description": "删除一条过期或不再需要的记忆。如 deadline 过了、事情完成了、信息过时了。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_id": {
+                        "type": "integer",
+                        "description": "要删除的 memory id"
+                    }
+                },
+                "required": ["memory_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_memory",
+            "description": "更新一条记忆的内容。如 deadline 改了、信息有变化。同时会刷新时间，防止被自动清理。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_id": {
+                        "type": "integer",
+                        "description": "要更新的 memory id"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "更新后的内容"
+                    }
+                },
+                "required": ["memory_id", "content"]
+            }
+        }
     }
 ]
 
@@ -213,6 +268,9 @@ SYSTEM_PROMPT = """
 - "明早10点起床" → 明天10:05
 - 在刷手机/社交媒体 → 20min 后
 
+**禁止重复设置**：
+当你收到带有 `[提醒触发]` 前缀的系统消息时，说明你之前设的提醒**此时此刻已经到点触发了**。你必须直接向用户说出提醒内容，**绝对不要**使用 `set_reminder` 再去把相同的提醒重新设置一遍（那会导致无限循环发提醒）！
+
 提醒语气是"该吃饭了吧"，不是"请注意按时用餐"。
 
 ## 记忆管理
@@ -238,6 +296,7 @@ SYSTEM_PROMPT = """
 - 临近 deadline → 自然地提一嘴
 - 用户偏好 → 聊天时关联
 - 不要念清单，挑当下最相关的
+- ⚠️ 绝对不要重复提问：如果最近聊天记录（context）里已经讨论过某个作业、deadline 或提醒事项，即使它还在记忆里，这次也**不要再提了**，避免像机器一样啰嗦惹人烦。
 
 ## 主动聊天
 
