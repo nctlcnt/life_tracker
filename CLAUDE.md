@@ -36,12 +36,14 @@ There is no test suite or linter configured.
 Personal life-tracking assistant operated via Discord. Three services run concurrently in one asyncio event loop (`asyncio.gather` in `main.py`):
 
 1. **Discord Bot** (`bot/discord_bot.py`) - receives messages from the allowed user, passes to AI engine, sends replies. Handles Discord reply/quote context.
-2. **Scheduler** (`bot/scheduler.py`) - three concurrent loops: random proactive check-ins (1-60 min), reminder polling (every 30s), and bedtime reminders (22:30-00:00 nightly).
+2. **Scheduler** (`bot/scheduler.py`) - two concurrent loops sharing an `asyncio.Lock`:
+   - **Timer loop**: random proactive check-ins (1-60 min) + bedtime reminders (22:30-00:00), pure in-memory countdown
+   - **Reminder loop**: database reminders with precise countdown to next `trigger_time`, woken by `asyncio.Event` when new reminders are added
 3. **FastAPI server** (`api/server.py`) - read-only REST endpoints (`/api/timeline`, `/api/events`, `/api/categories`, `/api/memories`, `/api/reminders`). Serves a static frontend from `frontend/` at `/app/`.
 
 ### AI Engine: Multi-Provider with Shared Base
 
-`bot/ai_engine.py` is a **router** — it imports `chat`, `proactive_check`, `reminder_action` from the correct backend based on `config.AI_PROVIDER`:
+`bot/ai_engine.py` is a **router** — it imports `chat`, `scheduled_action` from the correct backend based on `config.AI_PROVIDER`:
 
 - `bot/ai_engine_claude.py` - Anthropic native API (uses `TOOLS_ANTHROPIC` format, supports prompt caching)
 - `bot/ai_engine_gemini.py` - Google Gemini REST API (converts OpenAI tool format to Gemini format)
@@ -50,7 +52,7 @@ Personal life-tracking assistant operated via Discord. Three services run concur
 All three delegate shared logic to `bot/ai_engine_base.py`:
 - `_build_dynamic_context()` - injects memories, ongoing events, pending reminders into each call
 - `_execute_tool()` - dispatches tool calls to database operations
-- `chat()`, `proactive_check()`, `reminder_action()` - high-level flows that each engine wraps
+- `chat()`, `scheduled_action()` - high-level flows that each engine wraps
 
 Each engine only implements its own `_call_with_tools()` (API-specific request/response handling). Max 5 tool-calling rounds per message. Intermediate-round text is sent to the user immediately via `send_callback`.
 
@@ -71,6 +73,8 @@ SQLite at `data/life_tracker.db`, managed by `bot/database.py`:
 - `reminders` - with `trigger_time`, `action`, `group_id`, `priority`, `status` (pending/triggered/cancelled)
 - `pending_messages` - queue for messages received while AI was unavailable
 - `memories` - AI's persistent memory store
+
+When a reminder is added, `Database` fires `_on_reminder_added` callback to wake the scheduler's reminder loop via `asyncio.Event`.
 
 Schema migrations are handled inline via `ALTER TABLE` with `try/except` for idempotency.
 

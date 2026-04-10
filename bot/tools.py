@@ -222,6 +222,24 @@ TOOLS = [
     }
 ]
 
+# ── 工具子集：轮询和提醒路径不需要全部工具 ──
+
+# 随机轮询：主要是聊天、设提醒、管记忆
+POLL_TOOL_NAMES = {
+    "set_reminder", "query_timeline", "list_reminders",
+    "save_memory", "delete_memory", "update_memory",
+}
+
+# 提醒触发：回应提醒、管记忆、取消后续提醒（禁止 set_reminder 防死循环）
+REMINDER_TOOL_NAMES = {
+    "query_timeline", "list_reminders", "cancel_reminders",
+    "save_memory", "delete_memory", "update_memory",
+}
+
+# 统一调度入口：合并轮询和提醒的工具集
+# 主动聊天时可以 set_reminder，提醒触发时可以 cancel_reminders，按 prompt 类型动态选择
+SCHEDULED_TOOL_NAMES = POLL_TOOL_NAMES | REMINDER_TOOL_NAMES
+
 # System Prompt - AI 的人设和行为规则
 SYSTEM_PROMPT = """
 你是用户的朋友，通过 Discord 和她保持联系。你同时在后台默默帮她记录生活轨迹、管理时间。
