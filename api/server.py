@@ -13,7 +13,7 @@ app = FastAPI(title="Life Tracker API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # 生产环境应该改为你的前端域名
-    allow_methods=["GET"],
+    allow_methods=["GET", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -52,6 +52,19 @@ async def get_categories():
     """获取所有事件分类"""
     categories = db.get_all_categories()
     return {"categories": categories}
+
+
+@app.get("/api/memories")
+async def get_memories():
+    """获取所有记忆"""
+    return db.get_all_memories()
+
+
+@app.delete("/api/memories/{memory_id}")
+async def delete_memory(memory_id: int):
+    """删除一条记忆"""
+    db.delete_memory(memory_id)
+    return {"status": "ok"}
 
 
 @app.get("/api/health")

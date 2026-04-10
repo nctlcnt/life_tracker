@@ -57,14 +57,12 @@ class Database:
                 timestamp TEXT NOT NULL
             );
 
-            -- 待办事件表（upcoming deadlines / events）
-            CREATE TABLE IF NOT EXISTS pending_events (
+            -- 记忆表（AI 的持久记忆）
+            CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                due_date TEXT,                       -- 截止/发生日期 ISO 8601，可为空
-                description TEXT NOT NULL,            -- 事件描述
-                notes TEXT,                           -- 补充信息
-                done INTEGER DEFAULT 0,               -- 0=待办, 1=已完成/已过期
-                created_at TEXT DEFAULT (datetime('now'))
+                content TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                source TEXT DEFAULT 'ai'
             );
         """)
         conn.commit()
@@ -228,57 +226,54 @@ class Database:
         conn.commit()
         conn.close()
 
-    # ============ 待办事件（Pending Events） ============
+    # ============ 记忆系统 ============
 
-    def add_pending_event(self, description: str,
-                          due_date: Optional[str] = None,
-                          notes: Optional[str] = None) -> int:
-        """添加一个待办事件，返回 event id"""
-        conn = self._get_conn()
-        cursor = conn.execute(
-            "INSERT INTO pending_events (due_date, description, notes) VALUES (?, ?, ?)",
-            (due_date, description, notes)
-        )
-        conn.commit()
-        event_id = cursor.lastrowid
-        conn.close()
-        return event_id
-
-    def get_active_pending_events(self) -> list[dict]:
-        """获取所有未完成的待办事件，按 due_date 排序（NULL 排最后）"""
+    def get_all_memories(self) -> list[dict]:
+        """获取所有记忆，按时间倒序，最多20条"""
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT * FROM pending_events WHERE done = 0 "
-            "ORDER BY CASE WHEN due_date IS NULL THEN 1 ELSE 0 END, due_date"
+            "SELECT * FROM memories ORDER BY created_at DESC LIMIT 20"
         ).fetchall()
         conn.close()
-        return [dict(row) for row in rows]
+        return [dict(r) for r in rows]
 
-    def complete_pending_event(self, event_id: int) -> bool:
-        """标记待办事件为已完成"""
+    def add_memory(self, content: str, source: str = 'ai') -> int:
+        """
+        添加记忆。超过20条时自动清理最旧的。
+        优先删 ai 来源的，保留 user 来源的。
+        """
         conn = self._get_conn()
+        count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        if count >= 20:
+            conn.execute("""
+                DELETE FROM memories WHERE id = (
+                    SELECT id FROM memories
+                    ORDER BY source = 'user' ASC, created_at ASC
+                    LIMIT 1
+                )
+            """)
         cursor = conn.execute(
-            "UPDATE pending_events SET done = 1 WHERE id = ? AND done = 0",
-            (event_id,)
+            "INSERT INTO memories (content, source) VALUES (?, ?)",
+            (content, source)
         )
         conn.commit()
-        affected = cursor.rowcount
+        memory_id = cursor.lastrowid
         conn.close()
-        return affected > 0
+        return memory_id
 
-    def update_pending_event(self, event_id: int, **fields) -> bool:
-        """更新待办事件的字段"""
-        allowed = {"due_date", "description", "notes"}
-        updates = {k: v for k, v in fields.items() if k in allowed}
-        if not updates:
-            return False
-        set_clause = ", ".join(f"{k} = ?" for k in updates)
-        values = list(updates.values()) + [event_id]
+    def delete_memory(self, memory_id: int):
+        """删除一条记忆"""
         conn = self._get_conn()
-        cursor = conn.execute(
-            f"UPDATE pending_events SET {set_clause} WHERE id = ? AND done = 0", values
+        conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+        conn.commit()
+        conn.close()
+
+    def update_memory(self, memory_id: int, content: str):
+        """更新记忆内容，同时刷新 created_at 防止被自动清理"""
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE memories SET content = ?, created_at = datetime('now') WHERE id = ?",
+            (content, memory_id)
         )
         conn.commit()
-        affected = cursor.rowcount
         conn.close()
-        return affected > 0
