@@ -1,9 +1,12 @@
 """
 FastAPI 接口模块
-给 React 前端提供数据
+给前端提供数据
 """
+import os
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from bot.database import Database
 from bot.merge import merge_events
 
@@ -71,3 +74,14 @@ async def delete_memory(memory_id: int):
 async def health_check():
     """健康检查"""
     return {"status": "ok"}
+
+
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/app/index.html")
+
+
+# 挂载前端静态文件（放在路由定义之后，避免拦截 /api 路由）
+_frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
+if os.path.isdir(_frontend_dir):
+    app.mount("/app", StaticFiles(directory=_frontend_dir), name="frontend")
