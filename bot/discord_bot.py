@@ -55,23 +55,15 @@ class LifeTrackerBot(discord.Client):
                 print(f"⚠️ 无法获取引用的消息: {e}")
 
         try:
-            reply = await chat(self.db, content_to_send, timestamp)
-            # if not reply or not reply.strip():
-            # reply = "好的，已记录 ✓"
+            async def send_reply(text):
+                for chunk in _split_message(text):
+                    await message.channel.send(chunk)
 
-            for chunk in _split_message(reply):
-                await message.channel.send(chunk)
+            await chat(self.db, content_to_send, timestamp, send_callback=send_reply)
         except Exception as e:
             error_msg = f"❌ {type(e).__name__}: {e}"
             print(error_msg)
             await message.channel.send(error_msg[:2000])
-
-        # 调用 AI 引擎处理
-        # reply = await chat(self.db, message.content, timestamp)
-
-        # 发送回复（Discord 单条消息限制 2000 字符）
-        # for chunk in _split_message(reply):
-        #     await message.channel.send(chunk)
 
     async def send_proactive_message(self, text: str):
         """主动发送消息（由定时器触发）"""
@@ -81,7 +73,7 @@ class LifeTrackerBot(discord.Client):
             return  # 还没和用户对话过，不知道发到哪
 
         channel = self.get_channel(self.target_channel_id)
-        if channel:
+        if channel and isinstance(channel, (discord.TextChannel, discord.DMChannel)):
             for chunk in _split_message(text):
                 await channel.send(chunk)
 
