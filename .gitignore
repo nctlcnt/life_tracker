@@ -1,2 +1,6 @@
 .env
 life-tracker-brief.md
+.venv
+__pycache__
+.vscode
+.DS_Store
