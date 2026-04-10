@@ -24,6 +24,7 @@ async def main():
 
     # 4. 初始化定时调度器
     scheduler = Scheduler(db, bot.send_proactive_message)
+    db._on_reminder_added = scheduler.notify_new_reminder
 
     # 5. 启动 FastAPI（在后台线程中运行，不阻塞事件循环）
     api_config = uvicorn.Config(

@@ -92,6 +92,13 @@ async def get_reminders(status: str = None, done: int = None):
     return [dict(r) for r in rows]
 
 
+@app.get("/api/todos")
+async def get_todos(all: bool = False):
+    """获取待办列表"""
+    todos = db.get_todos(include_done=all)
+    return {"todos": todos, "count": len(todos)}
+
+
 @app.get("/api/health")
 async def health_check():
     """健康检查"""

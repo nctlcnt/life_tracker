@@ -479,6 +479,55 @@
       gap: 8px;
       margin-bottom: 16px;
     }
+
+    /* ─── Todo ─── */
+    .todo-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .todo-item {
+      background: var(--surface);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      border-left: 4px solid #3b82f6;
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .todo-item.done {
+      border-left-color: #94a3b8;
+      opacity: .55;
+    }
+
+    .todo-item.done .todo-content {
+      text-decoration: line-through;
+    }
+
+    .todo-check {
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    .todo-body {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .todo-content {
+      font-size: 14px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+
+    .todo-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 3px;
+    }
   </style>
 </head>
 
@@ -496,6 +545,7 @@
   <nav class="tab-bar">
     <button class="tab-btn active" data-tab="timeline">时间轴</button>
     <button class="tab-btn" data-tab="memories">记忆 &amp; 提醒</button>
+    <button class="tab-btn" data-tab="todos">待办</button>
   </nav>
 
   <div class="main">
@@ -540,6 +590,14 @@
         <button class="chip" style="color:#ef4444;border-color:#fca5a5" data-status="cancelled" id="rf-cancelled">已取消</button>
       </div>
       <div class="reminder-list" id="reminder-list">
+        <div class="loading">加载中…</div>
+      </div>
+    </div>
+
+    <!-- ── Tab: 待办 ── -->
+    <div id="tab-todos" style="display:none">
+      <div class="section-title">待办事项</div>
+      <div class="todo-list" id="todo-list">
         <div class="loading">加载中…</div>
       </div>
     </div>
@@ -616,9 +674,11 @@
 
         document.getElementById('tab-timeline').style.display = activeTab === 'timeline' ? '' : 'none';
         document.getElementById('tab-memories').style.display = activeTab === 'memories' ? '' : 'none';
+        document.getElementById('tab-todos').style.display = activeTab === 'todos' ? '' : 'none';
         document.getElementById('date-nav').style.display = activeTab === 'timeline' ? '' : 'none';
 
         if (activeTab === 'memories') loadMemoriesTab();
+        if (activeTab === 'todos') loadTodos();
       });
     });
 
@@ -901,6 +961,39 @@
         loadReminders();
       });
     });
+
+    // ─── Todos tab ───
+    async function loadTodos() {
+      const list = document.getElementById('todo-list');
+      list.innerHTML = '<div class="loading">加载中…</div>';
+      try {
+        const res = await fetch('/api/todos?all=true');
+        const data = await res.json();
+        renderTodos(data.todos || []);
+      } catch (e) {
+        list.innerHTML = `<div class="empty">加载失败：${escHtml(String(e))}</div>`;
+      }
+    }
+
+    function renderTodos(todos) {
+      const list = document.getElementById('todo-list');
+      if (!todos.length) {
+        list.innerHTML = '<div class="empty">暂无待办</div>';
+        return;
+      }
+      list.innerHTML = todos.map(t => `
+        <div class="todo-item ${t.done ? 'done' : ''}" id="todo-${t.id}">
+          <span class="todo-check">${t.done ? '✅' : '⬜'}</span>
+          <div class="todo-body">
+            <div class="todo-content">${escHtml(t.content)}</div>
+            <div class="todo-meta">
+              #${t.id} · ${escHtml(formatDateTime(t.created_at))}
+              ${t.done_at ? ' · 完成于 ' + escHtml(formatDateTime(t.done_at)) : ''}
+            </div>
+          </div>
+        </div>
+      `).join('');
+    }
 
     // ─── Init ───
     load(currentDate);
