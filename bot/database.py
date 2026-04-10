@@ -13,6 +13,7 @@ class Database:
     def __init__(self, db_path: str):
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.db_path = db_path
+        self._on_reminder_added = None  # 回调：新增提醒时通知 scheduler
         self._init_tables()
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -67,6 +68,15 @@ class Database:
                 created_at TEXT DEFAULT (datetime('now')),
                 source TEXT DEFAULT 'ai'
             );
+
+            -- Todo 表（用户个人待办，不经过 AI）
+            CREATE TABLE IF NOT EXISTS todos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL,
+                done INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now')),
+                done_at TEXT
+            );
         """)
         conn.commit()
         # 兼容已有数据库：尝试加列，已存在则忽略
@@ -89,6 +99,7 @@ class Database:
             conn.execute("UPDATE reminders SET status = 'pending' WHERE done = 0 AND status = 'pending'")
         except sqlite3.OperationalError:
             pass
+
 
         conn.commit()
         conn.close()
@@ -180,7 +191,8 @@ class Database:
 
     # ============ 提醒队列 ============
 
-    def add_reminder(self, trigger_time: str, action: str, group_id: str = None, priority: str = "normal") -> int:
+    def add_reminder(self, trigger_time: str, action: str, group_id: str = None,
+                     priority: str = "normal") -> int:
         """添加一个提醒"""
         conn = self._get_conn()
         cursor = conn.execute(
@@ -190,6 +202,9 @@ class Database:
         conn.commit()
         reminder_id = cursor.lastrowid
         conn.close()
+        # 通知 scheduler 重新计算倒计时
+        if self._on_reminder_added:
+            self._on_reminder_added()
         return reminder_id
 
     def get_pending_reminders(self) -> list[dict]:
@@ -257,6 +272,15 @@ class Database:
         ).fetchall()
         conn.close()
         return [dict(r) for r in rows]
+
+    def get_next_reminder_time(self) -> Optional[str]:
+        """获取下一条待触发 reminder 的 trigger_time（含 hidden），用于 scheduler 倒计时"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT MIN(trigger_time) as next_time FROM reminders WHERE status = 'pending'"
+        ).fetchone()
+        conn.close()
+        return row["next_time"] if row and row["next_time"] else None
 
     # ============ 未处理消息队列 ============
 
@@ -339,3 +363,47 @@ class Database:
         )
         conn.commit()
         conn.close()
+
+    # ============ Todo ============
+
+    def add_todo(self, content: str) -> int:
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "INSERT INTO todos (content) VALUES (?)", (content,)
+        )
+        conn.commit()
+        todo_id = cursor.lastrowid
+        conn.close()
+        return todo_id
+
+    def get_todos(self, include_done: bool = False) -> list[dict]:
+        conn = self._get_conn()
+        if include_done:
+            rows = conn.execute(
+                "SELECT * FROM todos ORDER BY done ASC, created_at DESC"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM todos WHERE done = 0 ORDER BY created_at DESC"
+            ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def complete_todo(self, todo_id: int) -> bool:
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE todos SET done = 1, done_at = datetime('now') WHERE id = ? AND done = 0",
+            (todo_id,)
+        )
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
+    def delete_todo(self, todo_id: int) -> bool:
+        conn = self._get_conn()
+        cursor = conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
