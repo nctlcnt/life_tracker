@@ -1,8 +1,56 @@
-.env
-life-tracker-brief.md
-.venv
+# Python
 __pycache__/
-*.pyc
-data/life_tracker.db
-.vscode
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Environment
+.env
+.venv
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Database
+*.db
+*.db.bak
+*.sqlite
+*.sqlite3
+data/*.db
+data/*.db.bak
+data/*.sqlite3
+
+# Logs
+*.log
+
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# VS Code / IDE
+.vscode/
+.idea/
+*.swp
+
+# Project-specific
+life-tracker-brief.md
