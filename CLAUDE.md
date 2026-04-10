@@ -20,57 +20,65 @@ docker build -t life-tracker .
 docker run -e DISCORD_TOKEN=... -e AI_API_KEY=... life-tracker
 ```
 
-**Environment setup:** Copy `.env.example` to `.env` and populate:
+**Environment setup:** Copy `.env.example` to `.env` and populate (see `config.py` for defaults):
 - `DISCORD_TOKEN` - Discord bot token
-- `AI_API_KEY` - OpenAI (or compatible) API key
-- `AI_MODEL` - model name (defaults to `gpt-4`)
+- `AI_API_KEY` - API key for the chosen provider
+- `AI_PROVIDER` - `claude` (default), `relay`, or `gemini`
+- `CHAT_MODEL` / `POLL_MODEL` - model names per provider (defaults: `claude-opus-4-6` / `claude-3-5-sonnet-latest`)
+- `AI_BASE_URL` - base URL for relay mode only
 - `ALLOWED_USER_ID` - Discord user ID (single-user restriction)
-- `API_PORT` - FastAPI port (defaults to `8000`)
+- `API_PORT` - FastAPI port (defaults to `8080`)
 
 There is no test suite or linter configured.
 
 ## Architecture
 
-This is a personal life-tracking assistant operated via Discord chat. It has three services that run concurrently in a single asyncio event loop (`asyncio.gather` in `main.py`):
+Personal life-tracking assistant operated via Discord. Three services run concurrently in one asyncio event loop (`asyncio.gather` in `main.py`):
 
-1. **Discord Bot** (`bot/discord_bot.py`) - receives messages from the allowed user, passes them to the AI engine, sends replies
-2. **Scheduler** (`bot/scheduler.py`) - triggers proactive check-ins at random intervals (1-60 min) and polls for pending reminders every 30 seconds
-3. **FastAPI server** (`api/server.py`) - exposes read-only REST endpoints for a React frontend (not yet implemented)
+1. **Discord Bot** (`bot/discord_bot.py`) - receives messages from the allowed user, passes to AI engine, sends replies. Handles Discord reply/quote context.
+2. **Scheduler** (`bot/scheduler.py`) - three concurrent loops: random proactive check-ins (1-60 min), reminder polling (every 30s), and bedtime reminders (22:30-00:00 nightly).
+3. **FastAPI server** (`api/server.py`) - read-only REST endpoints (`/api/timeline`, `/api/events`, `/api/categories`, `/api/memories`, `/api/reminders`). Serves a static frontend from `frontend/` at `/app/`.
 
-### Data Flow
+### AI Engine: Multi-Provider with Shared Base
 
-```
-Discord message -> discord_bot.py -> ai_engine.chat()
-                                      -> loads last 20 messages from SQLite for context
-                                      -> calls OpenAI API with tool definitions
-                                      -> if tool_call: executes against database
-                                      -> saves reply to SQLite
-                                      -> returns reply text to Discord
-```
+`bot/ai_engine.py` is a **router** — it imports `chat`, `proactive_check`, `reminder_action` from the correct backend based on `config.AI_PROVIDER`:
 
-### AI Tool Calling
+- `bot/ai_engine_claude.py` - Anthropic native API (uses `TOOLS_ANTHROPIC` format, supports prompt caching)
+- `bot/ai_engine_gemini.py` - Google Gemini REST API (converts OpenAI tool format to Gemini format)
+- `bot/ai_engine_relay.py` - OpenAI-compatible relay/proxy API
 
-Three tools are defined in `bot/tools.py` in OpenAI function-calling format:
-- `log_timeline_event` - inserts into the `events` table
-- `set_reminder` - inserts into the `reminders` table
-- `query_timeline` - queries `events` by time range
+All three delegate shared logic to `bot/ai_engine_base.py`:
+- `_build_dynamic_context()` - injects memories, ongoing events, pending reminders into each call
+- `_execute_tool()` - dispatches tool calls to database operations
+- `chat()`, `proactive_check()`, `reminder_action()` - high-level flows that each engine wraps
 
-The AI engine (`bot/ai_engine.py`) supports up to 5 rounds of tool-calling per message to handle chained tool use. The system prompt and tool definitions both live in `bot/tools.py`.
+Each engine only implements its own `_call_with_tools()` (API-specific request/response handling). Max 5 tool-calling rounds per message. Intermediate-round text is sent to the user immediately via `send_callback`.
+
+### Tool Calling
+
+Nine tools defined in `bot/tools.py` in both OpenAI (`TOOLS`) and Anthropic (`TOOLS_ANTHROPIC`) formats:
+- `log_timeline_event` / `update_timeline_event` / `query_timeline` - timeline CRUD
+- `set_reminder` / `cancel_reminders` / `list_reminders` - reminder management (supports `group_id` and `priority`)
+- `save_memory` / `delete_memory` / `update_memory` - AI persistent memory (capped at 20 entries, auto-evicts oldest)
+
+The system prompt (`SYSTEM_PROMPT`) is also in `bot/tools.py`.
 
 ### Database
 
 SQLite at `data/life_tracker.db`, managed by `bot/database.py`:
-- `events` - timeline entries with `start_time`, `end_time` (nullable), `content`, `category`
-- `messages` - rolling conversation history for AI context (last 20 fetched per call)
-- `reminders` - scheduled reminders with `trigger_time`, `action`, `done` flag
+- `events` - timeline entries with `start_time`, `end_time`, `content`, `category`, `notes`, `session_id`
+- `messages` - conversation history (last 10-20 fetched per AI call)
+- `reminders` - with `trigger_time`, `action`, `group_id`, `priority`, `status` (pending/triggered/cancelled)
+- `pending_messages` - queue for messages received while AI was unavailable
+- `memories` - AI's persistent memory store
 
-### Dependency Injection
+Schema migrations are handled inline via `ALTER TABLE` with `try/except` for idempotency.
 
-The `Database` instance is created once in `main.py` and passed to all other components. The FastAPI app receives it via `set_database()`. There is no global state beyond this single shared instance.
+### Key Design Decisions
 
-### Single-User Design
-
-All Discord messages from users other than `ALLOWED_USER_ID` are silently ignored. The app is intentionally not multi-tenant.
+- **Single-user**: all Discord messages from non-`ALLOWED_USER_ID` users are silently ignored
+- **Dependency injection**: `Database` instance created once in `main.py`, passed to all components; FastAPI receives it via `set_database()`
+- **Event merging**: `bot/merge.py` merges adjacent events with same content+category into time segments for the `/api/timeline` endpoint
 
 ### Codebase Language
 
