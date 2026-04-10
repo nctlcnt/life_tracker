@@ -4,16 +4,17 @@ AI 引擎公共模块
 - 动态上下文构建
 - 消息格式处理
 - 工具执行
-- chat / proactive_check / reminder_action 高层流程
+- chat / scheduled_action 高层流程
 """
-from bot.tools import SYSTEM_PROMPT
+from bot.tools import SYSTEM_PROMPT, POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, SCHEDULED_TOOL_NAMES
+from bot.weather import is_morning, get_weather_brief
 from bot.database import Database
 import config
 
 
-def _build_dynamic_context(db: Database) -> str:
+def _build_dynamic_context(db: Database, weather: str | None = None) -> str:
     """
-    构建动态上下文（记忆 + 进行中事件 + 待触发提醒），每次调用注入。
+    构建动态上下文（记忆 + 进行中事件 + 待触发提醒 + 天气），每次调用注入。
     """
     parts = []
 
@@ -41,6 +42,10 @@ def _build_dynamic_context(db: Database) -> str:
     if reminders:
         lines = [f"- [{r['priority']}] {r['trigger_time']} | {r['action']} (group: {r.get('group_id', '无')})" for r in reminders]
         parts.append("【待触发的跟进计划】\n" + "\n".join(lines))
+
+    # 天气（早上时段注入）
+    if weather:
+        parts.append(f"【今日天气】\n{weather}\n可以自然地提一下天气，但不要像天气预报一样念数据。")
 
     return "\n\n".join(parts)
 
@@ -136,7 +141,7 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
         return {"success": False, "message": f"未知工具: {tool_name}"}
 
 
-# ── 高层流程：chat / proactive_check / reminder_action ──────────────
+# ── 高层流程：chat / scheduled_action ──────────────
 
 
 async def chat(db: Database, user_message: str, timestamp: str,
@@ -154,8 +159,11 @@ async def chat(db: Database, user_message: str, timestamp: str,
     # 构建消息列表
     messages = _build_messages(db)
 
+    # 早上时段查天气
+    weather = await get_weather_brief() if is_morning() else None
+
     # 构建动态上下文
-    dynamic_ctx = _build_dynamic_context(db)
+    dynamic_ctx = _build_dynamic_context(db, weather=weather)
 
     # 检查是否有历史未处理消息
     pending = db.get_pending_messages()
@@ -186,80 +194,44 @@ async def chat(db: Database, user_message: str, timestamp: str,
     return reply
 
 
-async def proactive_check(db: Database, timestamp: str,
-                          call_with_tools_fn, send_callback=None) -> str | None:
+async def scheduled_action(db: Database, prompt: str, timestamp: str,
+                           call_with_tools_fn, send_callback=None,
+                           allow_silent: bool = False) -> str | None:
     """
-    随机轮询时调用：让 AI 根据上下文决定是否需要主动发消息。
-    返回 None 表示不需要发消息。
+    统一的调度入口：处理主动聊天、提醒触发、睡前提醒等所有非用户消息的 AI 调用。
+
+    prompt: 注入给 AI 的调度指令（不同场景传不同内容）
+    allow_silent: 是否允许 AI 返回 [SILENT] 不发消息（随机轮询时为 True）
+    返回 None 表示 AI 选择不发消息。
     """
     recent = db.get_recent_messages(limit=10)
-    if not recent:
+    if not recent and allow_silent:
         return None
 
-    dynamic_ctx = _build_dynamic_context(db)
+    # 早上时段查天气
+    weather = await get_weather_brief() if is_morning() else None
+
+    dynamic_ctx = _build_dynamic_context(db, weather=weather)
 
     messages = [
         *[{"role": m["role"], "content": m["content"]} for m in recent],
-        {
-            "role": "user",
-            "content": (
-                f"[系统轮询 {timestamp}]\n"
-                f"现在是悉尼时间 {timestamp}。根据对话上下文、当前时间"
-                f"和你的记忆，选择一个行动：\n\n"
-                f"1. **聊几句**：接之前话题、随便扯点什么、"
-                f"对她提到过的事表示好奇，像朋友发微信一样\n"
-                f"2. **关心一下**：该吃饭了、该休息了、之前说哪里不舒服\n"
-                f"3. **提一嘴记忆里的事**：临近的 deadline、"
-                f"之前说要注意的事，自然带出来别像念清单\n"
-                f"4. **[SILENT]**：仅限以下情况——"
-                f"用户明确说了要睡觉 / 30分钟内刚聊过 / "
-                f"凌晨2点到早上8点\n\n"
-                f"大多数时候选 1-3，找个自然的切入点。"
-                f"不要打招呼或问'在吗'，直接说内容。"
-            )
-        }
+        {"role": "user", "content": prompt}
     ]
 
     messages = _ensure_valid_messages(messages)
 
-    # 不传 send_callback，因为需要先检查 [SILENT] 再决定是否发送
+    # 允许 silent 时不传 send_callback，需要先检查 [SILENT]
     reply = await call_with_tools_fn(
         db, SYSTEM_PROMPT, messages,
+        send_callback=None if allow_silent else send_callback,
         dynamic_context=dynamic_ctx or None,
-        model=config.POLL_MODEL
+        model=config.POLL_MODEL,
+        tool_names=SCHEDULED_TOOL_NAMES,
     )
 
     if reply and "[SILENT]" not in reply:
-        if send_callback:
+        if allow_silent and send_callback:
             await send_callback(reply)
         db.add_message("assistant", reply)
         return reply
     return None
-
-
-async def reminder_action(db: Database, action: str, timestamp: str,
-                          call_with_tools_fn, send_callback=None) -> str:
-    """提醒触发时调用：让 AI 根据提醒内容决定做什么"""
-    recent = db.get_recent_messages(limit=10)
-    dynamic_ctx = _build_dynamic_context(db)
-
-    messages = [
-        *[{"role": m["role"], "content": m["content"]} for m in recent],
-        {
-            "role": "user",
-            "content": f"[提醒触发 {timestamp}] 之前设置的提醒已到时间。\n"
-                       f"提醒内容：{action}\n"
-                       f"请根据这个提醒向用户发消息。\n"
-                       f"⚠️ 警告：这是最终触发回合，你必须直接在回复中说出提醒内容，绝对不要用 set_reminder 再把同样的提醒设一遍！"
-        }
-    ]
-
-    messages = _ensure_valid_messages(messages)
-
-    reply = await call_with_tools_fn(
-        db, SYSTEM_PROMPT, messages, send_callback,
-        dynamic_context=dynamic_ctx or None,
-        model=config.POLL_MODEL
-    )
-    db.add_message("assistant", reply)
-    return reply

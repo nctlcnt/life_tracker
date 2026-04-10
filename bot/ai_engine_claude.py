@@ -8,8 +8,7 @@ from bot.tools import TOOLS_ANTHROPIC
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool,
-    chat as _base_chat, proactive_check as _base_proactive_check,
-    reminder_action as _base_reminder_action,
+    chat as _base_chat, scheduled_action as _base_scheduled_action,
 )
 import config
 
@@ -23,19 +22,15 @@ async def chat(db: Database, user_message: str, timestamp: str,
     return await _base_chat(db, user_message, timestamp, _call_with_tools, send_callback)
 
 
-async def proactive_check(db: Database, timestamp: str,
-                          send_callback=None) -> str | None:
-    return await _base_proactive_check(db, timestamp, _call_with_tools, send_callback)
-
-
-async def reminder_action(db: Database, action: str, timestamp: str,
-                          send_callback=None) -> str:
-    return await _base_reminder_action(db, action, timestamp, _call_with_tools, send_callback)
+async def scheduled_action(db: Database, prompt: str, timestamp: str,
+                           send_callback=None, allow_silent: bool = False) -> str | None:
+    return await _base_scheduled_action(db, prompt, timestamp, _call_with_tools,
+                                        send_callback, allow_silent)
 
 
 async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict],
                            send_callback=None, dynamic_context: str | None = None,
-                           model: str | None = None) -> str:
+                           model: str | None = None, tool_names: set | None = None) -> str:
     """
     调用 Anthropic Claude，处理可能的多轮 tool calling。
     中间轮的文本通过 send_callback 发送。
@@ -57,6 +52,11 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
             "text": dynamic_context
         })
 
+    # 按 tool_names 过滤工具子集
+    tools = TOOLS_ANTHROPIC
+    if tool_names:
+        tools = [t for t in TOOLS_ANTHROPIC if t["name"] in tool_names]
+
     all_texts = []  # 收集所有轮次的文本
 
     if not model:
@@ -68,11 +68,22 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
             max_tokens=4096,
             system=system_blocks,
             messages=messages,
-            tools=TOOLS_ANTHROPIC,
+            tools=tools,
         )
 
         print(f"🤖 stop_reason: {response.stop_reason}")
         print(f"🤖 content: {response.content}")
+
+        # Token usage & prompt caching 验证
+        if hasattr(response, 'usage'):
+            u = response.usage
+            cache_create = getattr(u, 'cache_creation_input_tokens', 0) or 0
+            cache_read = getattr(u, 'cache_read_input_tokens', 0) or 0
+            total_input = u.input_tokens + cache_create + cache_read
+            print(f"📊 Token usage: input={u.input_tokens}, output={u.output_tokens}, total_input={total_input}")
+            print(f"   cache_creation={cache_create}, cache_read={cache_read}")
+            if total_input > 0:
+                print(f"   cache_hit_rate={cache_read / total_input * 100:.1f}%")
 
         # 提取文本回复和 tool 调用
         text_parts = []

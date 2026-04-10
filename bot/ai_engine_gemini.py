@@ -7,8 +7,7 @@ from bot.tools import TOOLS
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool,
-    chat as _base_chat, proactive_check as _base_proactive_check,
-    reminder_action as _base_reminder_action,
+    chat as _base_chat, scheduled_action as _base_scheduled_action,
 )
 import config
 
@@ -18,14 +17,10 @@ async def chat(db: Database, user_message: str, timestamp: str,
     return await _base_chat(db, user_message, timestamp, _call_with_tools, send_callback)
 
 
-async def proactive_check(db: Database, timestamp: str,
-                          send_callback=None) -> str | None:
-    return await _base_proactive_check(db, timestamp, _call_with_tools, send_callback)
-
-
-async def reminder_action(db: Database, action: str, timestamp: str,
-                          send_callback=None) -> str:
-    return await _base_reminder_action(db, action, timestamp, _call_with_tools, send_callback)
+async def scheduled_action(db: Database, prompt: str, timestamp: str,
+                           send_callback=None, allow_silent: bool = False) -> str | None:
+    return await _base_scheduled_action(db, prompt, timestamp, _call_with_tools,
+                                        send_callback, allow_silent)
 
 
 def _convert_to_gemini_format(messages: list[dict]) -> list[dict]:
@@ -42,7 +37,7 @@ def _convert_to_gemini_format(messages: list[dict]) -> list[dict]:
 
 async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict],
                            send_callback=None, dynamic_context: str | None = None,
-                           model: str | None = None) -> str:
+                           model: str | None = None, tool_names: set | None = None) -> str:
     """使用 httpx 直接调用 Gemini REST API"""
     api_key = config.AI_API_KEY
     if not model:
@@ -72,8 +67,13 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                 new_schema[k] = v
         return new_schema
 
+    # 按 tool_names 过滤工具子集
+    source_tools = TOOLS
+    if tool_names:
+        source_tools = [t for t in TOOLS if t["function"]["name"] in tool_names]
+
     gemini_tools = [{"functionDeclarations": []}]
-    for t in TOOLS:
+    for t in source_tools:
         gemini_tools[0]["functionDeclarations"].append({
             "name": t["function"]["name"],
             "description": t["function"]["description"],

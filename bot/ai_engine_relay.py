@@ -8,8 +8,7 @@ from bot.tools import TOOLS, SYSTEM_PROMPT
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool,
-    chat as _base_chat, proactive_check as _base_proactive_check,
-    reminder_action as _base_reminder_action,
+    chat as _base_chat, scheduled_action as _base_scheduled_action,
 )
 import config
 
@@ -19,19 +18,15 @@ async def chat(db: Database, user_message: str, timestamp: str,
     return await _base_chat(db, user_message, timestamp, _call_with_tools, send_callback)
 
 
-async def proactive_check(db: Database, timestamp: str,
-                          send_callback=None) -> str | None:
-    return await _base_proactive_check(db, timestamp, _call_with_tools, send_callback)
-
-
-async def reminder_action(db: Database, action: str, timestamp: str,
-                          send_callback=None) -> str:
-    return await _base_reminder_action(db, action, timestamp, _call_with_tools, send_callback)
+async def scheduled_action(db: Database, prompt: str, timestamp: str,
+                           send_callback=None, allow_silent: bool = False) -> str | None:
+    return await _base_scheduled_action(db, prompt, timestamp, _call_with_tools,
+                                        send_callback, allow_silent)
 
 
 async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict],
                            send_callback=None, dynamic_context: str | None = None,
-                           model: str | None = None) -> str:
+                           model: str | None = None, tool_names: set | None = None) -> str:
     """用 httpx 直接调用 OpenAI 兼容的中转站 API。"""
     if not model:
         model = config.CHAT_MODEL
@@ -52,6 +47,11 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
     if dynamic_context:
         full_system += "\n\n" + dynamic_context
 
+    # 按 tool_names 过滤工具子集
+    tools = TOOLS
+    if tool_names:
+        tools = [t for t in TOOLS if t["function"]["name"] in tool_names]
+
     full_messages = [{"role": "system", "content": full_system}] + list(messages)
     all_texts = []  # 收集所有轮次的文本
 
@@ -61,7 +61,7 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                 "model": model,
                 "max_tokens": 4096,
                 "messages": full_messages,
-                "tools": TOOLS,
+                "tools": tools,
             }
 
             resp = await client.post(url, json=payload, headers=headers, timeout=120.0)
