@@ -2,5 +2,7 @@
 life-tracker-brief.md
 .venv
 __pycache__/
+*.pyc
+data/life_tracker.db
 .vscode
 .DS_Store
