@@ -6,7 +6,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime
-from bot.ai_engine import chat
+from bot.ai_engine import chat, simple_completion
+from bot.weather import get_weather_brief, WEATHER_REPORT_PROMPT
 from bot.database import Database
 import config
 
@@ -22,6 +23,7 @@ class LifeTrackerBot(commands.Bot):
     async def setup_hook(self):
         """注册斜杠命令并同步到 Discord"""
         self.tree.add_command(_todo_group(self))
+        self.tree.add_command(_weather_command(self))
         await self.tree.sync()
         print("✅ 斜杠命令已同步")
 
@@ -130,6 +132,27 @@ def _todo_group(bot: LifeTrackerBot) -> app_commands.Group:
             await interaction.response.send_message(f"⚠️ 找不到 #{id}")
 
     return group
+
+
+def _weather_command(bot: LifeTrackerBot) -> app_commands.Command:
+    """创建 /weather 命令"""
+    @app_commands.command(name="weather", description="查看今日天气和穿衣建议")
+    async def weather(interaction: discord.Interaction):
+        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
+            return
+
+        await interaction.response.defer()
+
+        weather_data = await get_weather_brief()
+        if not weather_data:
+            await interaction.followup.send("天气查询失败了，等会再试试吧")
+            return
+
+        prompt = WEATHER_REPORT_PROMPT.format(weather_data=weather_data)
+        reply = await simple_completion(prompt)
+        await interaction.followup.send(reply)
+
+    return weather
 
 
 def _split_message(text: str, limit: int = 2000) -> list[str]:

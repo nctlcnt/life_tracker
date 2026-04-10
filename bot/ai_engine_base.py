@@ -141,7 +141,21 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
         return {"success": False, "message": f"未知工具: {tool_name}"}
 
 
-# ── 高层流程：chat / scheduled_action ──────────────
+# ── 高层流程：chat / scheduled_action / simple_completion ──────────────
+
+
+async def simple_completion(prompt: str, call_with_tools_fn) -> str:
+    """
+    轻量 AI 调用：无工具、无历史消息、无动态上下文。
+    用于天气报告等独立的一次性生成任务。
+    """
+    messages = [{"role": "user", "content": prompt}]
+    reply = await call_with_tools_fn(
+        None, "", messages,
+        model=config.POLL_MODEL,
+        tool_names=set(),  # 空集 → 不传工具
+    )
+    return reply
 
 
 async def chat(db: Database, user_message: str, timestamp: str,

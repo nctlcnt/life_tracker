@@ -8,6 +8,7 @@ from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool,
     chat as _base_chat, scheduled_action as _base_scheduled_action,
+    simple_completion as _base_simple_completion,
 )
 import config
 
@@ -21,6 +22,10 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            send_callback=None, allow_silent: bool = False) -> str | None:
     return await _base_scheduled_action(db, prompt, timestamp, _call_with_tools,
                                         send_callback, allow_silent)
+
+
+async def simple_completion(prompt: str) -> str:
+    return await _base_simple_completion(prompt, _call_with_tools)
 
 
 def _convert_to_gemini_format(messages: list[dict]) -> list[dict]:
@@ -69,16 +74,19 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
 
     # 按 tool_names 过滤工具子集
     source_tools = TOOLS
-    if tool_names:
+    if tool_names is not None:
         source_tools = [t for t in TOOLS if t["function"]["name"] in tool_names]
 
-    gemini_tools = [{"functionDeclarations": []}]
-    for t in source_tools:
-        gemini_tools[0]["functionDeclarations"].append({
-            "name": t["function"]["name"],
-            "description": t["function"]["description"],
-            "parameters": convert_type(t["function"]["parameters"])
-        })
+    gemini_tools = []
+    if source_tools:
+        decls = []
+        for t in source_tools:
+            decls.append({
+                "name": t["function"]["name"],
+                "description": t["function"]["description"],
+                "parameters": convert_type(t["function"]["parameters"])
+            })
+        gemini_tools = [{"functionDeclarations": decls}]
 
     all_texts = []  # 收集所有轮次的文本
 
@@ -91,8 +99,9 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                     "parts": [{"text": full_system_prompt}]
                 },
                 "contents": _convert_to_gemini_format(current_messages),
-                "tools": gemini_tools
             }
+            if gemini_tools:
+                gemini_payload["tools"] = gemini_tools
 
             resp = await client.post(url, json=gemini_payload, timeout=60.0)
             if resp.status_code != 200:

@@ -9,6 +9,7 @@ from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool,
     chat as _base_chat, scheduled_action as _base_scheduled_action,
+    simple_completion as _base_simple_completion,
 )
 import config
 
@@ -28,6 +29,10 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                                         send_callback, allow_silent)
 
 
+async def simple_completion(prompt: str) -> str:
+    return await _base_simple_completion(prompt, _call_with_tools)
+
+
 async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict],
                            send_callback=None, dynamic_context: str | None = None,
                            model: str | None = None, tool_names: set | None = None) -> str:
@@ -39,13 +44,13 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
     动态 dynamic_context 不缓存。
     """
     # 构建 system blocks，静态部分开启 prompt caching
-    system_blocks = [
-        {
+    system_blocks = []
+    if system_prompt:
+        system_blocks.append({
             "type": "text",
             "text": system_prompt,
             "cache_control": {"type": "ephemeral"}
-        }
-    ]
+        })
     if dynamic_context:
         system_blocks.append({
             "type": "text",
@@ -54,7 +59,7 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
 
     # 按 tool_names 过滤工具子集
     tools = TOOLS_ANTHROPIC
-    if tool_names:
+    if tool_names is not None:
         tools = [t for t in TOOLS_ANTHROPIC if t["name"] in tool_names]
 
     all_texts = []  # 收集所有轮次的文本
@@ -63,13 +68,17 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
         model = getattr(config, 'CHAT_MODEL', 'claude-3-opus-20240229')
 
     for _ in range(5):  # 最多 5 轮 tool calling，防止死循环
-        response = await client.messages.create(
+        kwargs = dict(
             model=model,
             max_tokens=4096,
-            system=system_blocks,
             messages=messages,
-            tools=tools,
         )
+        if system_blocks:
+            kwargs["system"] = system_blocks
+        if tools:
+            kwargs["tools"] = tools
+
+        response = await client.messages.create(**kwargs)
 
         print(f"🤖 stop_reason: {response.stop_reason}")
         print(f"🤖 content: {response.content}")

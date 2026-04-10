@@ -4,6 +4,7 @@
 """
 import httpx
 from datetime import datetime
+from typing import Optional
 
 # 悉尼，AEST
 CITY = "Sydney"
@@ -64,3 +65,14 @@ async def get_weather_brief() -> str | None:
     except Exception as e:
         print(f"⚠️ 天气查询失败: {e}")
         return None
+
+
+WEATHER_REPORT_PROMPT = """根据以下天气数据，用简洁自然的中文回复：
+1. 今天天气概况（一两句话）
+2. 穿衣建议（根据温度、体感温度、降雨概率推荐具体衣物）
+3. 出门注意事项（如果有的话，比如带伞、防晒等）
+
+语气像朋友随口说的，不要像天气预报播报。不要用 emoji。
+
+天气数据：
+{weather_data}"""

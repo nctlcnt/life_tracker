@@ -9,6 +9,7 @@ from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool,
     chat as _base_chat, scheduled_action as _base_scheduled_action,
+    simple_completion as _base_simple_completion,
 )
 import config
 
@@ -22,6 +23,10 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            send_callback=None, allow_silent: bool = False) -> str | None:
     return await _base_scheduled_action(db, prompt, timestamp, _call_with_tools,
                                         send_callback, allow_silent)
+
+
+async def simple_completion(prompt: str) -> str:
+    return await _base_simple_completion(prompt, _call_with_tools)
 
 
 async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict],
@@ -49,7 +54,7 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
 
     # 按 tool_names 过滤工具子集
     tools = TOOLS
-    if tool_names:
+    if tool_names is not None:
         tools = [t for t in TOOLS if t["function"]["name"] in tool_names]
 
     full_messages = [{"role": "system", "content": full_system}] + list(messages)
@@ -61,8 +66,9 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                 "model": model,
                 "max_tokens": 4096,
                 "messages": full_messages,
-                "tools": tools,
             }
+            if tools:
+                payload["tools"] = tools
 
             resp = await client.post(url, json=payload, headers=headers, timeout=120.0)
 
