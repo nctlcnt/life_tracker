@@ -70,6 +70,23 @@ async def delete_memory(memory_id: int):
     return {"status": "ok"}
 
 
+@app.get("/api/reminders")
+async def get_reminders(done: int = None):
+    """获取提醒列表，done=0 只看未完成，done=1 只看已完成，不传则全部"""
+    conn = db._get_conn()
+    if done is None:
+        rows = conn.execute(
+            "SELECT * FROM reminders ORDER BY trigger_time DESC LIMIT 100"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM reminders WHERE done=? ORDER BY trigger_time DESC LIMIT 100",
+            (done,)
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 @app.get("/api/health")
 async def health_check():
     """健康检查"""

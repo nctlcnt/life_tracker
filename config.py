@@ -20,7 +20,7 @@ POLL_MODEL = os.getenv("POLL_MODEL", "claude-3-5-sonnet-latest")
 AI_BASE_URL = os.getenv("AI_BASE_URL", "")
 
 ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", "0"))
-API_PORT = int(os.getenv("API_PORT", "8765"))
+API_PORT = int(os.getenv("API_PORT", "8080"))
 
 # 数据库路径
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "life_tracker.db")
