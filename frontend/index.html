@@ -562,13 +562,19 @@
     const STUDY_CATS = new Set(['工作']);
 
     // ─── Helpers ───
+    function localDateStr(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
     function todayStr() {
-      return new Date().toISOString().slice(0, 10);
+      return localDateStr(new Date());
     }
     function shiftDate(str, days) {
       const d = new Date(str + 'T00:00:00');
       d.setDate(d.getDate() + days);
-      return d.toISOString().slice(0, 10);
+      return localDateStr(d);
     }
     function formatTime(isoStr) {
       if (!isoStr) return '';
