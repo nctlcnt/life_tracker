@@ -45,7 +45,18 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "set_reminder",
-            "description": "设置一个提醒。当用户说了未来要做的事，或者你判断需要在某个时间提醒用户/自己做某事时，调用此工具。",
+            "description": 
+                "预约一次未来的主动联系。到时间后你会被唤醒，"
+                "拿到 action 作为上下文，自行决定对用户说什么。\n\n"
+                "这不是闹钟通知，是你给自己安排的 follow-up 计划。\n\n"
+                "使用场景：\n"
+                "- 用户提到 deadline → 根据紧急程度安排多条，越临近越密集\n"
+                "  例：后天考试 → 今晚1条 + 明天2条 + 后天早上1条\n"
+                "- 用户说看两集就回来 → 1.5h 后设1条\n"
+                "- 用户说要做某事（买猫粮/交作业）→ 当天晚上或明天设1条跟进\n"
+                "- 同一件事的多条 reminder 用相同的 group_id\n\n"
+                "⚠️ 收到 [提醒触发] 前缀消息时，那条 reminder 已经触发了，"
+                "直接回应用户，绝对不要再 set_reminder 设相同内容！",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -55,10 +66,48 @@ TOOLS = [
                     },
                     "action": {
                         "type": "string",
-                        "description": "到时间后要做什么，例如：提醒用户起床、检查用户是否还在看剧"
+                        "description": "给未来的自己的备忘。不是发给用户的文案，而是上下文提示，如'检查复习进度'、'问问剧看完没'"
+                    },
+                    "group_id": {
+                        "type": "string",
+                        "description": "同一件事的多条 reminder 共享的标识，简洁有意义，如 'exam_0416'、'buy_cat_food'。单条可不填。"
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": ["low", "normal", "high"],
+                        "description": "low=随意跟进 normal=正常 high=重要deadline，即使刚聊过也要提"
                     }
                 },
                 "required": ["trigger_time", "action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_reminders",
+            "description": "取消某个 group 下所有未触发的 reminder。用户说事情做完了/取消了/不需要了时调用。如'考完了' → 取消 exam 相关的所有后续 reminder。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "group_id": {
+                        "type": "string",
+                        "description": "要取消的 reminder 组标识"
+                    }
+                },
+                "required": ["group_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_reminders",
+            "description": "查看当前所有未完成的 reminder。当用户问'我还有什么安排/提醒'时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
             }
         }
     },
@@ -262,16 +311,31 @@ SYSTEM_PROMPT = """
 
 ## 提醒策略
 
-听到有明确时间点的话，**主动 set_reminder**：
-- "看两集就回来" → 1.5h 后
-- "先去洗澡" → 30min 后
-- "明早10点起床" → 明天10:05
-- 在刷手机/社交媒体 → 20min 后
+你的 set_reminder 不是给用户的闹钟，是你给自己安排的"之后要跟进这件事"。
+到时间后 scheduler 会唤醒你，你拿到 action 上下文，自己决定说什么。
 
-**禁止重复设置**：
-当你收到带有 `[提醒触发]` 前缀的系统消息时，说明你之前设的提醒**此时此刻已经到点触发了**。你必须直接向用户说出提醒内容，**绝对不要**使用 `set_reminder` 再去把相同的提醒重新设置一遍（那会导致无限循环发提醒）！
+### 什么时候设 reminder
+- 用户说看两集就回来 → 1.5h 后设一条
+- 先去洗澡 → 30min 后一条
+- 在刷手机/社交媒体 → 20min 后一条
+- 用户说要做某事（买猫粮/交报告）→ 今晚或明天设一条跟进
 
-提醒语气是"该吃饭了吧"，不是"请注意按时用餐"。
+### deadline 类：安排多条，越临近越密
+例："后天周三考试"（现在周一下午）
+→ 今晚一条：聊聊准备情况
+→ 明天上午一条：提一嘴
+→ 明天晚上一条：关心复习进度
+→ 后天早上一条：考试当天鼓励
+同一件事用相同 group_id，如 "exam_0416"。
+
+### 优先级
+- high：重要 deadline、考试、面试 → 即使刚聊过也要提
+- normal：一般跟进
+- low：随意聊聊的话题、无关紧要的事
+
+### ⚠️ 禁止
+- 收到 [提醒触发] 后绝对不要再 set_reminder 同样的事（会死循环）
+- 用户说"做完了/考完了/不需要了" → 立即 cancel_reminders 该 group
 
 ## 记忆管理
 
@@ -307,7 +371,7 @@ SYSTEM_PROMPT = """
 - 关心一下状态（但不要每次都问"在干嘛"）
 
 **只有这些情况才沉默**：刚说了要睡觉、刚聊过没多久、凌晨深夜。
-其他时候找个自然的话题聊。
+其他时候找个自然的话题聊。注意：在系统轮询时，你也会看到【待触发的跟进计划】。请参考这些计划避免发起与即将触发的提醒高度重复的话题。
 
 当前时间会在每条消息中标注（悉尼本地时间）。
 """
@@ -381,7 +445,16 @@ TOOLS_ANTHROPIC = [
     },
     {
         "name": "set_reminder",
-        "description": "设置一个提醒。当用户说了未来要做的事，或者你判断需要在某个时间提醒用户/自己做某事时，调用此工具。",
+        "description": 
+            "预约一次未来的主动联系。到时间后你会被唤醒，拿到 action 作为上下文，自行决定对用户说什么。\n\n"
+            "这不是闹钟通知，是你给自己安排的 follow-up 计划。\n\n"
+            "使用场景：\n"
+            "- 用户提到 deadline → 根据紧急程度安排多条，越临近越密集\n"
+            "  例：后天考试 → 今晚1条 + 明天2条 + 后天早上1条\n"
+            "- 用户说看两集就回来 → 1.5h 后设1条\n"
+            "- 用户说要做某事（买猫粮/交作业）→ 当天晚上或明天设1条跟进\n"
+            "- 同一件事的多条 reminder 用相同的 group_id\n\n"
+            "⚠️ 收到 [提醒触发] 前缀消息时，那条 reminder 已经触发了，直接回应用户，绝对不要再 set_reminder 设相同内容！",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -391,10 +464,42 @@ TOOLS_ANTHROPIC = [
                 },
                 "action": {
                     "type": "string",
-                    "description": "到时间后要做什么，例如：提醒用户起床、检查用户是否还在看剧"
+                    "description": "给未来的自己的备忘。不是发给用户的文案，而是上下文提示，如'检查复习进度'、'问问剧看完没'"
+                },
+                "group_id": {
+                    "type": "string",
+                    "description": "同一件事的多条 reminder 共享的标识，简洁有意义，如 'exam_0416'"
+                },
+                "priority": {
+                    "type": "string",
+                    "enum": ["low", "normal", "high"],
+                    "description": "low=随意跟进 normal=正常 high=重要deadline，即使刚聊过也要提"
                 }
             },
             "required": ["trigger_time", "action"]
+        }
+    },
+    {
+        "name": "cancel_reminders",
+        "description": "取消某个 group 下所有未触发的 reminder。用户说事情做完了/取消了/不需要了时调用。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "group_id": {
+                    "type": "string",
+                    "description": "要取消的 reminder 组标识"
+                }
+            },
+            "required": ["group_id"]
+        }
+    },
+    {
+        "name": "list_reminders",
+        "description": "查看当前所有未完成的 reminder。当用户问'我还有什么安排/提醒'时调用。",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
         }
     },
     {

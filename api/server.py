@@ -71,17 +71,22 @@ async def delete_memory(memory_id: int):
 
 
 @app.get("/api/reminders")
-async def get_reminders(done: int = None):
-    """获取提醒列表，done=0 只看未完成，done=1 只看已完成，不传则全部"""
+async def get_reminders(status: str = None, done: int = None):
+    """获取提醒列表，支持基于 status 或者旧的 done 过滤"""
     conn = db._get_conn()
-    if done is None:
+    if status is not None:
         rows = conn.execute(
-            "SELECT * FROM reminders ORDER BY trigger_time DESC LIMIT 100"
+            "SELECT * FROM reminders WHERE status=? ORDER BY trigger_time DESC LIMIT 100",
+            (status,)
         ).fetchall()
-    else:
+    elif done is not None:
         rows = conn.execute(
             "SELECT * FROM reminders WHERE done=? ORDER BY trigger_time DESC LIMIT 100",
             (done,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM reminders ORDER BY trigger_time DESC LIMIT 100"
         ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

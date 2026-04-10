@@ -46,7 +46,10 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 trigger_time TEXT NOT NULL,          -- 触发时间 ISO 8601
                 action TEXT NOT NULL,                -- 要执行的动作描述
-                done INTEGER DEFAULT 0,
+                group_id TEXT,                       -- 同一件事的多条 reminder 共享
+                priority TEXT DEFAULT 'normal',      -- low / normal / high
+                status TEXT DEFAULT 'pending',       -- pending / triggered / cancelled
+                done INTEGER DEFAULT 0,              -- 兼容旧数据
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
@@ -76,6 +79,17 @@ class Database:
             conn.execute("ALTER TABLE events ADD COLUMN session_id INTEGER")
         except sqlite3.OperationalError:
             pass
+            
+        try:
+            conn.execute("ALTER TABLE reminders ADD COLUMN group_id TEXT")
+            conn.execute("ALTER TABLE reminders ADD COLUMN priority TEXT DEFAULT 'normal'")
+            conn.execute("ALTER TABLE reminders ADD COLUMN status TEXT DEFAULT 'pending'")
+            # 兼容：将过去的 done 转为 status
+            conn.execute("UPDATE reminders SET status = 'triggered' WHERE done = 1 AND status = 'pending'")
+            conn.execute("UPDATE reminders SET status = 'pending' WHERE done = 0 AND status = 'pending'")
+        except sqlite3.OperationalError:
+            pass
+
         conn.commit()
         conn.close()
 
@@ -166,12 +180,12 @@ class Database:
 
     # ============ 提醒队列 ============
 
-    def add_reminder(self, trigger_time: str, action: str) -> int:
+    def add_reminder(self, trigger_time: str, action: str, group_id: str = None, priority: str = "normal") -> int:
         """添加一个提醒"""
         conn = self._get_conn()
         cursor = conn.execute(
-            "INSERT INTO reminders (trigger_time, action) VALUES (?, ?)",
-            (trigger_time, action)
+            "INSERT INTO reminders (trigger_time, action, group_id, priority) VALUES (?, ?, ?, ?)",
+            (trigger_time, action, group_id, priority)
         )
         conn.commit()
         reminder_id = cursor.lastrowid
@@ -183,18 +197,66 @@ class Database:
         now = datetime.now().isoformat()
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT * FROM reminders WHERE done = 0 AND trigger_time <= ?",
+            "SELECT * FROM reminders WHERE status = 'pending' AND trigger_time <= ?",
             (now,)
         ).fetchall()
         conn.close()
         return [dict(row) for row in rows]
 
     def mark_reminder_done(self, reminder_id: int):
-        """标记提醒为已完成"""
+        """标记提醒为已触发"""
         conn = self._get_conn()
-        conn.execute("UPDATE reminders SET done = 1 WHERE id = ?", (reminder_id,))
+        # 同时更新 done=1 保持前端兼容
+        conn.execute("UPDATE reminders SET status = 'triggered', done = 1 WHERE id = ?", (reminder_id,))
         conn.commit()
         conn.close()
+
+    def cancel_reminders_by_group(self, group_id: str) -> int:
+        """取消某个 group 下所有 pending 的 reminder，返回取消条数"""
+        if not group_id:
+            return 0
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE reminders SET status = 'cancelled', done = 1 WHERE group_id = ? AND status = 'pending'",
+            (group_id,)
+        )
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected
+
+    def get_pending_reminders_by_group(self, group_id: str) -> list[dict]:
+        """查询某个 group 下还剩多少 pending 的 reminder"""
+        if not group_id:
+            return []
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM reminders WHERE group_id = ? AND status = 'pending' ORDER BY trigger_time",
+            (group_id,)
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def count_reminders_in_group(self, group_id: str) -> int:
+        """统计某个 group 下总共有多少条 reminder"""
+        if not group_id:
+            return 0
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM reminders WHERE group_id = ?",
+            (group_id,)
+        ).fetchone()
+        conn.close()
+        return row[0] if row else 0
+
+    def list_active_reminders(self) -> list[dict]:
+        """列出所有 pending 的 reminder（给 AI 看/给用户查）"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM reminders WHERE status = 'pending' ORDER BY trigger_time ASC"
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
 
     # ============ 未处理消息队列 ============
 

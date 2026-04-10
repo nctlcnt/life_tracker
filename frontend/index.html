@@ -448,9 +448,24 @@
       color: #c2410c;
     }
 
-    .badge-done {
+    .badge-triggered {
       background: #f1f5f9;
       color: #64748b;
+    }
+
+    .badge-cancelled {
+      background: #fee2e2;
+      color: #ef4444;
+    }
+
+    .badge-high {
+      background: #fee2e2;
+      color: #ef4444;
+    }
+
+    .badge-group {
+      background: #e0e7ff;
+      color: #4f46e5;
     }
 
     .reminder-action {
@@ -519,9 +534,10 @@
 
       <div class="section-title">提醒</div>
       <div class="reminder-filter-bar">
-        <button class="chip active" style="background:#495057;border-color:#495057" data-done="all" id="rf-all">全部</button>
-        <button class="chip" style="color:#c2410c;border-color:#fb923c" data-done="0" id="rf-pending">待执行</button>
-        <button class="chip" style="color:#64748b;border-color:#94a3b8" data-done="1" id="rf-done">已完成</button>
+        <button class="chip active" style="background:#495057;border-color:#495057" data-status="all" id="rf-all">全部</button>
+        <button class="chip" style="color:#c2410c;border-color:#fb923c" data-status="pending" id="rf-pending">待执行</button>
+        <button class="chip" style="color:#64748b;border-color:#94a3b8" data-status="triggered" id="rf-triggered">已触发</button>
+        <button class="chip" style="color:#ef4444;border-color:#fca5a5" data-status="cancelled" id="rf-cancelled">已取消</button>
       </div>
       <div class="reminder-list" id="reminder-list">
         <div class="loading">加载中…</div>
@@ -769,7 +785,7 @@
     });
 
     // ─── Memories & Reminders tab ───
-    let reminderFilter = 'all';  // 'all' | '0' | '1'
+    let reminderFilter = 'all';  // 'all' | 'pending' | 'triggered' | 'cancelled'
 
     async function loadMemoriesTab() {
       loadMemories();
@@ -831,7 +847,7 @@
       try {
         const url = reminderFilter === 'all'
           ? '/api/reminders'
-          : `/api/reminders?done=${reminderFilter}`;
+          : `/api/reminders?status=${reminderFilter}`;
         const res = await fetch(url);
         const data = await res.json();
         renderReminders(data);
@@ -847,14 +863,16 @@
         return;
       }
       list.innerHTML = reminders.map(r => `
-        <div class="reminder-item ${r.done ? 'done' : ''}">
+        <div class="reminder-item ${r.status !== 'pending' ? 'done' : ''}">
           <div class="reminder-header">
             <span class="reminder-time">${escHtml(formatDateTime(r.trigger_time))}</span>
-            <span class="badge ${r.done ? 'badge-done' : 'badge-pending'}">
-              ${r.done ? '已完成' : '待执行'}
+            <span class="badge badge-${r.status}">
+              ${r.status === 'pending' ? '待执行' : r.status === 'triggered' ? '已触发' : '已取消'}
             </span>
+            ${r.priority === 'high' ? `<span class="badge badge-high">高优</span>` : ''}
+            ${r.group_id ? `<span class="badge badge-group">组: ${escHtml(r.group_id)}</span>` : ''}
           </div>
-          <div class="reminder-action">${escHtml(r.action)}</div>
+          <div class="reminder-action" style="${r.status === 'cancelled' ? 'text-decoration: line-through; opacity: 0.7' : ''}">${escHtml(r.action)}</div>
         </div>
       `).join('');
     }
@@ -862,12 +880,13 @@
     // Reminder filter chips
     document.querySelectorAll('.reminder-filter-bar .chip').forEach(btn => {
       btn.addEventListener('click', () => {
-        reminderFilter = btn.dataset.done;
+        reminderFilter = btn.dataset.status;
         document.querySelectorAll('.reminder-filter-bar .chip').forEach(b => {
           b.classList.remove('active');
           b.style.background = '';
-          b.style.color = b.dataset.done === 'all' ? '' : (b.dataset.done === '0' ? '#c2410c' : '#64748b');
-          b.style.borderColor = b.dataset.done === 'all' ? '' : (b.dataset.done === '0' ? '#fb923c' : '#94a3b8');
+          const st = b.dataset.status;
+          b.style.color = st === 'all' ? '' : (st === 'pending' ? '#c2410c' : st === 'triggered' ? '#64748b' : '#ef4444');
+          b.style.borderColor = st === 'all' ? '' : (st === 'pending' ? '#fb923c' : st === 'triggered' ? '#94a3b8' : '#fca5a5');
         });
         btn.classList.add('active');
         btn.style.background = '#495057';

@@ -33,6 +33,12 @@ def _build_dynamic_context(db: Database) -> str:
             f"如果用户提到的活动与上述事件相同，请用 update_timeline_event 更新 end_time，不要新建。"
         )
 
+    # 待触发提醒计划
+    reminders = db.list_active_reminders()
+    if reminders:
+        lines = [f"- [{r['priority']}] {r['trigger_time']} | {r['action']} (group: {r.get('group_id', '无')})" for r in reminders]
+        parts.append("【待触发的跟进计划】\n" + "\n".join(lines))
+
     return "\n\n".join(parts)
 
 
@@ -327,9 +333,19 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
     elif tool_name == "set_reminder":
         reminder_id = db.add_reminder(
             trigger_time=args["trigger_time"],
-            action=args["action"]
+            action=args["action"],
+            group_id=args.get("group_id"),
+            priority=args.get("priority", "normal")
         )
         return {"success": True, "reminder_id": reminder_id, "message": "提醒已设置"}
+
+    elif tool_name == "cancel_reminders":
+        count = db.cancel_reminders_by_group(args.get("group_id"))
+        return {"success": True, "cancelled_count": count, "message": "相关提醒已取消"}
+
+    elif tool_name == "list_reminders":
+        rems = db.list_active_reminders()
+        return {"success": True, "reminders": rems, "count": len(rems)}
 
     elif tool_name == "query_timeline":
         events = db.get_events(start=args["start"], end=args["end"])

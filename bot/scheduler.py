@@ -72,12 +72,27 @@ class Scheduler:
                 for reminder in pending:
                     # 先标记完成，防止下一轮检查重复触发
                     self.db.mark_reminder_done(reminder["id"])
+                    
+                    # 查同 group 的信息
+                    group_info = ""
+                    if reminder.get('group_id'):
+                        remaining = self.db.get_pending_reminders_by_group(reminder['group_id'])
+                        total = self.db.count_reminders_in_group(reminder['group_id'])
+                        group_info = f"（这是关于此事的第{total - len(remaining)}条提醒，共{total}条）"
+                        
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    
+                    context_action = (
+                        f"{reminder['action']}\n"
+                        f"优先级: {reminder.get('priority', 'normal')}\n"
+                        f"{group_info}"
+                    ).strip()
+                    
                     reply = await reminder_action(
-                        self.db, reminder["action"], timestamp,
-                        send_callback=self.send
+                        self.db, context_action, timestamp
                     )
-                    # reply 已在各轮次中通过 callback 发出
+                    if reply and "[SILENT]" not in reply:
+                        await self.send(reply)
             except Exception as e:
                 print(f"❌ 提醒检查出错: {e}")
 
