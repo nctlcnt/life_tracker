@@ -116,6 +116,6 @@ async def root():
 
 
 # 挂载前端静态文件（放在路由定义之后，避免拦截 /api 路由）
-_frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
+_frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
 if os.path.isdir(_frontend_dir):
-    app.mount("/app", StaticFiles(directory=_frontend_dir), name="frontend")
+    app.mount("/app", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
