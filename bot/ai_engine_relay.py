@@ -4,7 +4,7 @@ AI 引擎模块 (中转站版)
 """
 import json
 import httpx
-from bot.tools import TOOLS, SYSTEM_PROMPT, TOOL_ROUND_REMINDER
+from bot.tools import TOOLS, SYSTEM_PROMPT, TOOL_ROUND_REMINDER, WRITE_ONLY_TOOL_NAMES
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool,
@@ -17,14 +17,15 @@ import config
 logger = get_logger(__name__)
 
 
-async def chat(db: Database, user_message: str, timestamp: str,
+async def chat(db: Database, messages: list[dict],
                send_callback=None) -> str:
-    return await _base_chat(db, user_message, timestamp, _call_with_tools, send_callback)
+    return await _base_chat(db, messages, _call_with_tools, send_callback)
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
+                           history: list[dict],
                            send_callback=None, allow_silent: bool = False) -> str | None:
-    return await _base_scheduled_action(db, prompt, timestamp, _call_with_tools,
+    return await _base_scheduled_action(db, prompt, timestamp, history, _call_with_tools,
                                         send_callback, allow_silent)
 
 
@@ -151,4 +152,13 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                 "content": TOOL_ROUND_REMINDER,
             })
 
-    return "（内部错误：工具调用次数过多）"
+            # 如果本次调用的全部是无状态的"单向写入工具"，且已有文本回复，
+            # 第二轮通常只会生成类似"好了"的废话废 token，直接提前结束
+            is_all_write = all(
+                tc.get("function", {}).get("name") in WRITE_ONLY_TOOL_NAMES for tc in tool_calls
+            )
+            if is_all_write and round_text:
+                logger.info("⚡ 检测到全写入操作且已有文本回复，主动跳过后续无意义的 API 请求以节省 token")
+                return "\n".join(all_texts)
+
+    return "\n".join(all_texts) or "（内部错误：工具调用次数过多）"

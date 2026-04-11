@@ -77,13 +77,6 @@ def _ensure_valid_messages(messages: list[dict]) -> list[dict]:
     return merged
 
 
-def _build_messages(db: Database) -> list[dict]:
-    """构建发给大模型的消息列表（纯历史消息）。"""
-    recent = db.get_recent_messages(limit=10)
-    messages = [{"role": m["role"], "content": m["content"]} for m in recent]
-    return _ensure_valid_messages(messages)
-
-
 def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
     """执行具体的工具调用，返回结果"""
     if tool_name == "log_timeline_event":
@@ -161,22 +154,24 @@ async def simple_completion(prompt: str, call_with_tools_fn) -> str:
     return reply
 
 
-async def chat(db: Database, user_message: str, timestamp: str,
+async def chat(db: Database, messages: list[dict],
                call_with_tools_fn, send_callback=None) -> str:
     """
     处理用户消息的完整流程。
+    messages: 调用方（discord_bot）已经从 Discord 历史构造好的消息列表，
+              最后一条应该是当前用户发来的消息（含时间戳前缀）。
     call_with_tools_fn: 各引擎的 _call_with_tools 实现。
-    """
-    # 保存用户消息到对话记录
-    db.add_message("user", f"[{timestamp}] {user_message}")
 
-    # 构建消息列表
-    messages = _build_messages(db)
+    DB 只作为备份：调用方在进入这里之前应已把当前用户消息写入 messages 表；
+    这里只负责把 AI 回复写回 DB 做备份。
+    """
+    # 规范化消息序列（首条必须是 user，合并连续同角色）
+    messages = _ensure_valid_messages(messages)
 
     # 早上时段查天气
     weather = await get_weather_brief() if is_morning() else None
 
-    # 构建动态上下文
+    # 构建动态上下文（记忆 + 进行中事件 + 待触发提醒 + 天气）
     dynamic_ctx = _build_dynamic_context(db, weather=weather)
 
     # 调用大模型（可能需要多轮 tool calling）
@@ -187,25 +182,27 @@ async def chat(db: Database, user_message: str, timestamp: str,
         model=config.CHAT_MODEL
     )
 
-    # 保存 AI 回复到数据库
+    # 备份 AI 回复到 DB
     db.add_message("assistant", reply)
 
     return reply
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
-                           call_with_tools_fn, send_callback=None,
+                           history: list[dict], call_with_tools_fn,
+                           send_callback=None,
                            allow_silent: bool = False) -> str | None:
     """
     统一的调度入口：处理主动聊天、提醒触发、睡前提醒等所有非用户消息的 AI 调用。
 
-    prompt: 注入给 AI 的调度指令（不同场景传不同内容）
+    prompt: 注入给 AI 的调度指令（作为最后一条 user 消息追加到 history 后面）
+    history: 调用方从 Discord 拉来的对话历史（不含本次调度指令）
     allow_silent: 是否允许 AI 返回 [SILENT] 不发消息（随机轮询时为 True）
     返回 None 表示 AI 选择不发消息。
     """
-    recent = db.get_recent_messages(limit=10)
-    if not recent and allow_silent:
-        return None
+    # 注：历史为空不代表"没聊过"——也可能是 bot 刚重启或 Discord 历史拉取失败。
+    # 此时仍然继续调用 AI，让它基于 memory / 待触发提醒 / 当前时间 / 天气等
+    # 动态上下文自主决定要不要说话。真觉得没得说，它可以返回 [SILENT]。
 
     # 早上时段查天气
     weather = await get_weather_brief() if is_morning() else None
@@ -213,10 +210,9 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     dynamic_ctx = _build_dynamic_context(db, weather=weather)
 
     messages = [
-        *[{"role": m["role"], "content": m["content"]} for m in recent],
+        *history,
         {"role": "user", "content": prompt}
     ]
-
     messages = _ensure_valid_messages(messages)
 
     # 允许 silent 时不传 send_callback，需要先检查 [SILENT]
@@ -231,6 +227,6 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     if reply and "[SILENT]" not in reply:
         if allow_silent and send_callback:
             await send_callback(reply)
-        db.add_message("assistant", reply)
+        db.add_message("assistant", reply)  # 备份
         return reply
     return None

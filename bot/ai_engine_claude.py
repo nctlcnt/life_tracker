@@ -21,14 +21,15 @@ client = AsyncAnthropic(
 )
 
 
-async def chat(db: Database, user_message: str, timestamp: str,
+async def chat(db: Database, messages: list[dict],
                send_callback=None) -> str:
-    return await _base_chat(db, user_message, timestamp, _call_with_tools, send_callback)
+    return await _base_chat(db, messages, _call_with_tools, send_callback)
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
+                           history: list[dict],
                            send_callback=None, allow_silent: bool = False) -> str | None:
-    return await _base_scheduled_action(db, prompt, timestamp, _call_with_tools,
+    return await _base_scheduled_action(db, prompt, timestamp, history, _call_with_tools,
                                         send_callback, allow_silent)
 
 

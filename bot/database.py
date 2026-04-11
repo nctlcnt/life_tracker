@@ -70,6 +70,14 @@ class Database:
                 created_at TEXT DEFAULT (datetime('now')),
                 done_at TEXT
             );
+
+            -- 应用状态（进程无关的小型 kv，重启后恢复）
+            -- 目前存：target_channel_id（最近一次活跃的 Discord 频道，用于冷启动主动消息）
+            CREATE TABLE IF NOT EXISTS app_state (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
         """)
         conn.commit()
         # 兼容已有数据库：尝试加列，已存在则忽略
@@ -370,3 +378,25 @@ class Database:
         affected = cursor.rowcount
         conn.close()
         return affected > 0
+
+    # ============ 应用状态 KV ============
+
+    def set_state(self, key: str, value: str):
+        """写入/更新一条应用状态"""
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, datetime('now')) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+            (key, value)
+        )
+        conn.commit()
+        conn.close()
+
+    def get_state(self, key: str) -> Optional[str]:
+        """读取一条应用状态，不存在返回 None"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT value FROM app_state WHERE key = ?", (key,)
+        ).fetchone()
+        conn.close()
+        return row["value"] if row else None

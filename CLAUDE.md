@@ -41,7 +41,7 @@ Personal life-tracking assistant operated via Discord. Three services run concur
 2. **Scheduler** (`bot/scheduler.py`) - two concurrent loops sharing an `asyncio.Lock`:
    - **Timer loop**: random proactive check-ins (1-60 min) + bedtime reminders (22:30-00:00), pure in-memory countdown
    - **Reminder loop**: database reminders with precise countdown to next `trigger_time`, woken by `asyncio.Event` when new reminders are added
-3. **FastAPI server** (`api/server.py`) - read-only REST endpoints (`/api/timeline`, `/api/events`, `/api/categories`, `/api/memories`, `/api/reminders`). Serves a static frontend from `frontend/` at `/app/`.
+3. **FastAPI server** (`api/server.py`) - read-only REST endpoints (`/api/timeline`, `/api/events`, `/api/categories`, `/api/memories`, `/api/reminders`, `/api/todos`). Serves a static frontend from `frontend/` at `/app/`.
 
 ### AI Engine: Multi-Provider with Shared Base
 
@@ -71,9 +71,10 @@ The system prompt (`SYSTEM_PROMPT`) is also in `bot/tools.py`.
 
 SQLite at `data/life_tracker.db`, managed by `bot/database.py`:
 - `events` - timeline entries with `start_time`, `end_time`, `content`, `category`, `notes`, `session_id`
-- `messages` - conversation history (last 10-20 fetched per AI call)
+- `messages` - **backup only**; no longer read by the AI engines. Every user turn and assistant reply is still appended here for disaster recovery, but AI context is fetched live from Discord channel history (see below).
 - `reminders` - with `trigger_time`, `action`, `group_id`, `priority`, `status` (pending/triggered/cancelled)
 - `memories` - AI's persistent memory store
+- `todos` - slash-command managed todo list with `id`, `content`, `done` status
 
 When a reminder is added, `Database` fires `_on_reminder_added` callback to wake the scheduler's reminder loop via `asyncio.Event`.
 
@@ -82,6 +83,8 @@ Schema migrations are handled inline via `ALTER TABLE` with `try/except` for ide
 ### Key Design Decisions
 
 - **Single-user**: all Discord messages from non-`ALLOWED_USER_ID` users are silently ignored
+- **Conversation context from Discord, not DB**: callers (`discord_bot.on_message` for user turns, `scheduler._do_*` for polling/reminders) fetch the last 20 channel messages via `LifeTrackerBot._fetch_history_as_messages()` and pass them into `chat()` / `scheduled_action()`. The DB `messages` table is write-only backup. Slash-command outputs (`/todo`, `/weather`) remain in channel history and are included as `assistant`-role messages — `PROMPT_RESPONSE_GUIDELINES` explicitly tells the AI how to identify them so it doesn't mistake them for its own speech.
+- **Scheduler wiring**: `Scheduler` constructor takes both `send_callback` (`bot.send_proactive_message`) and `fetch_history_callback` (`bot.fetch_history_for_scheduler`). The fetch callback uses the bot's remembered `target_channel_id`; before any user has ever messaged the bot, it returns an empty history (polling will short-circuit via `allow_silent`).
 - **Dependency injection**: `Database` instance created once in `main.py`, passed to all components; FastAPI receives it via `set_database()`
 - **Event merging**: `bot/merge.py` merges adjacent events with same content+category into time segments for the `/api/timeline` endpoint
 - **Logging**: centralized in `bot/logger.py`. `main.py` calls `setup_logging()` before importing other modules; each module gets its own logger via `get_logger(__name__)`. All config (format, level, handlers) lives in `bot/logger.py` — change it in one place.

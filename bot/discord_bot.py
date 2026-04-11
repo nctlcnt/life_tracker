@@ -2,6 +2,7 @@
 Discord 机器人模块
 负责接收和发送 Discord 消息，注册斜杠命令
 """
+import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -32,6 +33,14 @@ class LifeTrackerBot(commands.Bot):
 
     async def on_ready(self):
         logger.info(f"✅ Discord Bot 已上线: {self.user}")
+        # 从 DB 恢复上次的目标频道，让 scheduler 在冷启动也能主动发消息
+        saved = self.db.get_state("target_channel_id")
+        if saved:
+            try:
+                self.target_channel_id = int(saved)
+                logger.info(f"📍 恢复目标频道: {saved}")
+            except ValueError:
+                logger.warning(f"⚠️ DB 里的 target_channel_id 不是数字: {saved!r}")
 
     async def on_message(self, message: discord.Message):
         # 忽略自己的消息
@@ -49,13 +58,16 @@ class LifeTrackerBot(commands.Bot):
 
         logger.info(f"📨 收到消息: {message.author} ({message.author.id}): {message.content}")
 
-        # 记住频道 ID，用于主动发消息
-        self.target_channel_id = message.channel.id
+        # 记住频道 ID，用于主动发消息 + 定时调度拉历史
+        # 切换到新频道时持久化到 DB，重启后 on_ready 能恢复
+        if self.target_channel_id != message.channel.id:
+            self.target_channel_id = message.channel.id
+            self.db.set_state("target_channel_id", str(message.channel.id))
 
         # 获取当前时间戳
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        # 处理回复（引用）消息
+        # 处理回复（引用）消息 — 只对当前这条消息做富化，历史不追溯
         content_to_send = message.content
         if message.reference and message.reference.message_id:
             try:
@@ -67,12 +79,23 @@ class LifeTrackerBot(commands.Bot):
             except Exception as e:
                 logger.warning(f"⚠️ 无法获取引用的消息: {e}")
 
+        # 当前用户消息（带时间戳前缀，和历史消息格式一致）
+        current_content = f"[{timestamp}] {content_to_send}"
+
+        # 备份到 DB（messages 表只作备份，AI 上下文走 Discord 历史）
+        self.db.add_message("user", current_content)
+
+        # 从 Discord 拉历史（排除当前这条，等下单独 append 富化版本）
+        history = await self._fetch_history_as_messages(
+            message.channel, limit=20, exclude_id=message.id
+        )
+        ai_messages = history + [{"role": "user", "content": current_content}]
+
         try:
             async def send_reply(text):
-                for chunk in _split_message(text):
-                    await message.channel.send(chunk)
+                await _send_chat_chunks(message.channel, text)
 
-            await chat(self.db, content_to_send, timestamp, send_callback=send_reply)
+            await chat(self.db, ai_messages, send_callback=send_reply)
         except Exception as e:
             error_msg = f"❌ {type(e).__name__}: {e}"
             logger.exception(error_msg)
@@ -86,8 +109,60 @@ class LifeTrackerBot(commands.Bot):
             return
         channel = self.get_channel(self.target_channel_id)
         if channel and isinstance(channel, (discord.TextChannel, discord.DMChannel)):
-            for chunk in _split_message(text):
-                await channel.send(chunk)
+            await _send_chat_chunks(channel, text)
+
+    async def _fetch_history_as_messages(
+        self, channel, limit: int = 20, exclude_id: int | None = None
+    ) -> list[dict]:
+        """
+        从 Discord 频道拉历史消息，转换为 AI 引擎期望的 [{role, content}] 格式。
+        - 时间顺序：从旧到新（Discord API 默认是新→旧，这里反转）
+        - 角色映射：bot 自己 → assistant；允许的用户 → user；其他忽略
+        - 消息类型：只保留 default 和 reply，过滤 pin/join 等系统条目
+        - 每条消息前缀 [timestamp]，格式和 on_message 里当前消息保持一致
+        - 斜杠命令的响应（/todo、/weather）也会保留在历史里作为 assistant 角色
+          —— 这是故意的，让 AI 看到用户刚刚查询的上下文；prompt 里已明确告知如何识别
+        """
+        try:
+            fetch_limit = limit + (1 if exclude_id else 0)
+            raw_messages = []
+            async for m in channel.history(limit=fetch_limit):
+                if exclude_id and m.id == exclude_id:
+                    continue
+                if m.type not in (discord.MessageType.default, discord.MessageType.reply):
+                    continue
+
+                # 角色映射
+                if self.user and m.author.id == self.user.id:
+                    role = "assistant"
+                elif config.ALLOWED_USER_ID and m.author.id == config.ALLOWED_USER_ID:
+                    role = "user"
+                else:
+                    continue  # 其他用户忽略（单用户限制）
+
+                # 时间戳前缀（转本地时区）
+                ts = m.created_at.astimezone().strftime("%Y-%m-%d %H:%M")
+                content = f"[{ts}] {m.content}" if m.content else f"[{ts}] "
+                raw_messages.append({"role": role, "content": content})
+
+            # Discord 返回的是新→旧，反转成时间顺序
+            raw_messages.reverse()
+            return raw_messages[-limit:]  # 保证不超过 limit
+        except Exception as e:
+            logger.warning(f"⚠️ 拉 Discord 历史失败，返回空历史: {e}")
+            return []
+
+    async def fetch_history_for_scheduler(self, limit: int = 20) -> list[dict]:
+        """
+        给 Scheduler 的历史拉取入口：用记忆中的 target_channel_id 定位频道。
+        Bot 启动后没人聊过任何消息的话，target_channel_id 还没设置，返回空历史。
+        """
+        if not self.target_channel_id:
+            return []
+        channel = self.get_channel(self.target_channel_id)
+        if not channel:
+            return []
+        return await self._fetch_history_as_messages(channel, limit=limit)
 
 
 def _todo_group(bot: LifeTrackerBot) -> app_commands.Group:
@@ -158,12 +233,40 @@ def _weather_command(bot: LifeTrackerBot) -> app_commands.Command:
     return weather
 
 
-def _split_message(text: str, limit: int = 2000) -> list[str]:
-    """将长消息拆分为 Discord 允许的长度"""
-    if len(text) <= limit:
-        return [text]
+def _split_for_chat(text: str, limit: int = 2000) -> list[str]:
+    """
+    把一段 AI 回复拆成多条 Discord 消息，模拟真实聊天节奏：
+    1. 先按换行符 \\n 切分，每一行当作一条独立消息
+    2. 去掉空行和首尾空白
+    3. 超长行再按 Discord 2000 字符上限兜底切分
+    """
     chunks = []
-    while text:
-        chunks.append(text[:limit])
-        text = text[limit:]
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        while len(line) > limit:
+            chunks.append(line[:limit])
+            line = line[limit:]
+        chunks.append(line)
     return chunks
+
+
+async def _send_chat_chunks(target, text: str) -> None:
+    """
+    按 _split_for_chat 拆分后依次发送，并在消息之间用 typing 指示器 + 小延迟
+    模拟打字节奏。第一条立刻发送，后续消息根据长度计算思考/打字时间。
+    target: 任何支持 .send() 和 .typing() 的 Discord 通道对象
+    """
+    chunks = _split_for_chat(text)
+    for i, chunk in enumerate(chunks):
+        if i > 0:
+            # 粗略模拟：基础 0.4s 思考 + 每字符 0.03s 打字，上限 2s
+            delay = min(0.4 + len(chunk) * 0.03, 2.0)
+            try:
+                async with target.typing():
+                    await asyncio.sleep(delay)
+            except Exception:
+                # typing() 某些通道类型可能不支持，退化为纯 sleep
+                await asyncio.sleep(delay)
+        await target.send(chunk)

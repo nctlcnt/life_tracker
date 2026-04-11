@@ -31,7 +31,12 @@ PROACTIVE_PROMPT = (
     "用户明确说了要睡觉 / 30分钟内刚聊过 / "
     "凌晨2点到早上8点\n\n"
     "大多数时候选 1-3，找个自然的切入点。"
-    "不要打招呼或问'在吗'，直接说内容。"
+    "不要打招呼或问'在吗'，直接说内容。\n\n"
+    "💬 **可以多发几条**：轮询是你主动发话，不是被动回复。"
+    "如果有合适的素材（比如她正在做的事 + 记忆里的 ddl + 随手关心），"
+    "可以用换行 `\\n` 分成 2-3 条小消息一起发出，每条一个小话题，"
+    "节奏更像真人的连珠炮而不是一大段。"
+    "但不要硬凑，没料就只发一条。"
 )
 
 REMINDER_PROMPT = (
@@ -50,13 +55,17 @@ BEDTIME_PROMPT = (
 
 
 class Scheduler:
-    def __init__(self, db: Database, send_callback):
+    def __init__(self, db: Database, send_callback, fetch_history_callback):
         """
         send_callback: 一个 async 函数，用于发送消息到 Discord
-        例如 bot.send_proactive_message
+            例如 bot.send_proactive_message
+        fetch_history_callback: 一个 async 函数 (limit: int) -> list[dict]，
+            从 Discord 拉对话历史交给 AI 引擎作上下文
+            例如 bot.fetch_history_for_scheduler
         """
         self.db = db
         self.send = send_callback
+        self.fetch_history = fetch_history_callback
         self._running = False
         self._ai_lock = asyncio.Lock()  # 防止 timer 和 reminder 循环同时调用 AI
         self._reminder_event = asyncio.Event()  # 新增提醒时唤醒 reminder 循环
@@ -143,8 +152,9 @@ class Scheduler:
         async with self._ai_lock:
             try:
                 prompt = PROACTIVE_PROMPT.format(timestamp=timestamp)
+                history = await self.fetch_history(limit=20)
                 reply = await scheduled_action(
-                    self.db, prompt, timestamp,
+                    self.db, prompt, timestamp, history,
                     send_callback=self.send, allow_silent=True
                 )
                 if reply:
@@ -157,8 +167,9 @@ class Scheduler:
         async with self._ai_lock:
             try:
                 prompt = BEDTIME_PROMPT.format(timestamp=timestamp)
+                history = await self.fetch_history(limit=20)
                 reply = await scheduled_action(
-                    self.db, prompt, timestamp,
+                    self.db, prompt, timestamp, history,
                     send_callback=self.send
                 )
                 if reply:
@@ -229,8 +240,9 @@ class Scheduler:
                     prompt = REMINDER_PROMPT.format(
                         timestamp=timestamp, action=context_action
                     )
+                    history = await self.fetch_history(limit=20)
                     reply = await scheduled_action(
-                        self.db, prompt, timestamp,
+                        self.db, prompt, timestamp, history,
                         send_callback=self.send
                     )
                     if reply and "[SILENT]" not in reply:
