@@ -124,7 +124,7 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
         # 中间轮：文本视为内心独白，不发给用户、不计入最终回复
         if response.stop_reason == "tool_use" and tool_uses:
             if round_text:
-                # 中间轮的 <think> 标签可有可无，有的话只记干净版本到日志
+                # 中间轮的 <think> 或 <thinking> 标签可有可无，有的话只记干净版本到日志
                 _u, _t = split_thinking(round_text)
                 logger.info(f"🧠 内心独白: {_t or _u or round_text}")
 

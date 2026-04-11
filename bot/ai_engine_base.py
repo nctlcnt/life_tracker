@@ -16,13 +16,13 @@ import config
 logger = get_logger(__name__)
 
 
-# 最后一轮输出里 AI 的内部思考要用 <think>...</think> 包起来。
+# 最后一轮输出里 AI 的内部思考要用 <think>...</think> 或 <thinking>...</thinking> 包起来。
 # 引擎在发送前调用 split_thinking() 剥离标签内容，只把标签外的纯文本发给用户。
-_THINK_BLOCK = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
+_THINK_BLOCK = re.compile(r"<(?:think|thinking)>(.*?)</(?:think|thinking)>", re.DOTALL | re.IGNORECASE)
 
 
 def split_thinking(text: str) -> tuple[str, str]:
-    """拆分 <think>...</think> 独白块和用户可见文本。
+    """拆分 <think>...</think> 或 <thinking>...</thinking> 独白块和用户可见文本。
     返回 (user_text, thinking_text)；两者都可能为空字符串。
     - user_text: 标签外的文字，清理掉多余空行，给用户看 / 写入 DB 备份
     - thinking_text: 标签内的文字，只用于日志追踪
