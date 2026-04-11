@@ -30,14 +30,19 @@ def _build_dynamic_context(db: Database, weather: str | None = None) -> str:
     # 进行中的事件
     ongoing = db.get_ongoing_events(limit=5)
     if ongoing:
-        lines = [
-            f"- [ID={e['id']}] {e['start_time']} | {e['category']} | {e['content']}"
-            + (f" | 备注: {e['notes']}" if e.get('notes') else "")
-            for e in ongoing
-        ]
+        lines = []
+        for e in ongoing:
+            parallel_tag = " [平行]" if e.get("is_parallel") else ""
+            line = f"- [ID={e['id']}]{parallel_tag} {e['start_time']} | {e['category']} | {e['content']}"
+            if e.get("notes"):
+                line += f" | 备注: {e['notes']}"
+            lines.append(line)
         parts.append(
-            f"【当前进行中的事件（end_time 为空）】\n" + "\n".join(lines) + "\n"
-            f"如果用户提到的活动与上述事件相同，请用 update_timeline_event 更新 end_time，不要新建。"
+            "【当前进行中的事件（end_time 为空）】\n" + "\n".join(lines) + "\n"
+            "⚠️ 新建事件前先扫一眼这里：\n"
+            "- 如果是同一件事的继续 → update_timeline_event 更新 end_time，不要新建\n"
+            "- 如果是同时进行的次要活动（一心二用） → log_timeline_event 加 is_parallel=true\n"
+            "- 如果发现已有完全重复的条目 → 用 delete_timeline_event 清理多余的那条"
         )
 
     # 待触发提醒计划
@@ -86,7 +91,8 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
             content=args["content"],
             category=args.get("category", "uncategorized"),
             notes=args.get("notes"),
-            session_id=args.get("session_id")
+            session_id=args.get("session_id"),
+            is_parallel=bool(args.get("is_parallel", False)),
         )
         old_id = args.get("session_id")
         if old_id:
@@ -116,9 +122,17 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
 
     elif tool_name == "update_timeline_event":
         fields = {k: args[k] for k in ("end_time", "content", "category", "notes") if k in args}
+        if "is_parallel" in args:
+            fields["is_parallel"] = 1 if bool(args["is_parallel"]) else 0
         ok = db.update_event(args["event_id"], **fields)
         if ok:
             return {"success": True, "message": "事件已更新"}
+        return {"success": False, "message": f"未找到 event_id={args['event_id']}"}
+
+    elif tool_name == "delete_timeline_event":
+        ok = db.delete_event(args["event_id"])
+        if ok:
+            return {"success": True, "message": "事件已删除"}
         return {"success": False, "message": f"未找到 event_id={args['event_id']}"}
 
     elif tool_name == "save_memory":

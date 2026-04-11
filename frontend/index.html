@@ -266,15 +266,78 @@
       opacity: .75;
     }
 
-    /* Parallel row */
-    .parallel-row {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
+    /* Parallel sub-cards attached to a main card */
+    .card-parallel-list {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
     }
 
-    .parallel-row .card {
-      border-left-width: 4px;
+    .card-parallel-list-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-muted);
+      letter-spacing: .5px;
+      text-transform: uppercase;
+      margin-bottom: 2px;
+    }
+
+    .parallel-chip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 10px;
+      border-radius: 8px;
+      background: var(--bg);
+      border-left: 3px solid #ccc;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .parallel-chip .p-sym {
+      font-size: 11px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .parallel-chip .p-content {
+      font-weight: 500;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .parallel-chip .p-time {
+      font-size: 10px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .parallel-chip .p-cat {
+      font-size: 10px;
+      font-weight: 600;
+      opacity: .75;
+      flex-shrink: 0;
+    }
+
+    /* Standalone parallel card when no overlapping main event */
+    .parallel-standalone {
+      background: var(--surface);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      border-left: 4px dashed #ccc;
+      padding: 10px 12px;
+      opacity: .85;
+    }
+
+    .parallel-standalone .card-header::before {
+      content: '∥ 平行 ';
+      font-size: 10px;
+      color: var(--text-muted);
+      font-weight: 600;
+      margin-right: 4px;
     }
 
     /* Wrapper for timeline items with gap between them */
@@ -554,7 +617,7 @@
       <div class="stats">
         <div class="stat-card">
           <span class="stat-value" id="stat-fragments">—</span>
-          <span class="stat-label">活动片段</span>
+          <span class="stat-label" id="stat-fragments-label">活动片段</span>
         </div>
         <div class="stat-card">
           <span class="stat-value" id="stat-switches">—</span>
@@ -683,35 +746,59 @@
     });
 
     // ─── Timeline tab ───
-    function groupOverlapping(events) {
-      if (!events.length) return [];
-      const groups = [];
-      let i = 0;
-      while (i < events.length) {
-        const group = [events[i]];
-        let maxEnd = events[i].end_time ? new Date(events[i].end_time) : null;
-        let j = i + 1;
-        while (j < events.length && maxEnd) {
-          const nextStart = new Date(events[j].start_time);
-          if (nextStart < maxEnd) {
-            group.push(events[j]);
-            const ne = events[j].end_time ? new Date(events[j].end_time) : null;
-            if (ne && ne > maxEnd) maxEnd = ne;
-            j++;
-          } else break;
-        }
-        groups.push(group);
-        i = j;
-      }
-      return groups;
+    // 判断两个事件的时间区间是否重叠（用于把平行事件附到主事件下面）
+    function isOverlap(a, b) {
+      const aStart = new Date(a.start_time).getTime();
+      const aEnd = a.end_time ? new Date(a.end_time).getTime() : Date.now();
+      const bStart = new Date(b.start_time).getTime();
+      const bEnd = b.end_time ? new Date(b.end_time).getTime() : Date.now();
+      return aStart < bEnd && bStart < aEnd;
     }
 
-    function renderCard(event) {
+    // 把平行事件匹配到它重叠的主事件上，没有重叠的就作为 standalone
+    function attachParallels(mainEvents, parallelEvents) {
+      const attached = mainEvents.map(e => ({ main: e, parallels: [] }));
+      const standalone = [];
+      for (const p of parallelEvents) {
+        // 找第一个时间重叠的主事件
+        const hostIdx = attached.findIndex(x => isOverlap(x.main, p));
+        if (hostIdx >= 0) {
+          attached[hostIdx].parallels.push(p);
+        } else {
+          standalone.push(p);
+        }
+      }
+      return { attached, standalone };
+    }
+
+    function renderParallelChip(event) {
+      const color = catColor(event.category);
+      const sec = durationSec(event.start_time, event.end_time);
+      const isOngoing = !event.end_time;
+      const timeStr = formatTime(event.start_time) +
+        (event.end_time ? '–' + formatTime(event.end_time) : '');
+      const durStr = isOngoing ? '进行中' : formatDuration(sec);
+      return `
+      <div class="parallel-chip" style="border-left-color:${color}">
+        <span class="p-sym">∥</span>
+        <span class="p-content">${escHtml(event.content)}</span>
+        <span class="p-cat" style="color:${color}">${escHtml(event.category)}</span>
+        <span class="p-time">${escHtml(timeStr)} · ${escHtml(durStr)}</span>
+      </div>`;
+    }
+
+    function renderCard(event, parallels = []) {
       const color = catColor(event.category);
       const sec = durationSec(event.start_time, event.end_time);
       const isOngoing = !event.end_time;
       const timeStr = formatTime(event.start_time) +
         (event.end_time ? ' – ' + formatTime(event.end_time) : '');
+
+      const parallelHtml = parallels.length ? `
+        <div class="card-parallel-list">
+          <div class="card-parallel-list-label">同时进行 · ${parallels.length}</div>
+          ${parallels.map(renderParallelChip).join('')}
+        </div>` : '';
 
       return `
       <div class="card" style="border-left-color:${color}">
@@ -724,20 +811,35 @@
         <div class="card-content">${escHtml(event.content)}</div>
         ${event.notes ? `<div class="card-notes">${escHtml(event.notes)}</div>` : ''}
         <div class="card-cat" style="color:${color}">${escHtml(event.category)}</div>
+        ${parallelHtml}
       </div>`;
     }
 
-    function renderGroup(group) {
-      if (group.length === 1) {
-        return `<div class="timeline-item">${renderCard(group[0])}</div>`;
-      }
-      const cards = group.map(renderCard).join('');
-      return `<div class="timeline-item"><div class="parallel-row">${cards}</div></div>`;
+    function renderStandaloneParallel(event) {
+      const color = catColor(event.category);
+      const sec = durationSec(event.start_time, event.end_time);
+      const isOngoing = !event.end_time;
+      const timeStr = formatTime(event.start_time) +
+        (event.end_time ? ' – ' + formatTime(event.end_time) : '');
+      return `
+      <div class="timeline-item">
+        <div class="parallel-standalone" style="border-left-color:${color}">
+          <div class="card-header">
+            <span class="card-time">${escHtml(timeStr)}</span>
+            ${isOngoing
+            ? '<span class="card-ongoing">● 进行中</span>'
+            : `<span class="card-duration">${formatDuration(sec)}</span>`}
+          </div>
+          <div class="card-content">${escHtml(event.content)}</div>
+          ${event.notes ? `<div class="card-notes">${escHtml(event.notes)}</div>` : ''}
+          <div class="card-cat" style="color:${color}">${escHtml(event.category)}</div>
+        </div>
+      </div>`;
     }
 
-    function renderSwitch(prevGroup, nextGroup) {
-      const from = prevGroup[0].category;
-      const to = nextGroup[0].category;
+    function renderSwitch(prevMain, nextMain) {
+      const from = prevMain.category;
+      const to = nextMain.category;
       if (from === to) return '';
       return `
       <div class="switch-marker">
@@ -766,24 +868,58 @@
       }
     }
 
-    function renderPage() {
-      const events = activeFilter === 'all' ? allEvents : allEvents.filter(e => e.category === activeFilter);
-      renderStats(allEvents);
-      renderFilterBar(allEvents);
-      renderTimeline(events);
+    function splitByParallel(events) {
+      const main = [];
+      const parallel = [];
+      for (const e of events) {
+        if (e.is_parallel) parallel.push(e);
+        else main.push(e);
+      }
+      return { main, parallel };
     }
 
-    function renderStats(events) {
-      const groups = groupOverlapping(events);
+    function renderPage() {
+      const { main: allMain, parallel: allParallel } = splitByParallel(allEvents);
+
+      let visibleMain, visibleParallel;
+      if (activeFilter === 'all') {
+        visibleMain = allMain;
+        visibleParallel = allParallel;
+      } else {
+        visibleMain = allMain.filter(e => e.category === activeFilter);
+        // 平行事件：要么自己是该分类，要么挂在一个被显示的主事件上
+        const shownMainSet = new Set(visibleMain);
+        visibleParallel = allParallel.filter(p =>
+          p.category === activeFilter || [...shownMainSet].some(m => isOverlap(m, p))
+        );
+      }
+
+      renderStats(allMain, allParallel);
+      renderFilterBar(allEvents);
+      renderTimeline(visibleMain, visibleParallel);
+    }
+
+    function renderStats(mainEvents, parallelEvents) {
+      // 注意力切换只按主轨道算（平行事件不算切换）
       let switches = 0;
-      for (let i = 1; i < groups.length; i++) {
-        if (groups[i - 1][0].category !== groups[i][0].category) switches++;
+      for (let i = 1; i < mainEvents.length; i++) {
+        if (mainEvents[i - 1].category !== mainEvents[i].category) switches++;
       }
       let studySec = 0;
-      for (const e of events) {
+      for (const e of mainEvents) {
         if (STUDY_CATS.has(e.category)) studySec += durationSec(e.start_time, e.end_time);
       }
-      document.getElementById('stat-fragments').textContent = events.length;
+      // 有效学习时长也把平行的学习类（不太常见但保留）加进去
+      for (const e of parallelEvents) {
+        if (STUDY_CATS.has(e.category)) studySec += durationSec(e.start_time, e.end_time);
+      }
+      document.getElementById('stat-fragments').textContent = mainEvents.length;
+      const label = document.getElementById('stat-fragments-label');
+      if (label) {
+        label.textContent = parallelEvents.length
+          ? `活动片段 · +${parallelEvents.length} 平行`
+          : '活动片段';
+      }
       document.getElementById('stat-switches').textContent = switches;
       document.getElementById('stat-study').textContent = studySec > 0 ? formatDuration(studySec) : '—';
     }
@@ -811,19 +947,24 @@
       });
     }
 
-    function renderTimeline(events) {
+    function renderTimeline(mainEvents, parallelEvents) {
       const tl = document.getElementById('timeline');
-      if (!events.length) {
+      if (!mainEvents.length && !parallelEvents.length) {
         tl.innerHTML = '<div class="empty">这天没有记录</div>';
         return;
       }
-      const groups = groupOverlapping(events);
+      const { attached, standalone } = attachParallels(mainEvents, parallelEvents);
       let html = '';
-      for (let i = 0; i < groups.length; i++) {
-        if (i > 0) html += renderSwitch(groups[i - 1], groups[i]);
-        html += renderGroup(groups[i]);
+      // 主轨道 + 挂在主事件上的平行事件
+      for (let i = 0; i < attached.length; i++) {
+        if (i > 0) html += renderSwitch(attached[i - 1].main, attached[i].main);
+        html += `<div class="timeline-item">${renderCard(attached[i].main, attached[i].parallels)}</div>`;
       }
-      tl.innerHTML = html;
+      // 没有重叠主事件的 standalone 平行事件（按时间插到最后）
+      for (const p of standalone) {
+        html += renderStandaloneParallel(p);
+      }
+      tl.innerHTML = html || '<div class="empty">这天没有记录</div>';
     }
 
     // ─── Date picker wiring ───

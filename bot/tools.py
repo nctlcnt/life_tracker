@@ -35,6 +35,10 @@ TOOLS = [
                     "category": {
                         "type": "string",
                         "description": "事件分类，例如：休息、工作、社交、生活、健康、娱乐、出行"
+                    },
+                    "is_parallel": {
+                        "type": "boolean",
+                        "description": "是否是平行事件（一心二用时的次要活动）。用户同时在做另一件事、但这是注意力较次要的那条线时填 true。例：一边吃饭一边看剧 → '吃饭' 正常记，'看剧' 用 is_parallel=true。默认 false。"
                     }
                 },
                 "required": ["start_time", "content", "category"]
@@ -159,6 +163,27 @@ TOOLS = [
                     "notes": {
                         "type": "string",
                         "description": "更新后的感想/备注"
+                    },
+                    "is_parallel": {
+                        "type": "boolean",
+                        "description": "修正事件的平行标记。通常不用改，除非之前记错了主/次活动。"
+                    }
+                },
+                "required": ["event_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_timeline_event",
+            "description": "删除一条已记录的时间轴事件。用于清理重复/错误/过时的记录。如果刚建完发现是重复，立即调用此工具删掉新建的那条。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_id": {
+                        "type": "integer",
+                        "description": "要删除的事件 ID（从 query_timeline 或 log_timeline_event 返回值中获取）"
                     }
                 },
                 "required": ["event_id"]
@@ -245,7 +270,7 @@ SCHEDULED_TOOL_NAMES = POLL_TOOL_NAMES | REMINDER_TOOL_NAMES
 # 且模型已经吐了文本回复，就可以跳过下一轮 API 请求以节省 token。
 # ⚠️ 新增写工具时记得加到这里，否则拿不到早退出收益。
 WRITE_ONLY_TOOL_NAMES = {
-    "log_timeline_event", "update_timeline_event",
+    "log_timeline_event", "update_timeline_event", "delete_timeline_event",
     "set_reminder", "cancel_reminders",
     "save_memory", "update_memory", "delete_memory",
 }
@@ -418,10 +443,32 @@ PROMPT_TOOL_GUIDELINES = """
 - content：简洁中文，动词+宾语
 - 没说结束时间就不填 end_time
 
-### 新建 vs 更新
+### 新建 vs 更新 vs 删除（重复检测）
 - 同一件事（"还在学习""学完了"）→ query → update
-- 新活动 → 检查有没有未结束的旧事件 → 有就先 update end_time → 再 log 新的
-- 不确定就新建，没关系
+- 新活动 → 检查【当前进行中的事件】有没有未结束的旧事件 → 有就先 update end_time → 再 log 新的
+- **重复检查**：在 log_timeline_event 之前，先看一眼【当前进行中的事件】和最近 query_timeline 的结果。
+  如果相同时间段已经有 content+category 完全相同的记录，**不要新建**，用 update 或直接跳过。
+- **发现重复就清理**：如果在 query_timeline 结果里看到历史有完全重复的条目（content+category+时间几乎一致），
+  用 delete_timeline_event 删掉多余的那条（保留较早或信息更完整的那条）。
+
+### 平行事件 / 一心二用
+有时候她同时在做两件事（一边吃饭一边看剧、一边洗澡一边听播客），两件事都值得记。
+
+**怎么记**：
+- 主活动（占主导注意力的那件）→ 正常 log_timeline_event
+- 次要活动（顺带做的那件）→ log_timeline_event 加 `is_parallel=true`
+
+**怎么判断哪个是主**：
+- 需要动手/动脑的 > 被动消费 → 吃饭 > 看剧
+- 有目的的 > 打发时间 → 洗澡 > 听播客
+- 不确定就都不标 parallel，记成两条独立活动也行
+
+**例子**：
+- "边吃晚饭边追剧" → log 吃晚饭（主）+ log 看剧（is_parallel=true）
+- "洗澡听播客" → log 洗澡（主）+ log 听播客（is_parallel=true）
+- "学完去吃饭" → 两条独立主活动，不是平行（是前后切换）
+
+**注意**：平行事件不会打断主时间线，也不计入注意力切换统计。只有在真的"同时发生"时才用。
 
 ### 短暂打断 vs 真正切换
 不是所有新活动都意味着上一件事结束了。
@@ -536,6 +583,10 @@ TOOLS_ANTHROPIC = [
                 "session_id": {
                     "type": "integer",
                     "description": "如果这是在恢复或继续之前的某个被打断的活动，填入之前那条活动记录的 event_id。如果是全新活动，可以放空。"
+                },
+                "is_parallel": {
+                    "type": "boolean",
+                    "description": "平行事件标记：用户一心二用时的次要活动。例：一边吃饭一边看剧 → '吃饭' 正常记，'看剧' 用 is_parallel=true。平行事件不会打断主活动的时间线，也不计入注意力切换。默认 false。"
                 }
             },
             "required": ["start_time", "content", "category"]
@@ -566,6 +617,24 @@ TOOLS_ANTHROPIC = [
                 "notes": {
                     "type": "string",
                     "description": "更新备注"
+                },
+                "is_parallel": {
+                    "type": "boolean",
+                    "description": "修正平行标记，通常不用改"
+                }
+            },
+            "required": ["event_id"]
+        }
+    },
+    {
+        "name": "delete_timeline_event",
+        "description": "删除一条已记录的时间轴事件。用于清理重复/错误/过时的记录。如果刚 log 完发现是重复，立即调用此工具删掉新建的那条。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event_id": {
+                    "type": "integer",
+                    "description": "要删除的事件 ID"
                 }
             },
             "required": ["event_id"]

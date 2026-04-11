@@ -90,6 +90,11 @@ class Database:
             conn.execute("ALTER TABLE events ADD COLUMN session_id INTEGER")
         except sqlite3.OperationalError:
             pass
+
+        try:
+            conn.execute("ALTER TABLE events ADD COLUMN is_parallel INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
             
         try:
             conn.execute("ALTER TABLE reminders ADD COLUMN group_id TEXT")
@@ -109,21 +114,54 @@ class Database:
 
     def add_event(self, start_time: str, end_time: Optional[str],
                   content: str, category: str = "uncategorized",
-                  notes: Optional[str] = None, session_id: Optional[int] = None) -> int:
+                  notes: Optional[str] = None, session_id: Optional[int] = None,
+                  is_parallel: bool = False) -> int:
         """添加一条时间轴事件，返回 event id"""
         conn = self._get_conn()
         cursor = conn.execute(
-            "INSERT INTO events (start_time, end_time, content, category, notes, session_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (start_time, end_time, content, category, notes, session_id)
+            "INSERT INTO events (start_time, end_time, content, category, notes, session_id, is_parallel) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (start_time, end_time, content, category, notes, session_id, 1 if is_parallel else 0)
         )
         conn.commit()
         event_id = cursor.lastrowid
         conn.close()
         return event_id
 
+    def delete_event(self, event_id: int) -> bool:
+        """删除一条时间轴事件。返回是否成功。"""
+        conn = self._get_conn()
+        cursor = conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
+    def find_similar_events(self, content: str, category: Optional[str],
+                            start: str, end: str) -> list[dict]:
+        """
+        在给定时间窗口内查找 content（和可选 category）相同的事件。
+        用于 AI 新建前的重复检测。content 必须完全匹配（已在 prompt 里要求保持简洁一致）。
+        """
+        conn = self._get_conn()
+        if category:
+            rows = conn.execute(
+                "SELECT * FROM events WHERE content = ? AND category = ? "
+                "AND start_time >= ? AND start_time <= ? ORDER BY start_time",
+                (content, category, start, end)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM events WHERE content = ? "
+                "AND start_time >= ? AND start_time <= ? ORDER BY start_time",
+                (content, start, end)
+            ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
     def update_event(self, event_id: int, **fields) -> bool:
         """更新指定事件的字段，只更新传入的字段。返回是否成功（event_id 存在）。"""
-        allowed = {"end_time", "content", "category", "notes", "session_id"}
+        allowed = {"end_time", "content", "category", "notes", "session_id", "is_parallel"}
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return False

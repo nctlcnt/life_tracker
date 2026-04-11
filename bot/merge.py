@@ -13,9 +13,19 @@ from datetime import datetime
 from typing import Optional
 
 
+def split_parallel(events: list[dict]) -> tuple[list[dict], list[dict]]:
+    """把事件列表拆成 (主轨道, 平行轨道) 两份，分别保持原有顺序。"""
+    main = [e for e in events if not e.get("is_parallel")]
+    parallel = [e for e in events if e.get("is_parallel")]
+    return main, parallel
+
+
 def merge_events(events: list[dict]) -> list[dict]:
     """
     将原始事件列表合并为不重叠的时间段。
+
+    注意：只处理主轨道事件（is_parallel=0）。平行事件请单独调用 merge_parallel_events。
+    这样平行事件不会打断主时间线的段合并。
 
     参数:
         events: get_events() 返回的原始事件列表（已按 start_time 排序）
@@ -30,14 +40,16 @@ def merge_events(events: list[dict]) -> list[dict]:
         - event_ids: 原始记录 ID 列表
         - check_in_count: 打卡次数
     """
-    if not events:
+    # 只保留主轨道，平行事件不参与主段合并
+    main_events = [e for e in events if not e.get("is_parallel")]
+    if not main_events:
         return []
 
     segments = []
-    current = _start_segment(events[0])
+    current = _start_segment(main_events[0])
 
-    for i in range(1, len(events)):
-        event = events[i]
+    for i in range(1, len(main_events)):
+        event = main_events[i]
 
         if _should_merge(current, event):
             # 同一活动，扩展当前段
@@ -51,6 +63,33 @@ def merge_events(events: list[dict]) -> list[dict]:
     # 最后一段
     segments.append(current)
 
+    return segments
+
+
+def merge_parallel_events(events: list[dict]) -> list[dict]:
+    """
+    对平行轨道做独立的段合并。只按相同 content+category 合并相邻记录，
+    不会像主轨道那样用"下一个不同事件的 start_time"自动补齐 end_time
+    （平行活动结束时间通常不明确，宁可留成进行中也不要瞎估）。
+    """
+    parallel_events = [e for e in events if e.get("is_parallel")]
+    if not parallel_events:
+        return []
+
+    segments = []
+    current = _start_segment(parallel_events[0])
+    current["is_parallel"] = True
+
+    for i in range(1, len(parallel_events)):
+        event = parallel_events[i]
+        if _should_merge(current, event):
+            _extend_segment(current, event)
+        else:
+            segments.append(current)
+            current = _start_segment(event)
+            current["is_parallel"] = True
+
+    segments.append(current)
     return segments
 
 
