@@ -6,6 +6,7 @@ AI 引擎公共模块
 - 工具执行
 - chat / scheduled_action 高层流程
 """
+import re
 from bot.tools import SYSTEM_PROMPT, POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, SCHEDULED_TOOL_NAMES
 from bot.weather import is_morning, get_weather_brief
 from bot.database import Database
@@ -13,6 +14,26 @@ from bot.logger import get_logger
 import config
 
 logger = get_logger(__name__)
+
+
+# 最后一轮输出里 AI 的内部思考要用 <think>...</think> 包起来。
+# 引擎在发送前调用 split_thinking() 剥离标签内容，只把标签外的纯文本发给用户。
+_THINK_BLOCK = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
+
+
+def split_thinking(text: str) -> tuple[str, str]:
+    """拆分 <think>...</think> 独白块和用户可见文本。
+    返回 (user_text, thinking_text)；两者都可能为空字符串。
+    - user_text: 标签外的文字，清理掉多余空行，给用户看 / 写入 DB 备份
+    - thinking_text: 标签内的文字，只用于日志追踪
+    """
+    if not text:
+        return "", ""
+    thinking_parts = [m.group(1).strip() for m in _THINK_BLOCK.finditer(text)]
+    cleaned = _THINK_BLOCK.sub("", text)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    thinking = "\n\n".join(p for p in thinking_parts if p)
+    return cleaned, thinking
 
 
 def _build_dynamic_context(db: Database, weather: str | None = None) -> str:
