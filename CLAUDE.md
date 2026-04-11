@@ -2,6 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+do use git to manage changes, and commit often with clear messages. The main branch should always be deployable.
+if several features are being developed in parallel, create separate branches and merge back to main when each is complete and tested.
+
 ## Commands
 
 **Install dependencies:**
