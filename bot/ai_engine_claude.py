@@ -7,7 +7,7 @@ from anthropic import AsyncAnthropic
 from bot.tools import TOOLS_ANTHROPIC, build_tool_round_hint
 from bot.database import Database
 from bot.ai_engine_base import (
-    _execute_tool,
+    _execute_tool, split_thinking,
     chat as _base_chat, scheduled_action as _base_scheduled_action,
     simple_completion as _base_simple_completion,
 )
@@ -112,15 +112,21 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
         # 最后一轮
         if response.stop_reason == "end_turn":
             if round_text:
-                if send_callback:
-                    await send_callback(round_text)
-                all_texts.append(round_text)
+                user_text, thinking = split_thinking(round_text)
+                if thinking:
+                    logger.info(f"🧠 最后一轮独白（已剥离）: {thinking}")
+                if user_text:
+                    if send_callback:
+                        await send_callback(user_text)
+                    all_texts.append(user_text)
             return "\n".join(all_texts)
 
         # 中间轮：文本视为内心独白，不发给用户、不计入最终回复
         if response.stop_reason == "tool_use" and tool_uses:
             if round_text:
-                logger.info(f"🧠 内心独白: {round_text}")
+                # 中间轮的 <think> 标签可有可无，有的话只记干净版本到日志
+                _u, _t = split_thinking(round_text)
+                logger.info(f"🧠 内心独白: {_t or _u or round_text}")
 
             # 把 assistant 的完整回复加入消息（包含 text + tool_use）
             messages.append({"role": "assistant", "content": response.content})

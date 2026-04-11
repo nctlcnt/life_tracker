@@ -7,7 +7,7 @@ import httpx
 from bot.tools import TOOLS, SYSTEM_PROMPT, build_tool_round_hint
 from bot.database import Database
 from bot.ai_engine_base import (
-    _execute_tool,
+    _execute_tool, split_thinking,
     chat as _base_chat, scheduled_action as _base_scheduled_action,
     simple_completion as _base_simple_completion,
 )
@@ -107,14 +107,19 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
             # 最后一轮（没有 tool_call）
             if not tool_calls:
                 if round_text:
-                    if send_callback:
-                        await send_callback(round_text)
-                    all_texts.append(round_text)
+                    user_text, thinking = split_thinking(round_text)
+                    if thinking:
+                        logger.info(f"🧠 最后一轮独白（已剥离）: {thinking}")
+                    if user_text:
+                        if send_callback:
+                            await send_callback(user_text)
+                        all_texts.append(user_text)
                 return "\n".join(all_texts)
 
             # 中间轮：文本视为内心独白，不发给用户、不计入最终回复
             if round_text:
-                logger.info(f"🧠 内心独白: {round_text}")
+                _u, _t = split_thinking(round_text)
+                logger.info(f"🧠 内心独白: {_t or _u or round_text}")
 
             # 把 assistant 的完整消息加入
             assistant_msg = {
