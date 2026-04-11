@@ -4,7 +4,7 @@ AI 引擎模块 (Claude 原生版)
 """
 import json
 from anthropic import AsyncAnthropic
-from bot.tools import TOOLS_ANTHROPIC, TOOL_ROUND_REMINDER
+from bot.tools import TOOLS_ANTHROPIC, build_tool_round_hint
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool,
@@ -117,21 +117,20 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                 all_texts.append(round_text)
             return "\n".join(all_texts)
 
-        # 中间轮：发送文本，继续处理 tool calling
+        # 中间轮：文本视为内心独白，不发给用户、不计入最终回复
         if response.stop_reason == "tool_use" and tool_uses:
             if round_text:
-                logger.info(f"💬 中间轮文本: {round_text}")
-                if send_callback:
-                    await send_callback(round_text)
-                all_texts.append(round_text)
+                logger.info(f"🧠 内心独白: {round_text}")
 
             # 把 assistant 的完整回复加入消息（包含 text + tool_use）
             messages.append({"role": "assistant", "content": response.content})
 
             # 执行每个 tool，收集结果
             tool_results = []
+            called_names = []
             for tool_use in tool_uses:
                 result = _execute_tool(db, tool_use.name, tool_use.input)
+                called_names.append(tool_use.name)
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_use.id,
@@ -139,11 +138,12 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                 })
 
             # 把 tool 结果作为 user 消息加入；同时附加一条 system 风格的 text block
-            # 提醒模型别在下一轮重复已经说过的话
+            # 提醒模型别在下一轮重复已经说过的话，并夹带命中工具的定向 post-hint
+            round_hint = build_tool_round_hint(called_names)
             messages.append({
                 "role": "user",
                 "content": tool_results + [
-                    {"type": "text", "text": TOOL_ROUND_REMINDER}
+                    {"type": "text", "text": round_hint}
                 ],
             })
 
