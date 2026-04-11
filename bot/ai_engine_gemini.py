@@ -4,8 +4,7 @@ AI 引擎模块 (Gemini 版本)
 """
 import httpx
 from bot.tools import (
-    TOOLS, TOOL_ROUND_REMINDER, SYSTEM_PROMPT_CONCISE,
-    WRITE_ONLY_TOOL_NAMES, PERSONA_MARKER,
+    TOOLS, build_tool_round_hint, SYSTEM_PROMPT_CONCISE, PERSONA_MARKER,
 )
 from bot.database import Database
 from bot.ai_engine_base import (
@@ -151,12 +150,9 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                     all_texts.append(round_text)
                 return "\n".join(all_texts)
 
-            # 中间轮：发送文本，继续处理 tool calling
+            # 中间轮：文本视为内心独白，不发给用户、不计入最终回复
             if round_text:
-                logger.info(f"💬 中间轮文本: {round_text}")
-                if send_callback:
-                    await send_callback(round_text)
-                all_texts.append(round_text)
+                logger.info(f"🧠 内心独白: {round_text}")
 
             current_messages.append({
                 "role": "model",
@@ -165,10 +161,12 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
 
             # 执行工具
             tool_responses = []
+            called_names = []
             for tc in tool_calls:
                 func_name = tc.get("name")
                 func_args = tc.get("args", {})
                 result = _execute_tool(db, func_name, func_args)
+                called_names.append(func_name)
                 tool_responses.append({
                     "functionResponse": {
                         "name": func_name,
@@ -176,19 +174,12 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                     }
                 })
             # 在 functionResponse 之后追加一条 text part 作为系统提示，
-            # 防止模型在下一轮重复之前已发送的内容
-            tool_responses.append({"text": TOOL_ROUND_REMINDER})
+            # 防止模型在下一轮重复之前已发送的内容；并夹带命中工具的定向 post-hint
+            tool_responses.append({"text": build_tool_round_hint(called_names)})
 
             current_messages.append({
                 "role": "user",
                 "content": tool_responses
             })
-
-            # 如果本次调用的全部是无状态的"单向写入工具"，且已有文本回复，
-            # 第二轮通常只会生成类似"好了"的废话废 token，直接提前结束
-            is_all_write = all(tc.get("name") in WRITE_ONLY_TOOL_NAMES for tc in tool_calls)
-            if is_all_write and round_text:
-                logger.info("⚡ 检测到全写入操作且已有文本回复，主动跳过后续无意义的 API 请求以节省 token")
-                return "\n".join(all_texts)
 
         return "\n".join(all_texts) or "（内部错误：工具调用次数过多）"

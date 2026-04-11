@@ -106,6 +106,29 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "delete_reminder",
+            "description": (
+                "按 reminder_id 精准删除单条 pending reminder。"
+                "主要用途：当你发现自己刚 set 了一条和已有内容重复的 reminder 时，"
+                "用这个工具把重复的那一条去掉。与 cancel_reminders 的区别："
+                "cancel_reminders 会清掉整个 group（多条），delete_reminder 只删指定的一条。"
+                "只对 status=pending 的条目生效。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reminder_id": {
+                        "type": "integer",
+                        "description": "要删除的 reminder id（从【待触发的跟进计划】或 list_reminders 结果中取）"
+                    }
+                },
+                "required": ["reminder_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_reminders",
             "description": "查看当前所有未完成的 reminder。当用户问'我还有什么安排/提醒'时调用。",
             "parameters": {
@@ -251,13 +274,13 @@ TOOLS = [
 
 # 随机轮询：主要是聊天、设提醒、管记忆
 POLL_TOOL_NAMES = {
-    "set_reminder", "query_timeline", "list_reminders",
+    "set_reminder", "delete_reminder", "query_timeline", "list_reminders",
     "save_memory", "delete_memory", "update_memory",
 }
 
 # 提醒触发：回应提醒、管记忆、取消后续提醒（禁止 set_reminder 防死循环）
 REMINDER_TOOL_NAMES = {
-    "query_timeline", "list_reminders", "cancel_reminders",
+    "query_timeline", "list_reminders", "cancel_reminders", "delete_reminder",
     "save_memory", "delete_memory", "update_memory",
 }
 
@@ -265,26 +288,60 @@ REMINDER_TOOL_NAMES = {
 # 主动聊天时可以 set_reminder，提醒触发时可以 cancel_reminders，按 prompt 类型动态选择
 SCHEDULED_TOOL_NAMES = POLL_TOOL_NAMES | REMINDER_TOOL_NAMES
 
-# 无状态的"单向写入工具"：调用后不需要模型再根据结果做后续判断。
-# 各引擎用这个集合做提前退出优化：如果某一轮 tool_calls 全部命中这里，
-# 且模型已经吐了文本回复，就可以跳过下一轮 API 请求以节省 token。
-# ⚠️ 新增写工具时记得加到这里，否则拿不到早退出收益。
-WRITE_ONLY_TOOL_NAMES = {
-    "log_timeline_event", "update_timeline_event", "delete_timeline_event",
-    "set_reminder", "cancel_reminders",
-    "save_memory", "update_memory", "delete_memory",
+# 多轮 tool 调用之间注入的系统提示：
+# 中间轮的文本是模型的内部独白（不发给用户），只有最后一轮（没有 tool_use 的那轮）
+# 的文字才会发给用户。这段提示在每轮 tool_result 之后追加。
+TOOL_ROUND_REMINDER = (
+    "[系统提示] 你在上一轮输出的文字是你的**内心独白 / 自言自语**，没有发给用户——"
+    "因为你还在 tool_use 流程里。独白是给你自己看的，你可以借它做推理、自检、决策。\n"
+    "只有当你**停止调用工具、在最后一轮输出纯文本**时，那段文字才会真正发给用户。\n"
+    "继续回复时：\n"
+    "1. 本轮如果还要调工具，可以继续写独白做思考，用户看不到\n"
+    "2. 如果要结束了，就停止调工具，在最后一轮写一段自然的话给用户看——"
+    "不要复读之前独白里的任何内容，不要留下「我刚才想了什么」的痕迹\n"
+    "3. 确实没话要对用户说，最后一轮空文本结束也可以（用户就不会收到回复）"
+)
+
+# 每个工具在 tool_result 之后可选的"定向后置提示"：当某一轮调用了这里列出的工具，
+# 引擎会把对应文本追加到 TOOL_ROUND_REMINDER 之后一起送回模型，作为下一轮的行动指引。
+# 作用：把"使用 X 工具后应该如何判断"这类规则精准投递，而不是塞进全局 system prompt。
+TOOL_POST_HINTS = {
+    "list_reminders": (
+        "[决策辅助] 你刚查了当前所有 pending reminder。如果你接下来准备 set_reminder：\n"
+        "- 同一件事必须复用已有 group_id，不要开新 group\n"
+        "- 如果清单里已有 action 相近且 trigger_time 在 ±30 分钟内的条目，"
+        "就**不要再 set 一次**，视为已经安排过了\n"
+        "- 如果要替换旧的（改时间/改内容），先 delete_reminder 掉旧 id（精准删单条）"
+        "或 cancel_reminders 掉整个旧 group，然后再 set 新的"
+    ),
+    "set_reminder": (
+        "[去重自检] 你刚写入了一条新 reminder。请立刻对比 system 里的【待触发的跟进计划】：\n"
+        "- 如果刚 set 的内容跟已有某条 group_id/action/时间高度重合，说明你重复设置了。"
+        "**立刻行动**：用 delete_reminder 精准删掉你判定为多余的那一条 id（新旧都可，"
+        "看哪条信息更全或时间更合理）。注意 set_reminder 只会新增不会覆盖，所以你必须"
+        "显式删除才算真的去重。\n"
+        "- 如果没有重复，直接结束本轮，不要输出任何道歉或解释，用户不需要感知到这次自检"
+    ),
 }
 
-# 多轮 tool 调用之间注入的系统提示，防止模型在 tool_result 后重复之前已发送的内容
-# 各引擎在每轮 tool_result 之后把这段文本作为系统/用户消息追加
-TOOL_ROUND_REMINDER = (
-    "[系统提示] 你在上一轮 tool_use 之前输出的文字已经即时发送给用户了。"
-    "继续回复时请遵守以下规则：\n"
-    "1. 不要重复任何已经说过的话，哪怕只是开头一句\n"
-    "2. 只输出新的信息：对工具结果的反应、后续话题、新的关心\n"
-    "3. 如果没有新内容要说，直接结束，不输出任何文本也完全可以\n"
-    "4. 最多一句简短确认（如 'ok'），通常连这个都不需要"
-)
+
+def build_tool_round_hint(tool_names_called) -> str:
+    """
+    构造 tool_result 后注入的系统提示：TOOL_ROUND_REMINDER + 命中的 per-tool hints。
+    tool_names_called: 本轮实际调用过的工具名（list/set 皆可，去重后匹配 TOOL_POST_HINTS）。
+    """
+    extras = []
+    seen = set()
+    for name in tool_names_called:
+        if name in seen:
+            continue
+        seen.add(name)
+        hint = TOOL_POST_HINTS.get(name)
+        if hint:
+            extras.append(hint)
+    if not extras:
+        return TOOL_ROUND_REMINDER
+    return TOOL_ROUND_REMINDER + "\n\n" + "\n\n".join(extras)
 
 # System Prompt - AI 的人设和行为规则模块化分离，以便部分轮次精简 Token
 
@@ -320,13 +377,20 @@ PROMPT_RESPONSE_GUIDELINES = """
 - ❌ "已设置1.5小时后的提醒"
 - ❌ "她还在外面溜达呢" ← 第三人称独白绝对不行
 
-**调用工具时产生的任何文本，都必须是直接对用户说的话，不是你的内心OS。**
+## 中间轮 vs 最后一轮（多轮 tool calling 机制）
 
-**多轮 tool 调用时不要重复自己**：当你在一轮里"写了文字 + 调用工具"，那段文字已经即时发送给用户了。收到 tool_result 后你继续输出的内容：
-- ❌ 绝对不要重复刚才 tool_use 之前说过的任何话（哪怕只是开头一句）
-- ✅ 只说**新**的信息：工具结果带来的新反应、后续要聊的话题、新的关心
-- ✅ 如果没有新内容要说，可以直接结束，不输出任何文本也没关系
-- ✅ 最多只说一小句确认（比如"ok"、"好了"），但通常连这个都不需要
+一次回复可能跨多个 AI 轮次：每次你输出 tool_use 就会触发一个新轮。直到你**停止调用工具、只输出纯文本**为止，那一轮才叫"最后一轮"。
+
+- **中间轮**（本轮里还有 tool_use / function_call）：你输出的文字是**内部思考 / 自言自语**，不会发给用户。可以放心做推理、自检、决策，例如：
+  - "这条 reminder 和 id=3 那条内容一样，应该 delete_reminder id=3"
+  - "她说'学完了'，先 query_timeline 看看开着的学习事件，再决定 update 哪条"
+  - 第三人称独白在中间轮**是允许的**，因为没人会看到
+- **最后一轮**（本轮没有 tool_use）：输出的文字才是真正发给用户的话。要像朋友发微信一样自然直接，**绝对不要**复读中间轮独白里的任何内容，也不要留下"我刚才想了什么"的痕迹。
+
+**实践建议**：
+- 中间轮尽量简短，只写决策和推理，能省就省
+- 最后一轮想说什么就说什么，没话说就空文本结束（用户就不会收到这次回复）
+- 不要在最后一轮说"好了"、"记好了"、"已经帮你 xxx 了"这种废话
 
 **说到就要做到**：用户让你提醒、记录、设置任何东西，你必须调用对应的工具。
 - ❌ "收到收到，交给我"但没调 set_reminder / save_memory
@@ -507,9 +571,12 @@ PROMPT_TOOL_GUIDELINES = """
 - normal：一般跟进
 - low：随意聊聊的话题、无关紧要的事
 
-### ⚠️ 禁止
+### ⚠️ 禁止 & 去重
 - 收到 [提醒触发] 后绝对不要再 set_reminder 同样的事（会死循环）
 - 用户说"做完了/考完了/不需要了" → 立即 cancel_reminders 该 group
+- **set_reminder 不会覆盖，只会新增**：如果你发现【待触发的跟进计划】里已经有相同或相近的 pending 条目，
+  优先"不 set"。万一已经 set 了多余的一条，立刻用 **delete_reminder** 按 id 删掉那一条
+  （不要用 cancel_reminders，它会一锅端整个 group）。
 
 ## 记忆管理
 
@@ -688,6 +755,26 @@ TOOLS_ANTHROPIC = [
                 }
             },
             "required": ["group_id"]
+        }
+    },
+    {
+        "name": "delete_reminder",
+        "description": (
+            "按 reminder_id 精准删除单条 pending reminder。"
+            "主要用途：当你发现自己刚 set 了一条和已有内容重复的 reminder 时，"
+            "用这个工具把重复的那一条去掉。与 cancel_reminders 的区别："
+            "cancel_reminders 会清掉整个 group（多条），delete_reminder 只删指定的一条。"
+            "只对 status=pending 的条目生效。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reminder_id": {
+                    "type": "integer",
+                    "description": "要删除的 reminder id（从【待触发的跟进计划】或 list_reminders 结果中取）"
+                }
+            },
+            "required": ["reminder_id"]
         }
     },
     {
