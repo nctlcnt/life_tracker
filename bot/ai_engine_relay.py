@@ -4,7 +4,8 @@ AI 引擎模块 (中转站版)
 """
 import json
 import httpx
-from bot.tools import TOOLS, SYSTEM_PROMPT, build_tool_round_hint
+from bot.tools import TOOLS
+from bot.prompts import build_tool_round_hint, SYSTEM_PROMPT_CONCISE, PERSONA_MARKER
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool, split_thinking,
@@ -56,6 +57,15 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
     if dynamic_context:
         full_system += "\n\n" + dynamic_context
 
+    # 中间轮精简版：去掉 TOOL_GUIDELINES 段，只留 PERSONA + RESPONSE_GUIDELINES + TIME_PERCEPTION
+    # Relay 没有 prompt caching，这个开关每个中间轮直接省下几千 token。
+    concise_switch = bool(system_prompt) and PERSONA_MARKER in system_prompt
+    concise_system = None
+    if concise_switch:
+        concise_system = SYSTEM_PROMPT_CONCISE
+        if dynamic_context:
+            concise_system += "\n\n" + dynamic_context
+
     # 按 tool_names 过滤工具子集
     tools = TOOLS
     if tool_names is not None:
@@ -65,7 +75,11 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
     all_texts = []  # 收集所有轮次的文本
 
     async with httpx.AsyncClient() as client:
-        for _ in range(5):
+        for round_idx in range(5):
+            # 中间轮换成精简 system，省掉每轮都重复讲的工具指南
+            if round_idx > 0 and concise_system is not None:
+                full_messages[0] = {"role": "system", "content": concise_system}
+
             payload = {
                 "model": model,
                 "max_tokens": 4096,

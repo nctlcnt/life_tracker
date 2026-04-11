@@ -11,47 +11,12 @@ from datetime import datetime, timedelta
 from bot.ai_engine import scheduled_action
 from bot.database import Database
 from bot.logger import get_logger
+from bot.prompts import PROACTIVE_PROMPT, REMINDER_PROMPT, BEDTIME_PROMPT
 import config
 
 logger = get_logger(__name__)
 
-
-# ── Prompt 模板 ──────────────────────────────────────────────
-
-PROACTIVE_PROMPT = (
-    "[系统轮询 {timestamp}]\n"
-    "现在是悉尼时间 {timestamp}。根据对话上下文、当前时间"
-    "和你的记忆，选择一个行动：\n\n"
-    "1. **聊几句**：接之前话题、随便扯点什么、"
-    "对她提到过的事表示好奇，像朋友发微信一样\n"
-    "2. **关心一下**：该吃饭了、该休息了、之前说哪里不舒服\n"
-    "3. **提一嘴记忆里的事**：临近的 deadline、"
-    "之前说要注意的事，自然带出来别像念清单\n"
-    "4. **[SILENT]**：仅限以下情况——"
-    "用户明确说了要睡觉 / 30分钟内刚聊过 / "
-    "凌晨2点到早上8点\n\n"
-    "大多数时候选 1-3，找个自然的切入点。"
-    "不要打招呼或问'在吗'，直接说内容。\n\n"
-    "💬 **可以多发几条**：轮询是你主动发话，不是被动回复。"
-    "如果有合适的素材（比如她正在做的事 + 记忆里的 ddl + 随手关心），"
-    "可以用换行 `\\n` 分成 2-3 条小消息一起发出，每条一个小话题，"
-    "节奏更像真人的连珠炮而不是一大段。"
-    "但不要硬凑，没料就只发一条。"
-)
-
-REMINDER_PROMPT = (
-    "[提醒触发 {timestamp}] 之前设置的提醒已到时间。\n"
-    "提醒内容：{action}\n"
-    "请根据这个提醒向用户发消息。\n"
-    "⚠️ 警告：这是最终触发回合，你必须直接在回复中说出提醒内容，"
-    "绝对不要用 set_reminder 再把同样的提醒设一遍！"
-)
-
-BEDTIME_PROMPT = (
-    "[睡前提醒 {timestamp}]\n"
-    "现在是悉尼时间 {timestamp}，提醒用户该睡觉了。\n"
-    "关心一下用户今天过得怎么样，语气自然温柔，不要说教。"
-)
+# Prompt 模板统一在 bot/prompts.py 里定义，避免多处重复维护同一条规则
 
 
 class Scheduler:
