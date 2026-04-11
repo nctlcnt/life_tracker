@@ -4,7 +4,8 @@ AI 引擎模块 (Claude 原生版)
 """
 import json
 from anthropic import AsyncAnthropic
-from bot.tools import TOOLS_ANTHROPIC, build_tool_round_hint
+from bot.tools import TOOLS_ANTHROPIC
+from bot.prompts import build_tool_round_hint
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool, split_thinking,

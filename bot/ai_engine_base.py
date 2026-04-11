@@ -7,7 +7,12 @@ AI 引擎公共模块
 - chat / scheduled_action 高层流程
 """
 import re
-from bot.tools import SYSTEM_PROMPT, POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, SCHEDULED_TOOL_NAMES
+from bot.tools import POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, SCHEDULED_TOOL_NAMES
+from bot.prompts import (
+    SYSTEM_PROMPT,
+    LABEL_MEMORIES, LABEL_ONGOING, LABEL_REMINDERS, LABEL_WEATHER,
+    WEATHER_CONTEXT_SUFFIX,
+)
 from bot.weather import is_morning, get_weather_brief
 from bot.database import Database
 from bot.logger import get_logger
@@ -39,6 +44,10 @@ def split_thinking(text: str) -> tuple[str, str]:
 def _build_dynamic_context(db: Database, weather: str | None = None) -> str:
     """
     构建动态上下文（记忆 + 进行中事件 + 待触发提醒 + 天气），每次调用注入。
+
+    ⚠️ 这里只放**数据本体**，不放规则文字。
+    "⚠️ 新建事件前先扫一眼这里 / ⚠️ 去重规则..." 这类规则 SYSTEM_PROMPT 的
+    TOOL_GUIDELINES 段已经讲过一次，每次请求都重复发送纯粹浪费 token。
     """
     parts = []
 
@@ -46,7 +55,7 @@ def _build_dynamic_context(db: Database, weather: str | None = None) -> str:
     memories = db.get_all_memories()
     if memories:
         lines = [f"- [id={m['id']}] {m['content']}" for m in memories]
-        parts.append("【你现在记着的事】\n" + "\n".join(lines))
+        parts.append(f"{LABEL_MEMORIES}\n" + "\n".join(lines))
 
     # 进行中的事件
     ongoing = db.get_ongoing_events(limit=5)
@@ -58,13 +67,7 @@ def _build_dynamic_context(db: Database, weather: str | None = None) -> str:
             if e.get("notes"):
                 line += f" | 备注: {e['notes']}"
             lines.append(line)
-        parts.append(
-            "【当前进行中的事件（end_time 为空）】\n" + "\n".join(lines) + "\n"
-            "⚠️ 新建事件前先扫一眼这里：\n"
-            "- 如果是同一件事的继续 → update_timeline_event 更新 end_time，不要新建\n"
-            "- 如果是同时进行的次要活动（一心二用） → log_timeline_event 加 is_parallel=true\n"
-            "- 如果发现已有完全重复的条目 → 用 delete_timeline_event 清理多余的那条"
-        )
+        parts.append(f"{LABEL_ONGOING}\n" + "\n".join(lines))
 
     # 待触发提醒计划
     reminders = db.list_active_reminders()
@@ -74,16 +77,11 @@ def _build_dynamic_context(db: Database, weather: str | None = None) -> str:
             f"(group: {r.get('group_id', '无')})"
             for r in reminders
         ]
-        parts.append(
-            "【待触发的跟进计划】\n" + "\n".join(lines) + "\n"
-            "⚠️ 去重规则：set_reminder 只新增不覆盖。打算新设前先扫这里——"
-            "同 group 或同内容+相近时间已经存在就不要再 set；"
-            "已经多设了就用 delete_reminder 按 id 精准删掉重复的那条。"
-        )
+        parts.append(f"{LABEL_REMINDERS}\n" + "\n".join(lines))
 
     # 天气（早上时段注入）
     if weather:
-        parts.append(f"【今日天气】\n{weather}\n可以自然地提一下天气，但不要像天气预报一样念数据。")
+        parts.append(f"{LABEL_WEATHER}\n{weather}\n{WEATHER_CONTEXT_SUFFIX}")
 
     return "\n\n".join(parts)
 

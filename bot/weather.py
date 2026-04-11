@@ -70,12 +70,6 @@ async def get_weather_brief() -> str | None:
         return None
 
 
-WEATHER_REPORT_PROMPT = """根据以下天气数据，用简洁自然的中文回复：
-1. 今天天气概况（一两句话）
-2. 穿衣建议（根据温度、体感温度、降雨概率推荐具体衣物）
-3. 出门注意事项（如果有的话，比如带伞、防晒等）
-
-语气像朋友随口说的，不要像天气预报播报。不要用 emoji。
-
-天气数据：
-{weather_data}"""
+# WEATHER_REPORT_PROMPT 已迁到 bot/prompts.py 与其它 prompt 集中管理
+# 历史的直接导入路径 `from bot.weather import WEATHER_REPORT_PROMPT` 改为
+# `from bot.prompts import WEATHER_REPORT_PROMPT`。
