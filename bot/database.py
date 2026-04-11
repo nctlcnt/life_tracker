@@ -265,6 +265,20 @@ class Database:
         conn.commit()
         conn.close()
 
+    def cancel_reminder_by_id(self, reminder_id: int) -> bool:
+        """按 id 精准取消单条 pending reminder（用于 AI 去重）。
+        只对 status='pending' 的条目生效；已触发/已取消的不会被重复动。
+        返回是否命中。"""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE reminders SET status = 'cancelled', done = 1 WHERE id = ? AND status = 'pending'",
+            (reminder_id,)
+        )
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
     def cancel_reminders_by_group(self, group_id: str) -> int:
         """取消某个 group 下所有 pending 的 reminder，返回取消条数"""
         if not group_id:
