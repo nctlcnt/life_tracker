@@ -48,8 +48,17 @@ def _build_dynamic_context(db: Database, weather: str | None = None) -> str:
     # 待触发提醒计划
     reminders = db.list_active_reminders()
     if reminders:
-        lines = [f"- [{r['priority']}] {r['trigger_time']} | {r['action']} (group: {r.get('group_id', '无')})" for r in reminders]
-        parts.append("【待触发的跟进计划】\n" + "\n".join(lines))
+        lines = [
+            f"- [id={r['id']}] [{r['priority']}] {r['trigger_time']} | {r['action']} "
+            f"(group: {r.get('group_id', '无')})"
+            for r in reminders
+        ]
+        parts.append(
+            "【待触发的跟进计划】\n" + "\n".join(lines) + "\n"
+            "⚠️ 去重规则：set_reminder 只新增不覆盖。打算新设前先扫这里——"
+            "同 group 或同内容+相近时间已经存在就不要再 set；"
+            "已经多设了就用 delete_reminder 按 id 精准删掉重复的那条。"
+        )
 
     # 天气（早上时段注入）
     if weather:
@@ -111,6 +120,14 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
     elif tool_name == "cancel_reminders":
         count = db.cancel_reminders_by_group(args.get("group_id"))
         return {"success": True, "cancelled_count": count, "message": "相关提醒已取消"}
+
+    elif tool_name == "delete_reminder":
+        rid = args.get("reminder_id")
+        ok = db.cancel_reminder_by_id(rid)
+        if ok:
+            return {"success": True, "reminder_id": rid, "message": "该条 reminder 已删除"}
+        return {"success": False, "reminder_id": rid,
+                "message": f"未找到 status=pending 的 reminder id={rid}（可能已触发或已取消）"}
 
     elif tool_name == "list_reminders":
         rems = db.list_active_reminders()

@@ -106,6 +106,29 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "delete_reminder",
+            "description": (
+                "按 reminder_id 精准删除单条 pending reminder。"
+                "主要用途：当你发现自己刚 set 了一条和已有内容重复的 reminder 时，"
+                "用这个工具把重复的那一条去掉。与 cancel_reminders 的区别："
+                "cancel_reminders 会清掉整个 group（多条），delete_reminder 只删指定的一条。"
+                "只对 status=pending 的条目生效。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reminder_id": {
+                        "type": "integer",
+                        "description": "要删除的 reminder id（从【待触发的跟进计划】或 list_reminders 结果中取）"
+                    }
+                },
+                "required": ["reminder_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_reminders",
             "description": "查看当前所有未完成的 reminder。当用户问'我还有什么安排/提醒'时调用。",
             "parameters": {
@@ -251,13 +274,13 @@ TOOLS = [
 
 # 随机轮询：主要是聊天、设提醒、管记忆
 POLL_TOOL_NAMES = {
-    "set_reminder", "query_timeline", "list_reminders",
+    "set_reminder", "delete_reminder", "query_timeline", "list_reminders",
     "save_memory", "delete_memory", "update_memory",
 }
 
 # 提醒触发：回应提醒、管记忆、取消后续提醒（禁止 set_reminder 防死循环）
 REMINDER_TOOL_NAMES = {
-    "query_timeline", "list_reminders", "cancel_reminders",
+    "query_timeline", "list_reminders", "cancel_reminders", "delete_reminder",
     "save_memory", "delete_memory", "update_memory",
 }
 
@@ -548,9 +571,12 @@ PROMPT_TOOL_GUIDELINES = """
 - normal：一般跟进
 - low：随意聊聊的话题、无关紧要的事
 
-### ⚠️ 禁止
+### ⚠️ 禁止 & 去重
 - 收到 [提醒触发] 后绝对不要再 set_reminder 同样的事（会死循环）
 - 用户说"做完了/考完了/不需要了" → 立即 cancel_reminders 该 group
+- **set_reminder 不会覆盖，只会新增**：如果你发现【待触发的跟进计划】里已经有相同或相近的 pending 条目，
+  优先"不 set"。万一已经 set 了多余的一条，立刻用 **delete_reminder** 按 id 删掉那一条
+  （不要用 cancel_reminders，它会一锅端整个 group）。
 
 ## 记忆管理
 
@@ -729,6 +755,26 @@ TOOLS_ANTHROPIC = [
                 }
             },
             "required": ["group_id"]
+        }
+    },
+    {
+        "name": "delete_reminder",
+        "description": (
+            "按 reminder_id 精准删除单条 pending reminder。"
+            "主要用途：当你发现自己刚 set 了一条和已有内容重复的 reminder 时，"
+            "用这个工具把重复的那一条去掉。与 cancel_reminders 的区别："
+            "cancel_reminders 会清掉整个 group（多条），delete_reminder 只删指定的一条。"
+            "只对 status=pending 的条目生效。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reminder_id": {
+                    "type": "integer",
+                    "description": "要删除的 reminder id（从【待触发的跟进计划】或 list_reminders 结果中取）"
+                }
+            },
+            "required": ["reminder_id"]
         }
     },
     {
