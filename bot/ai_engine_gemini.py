@@ -3,14 +3,17 @@ AI 引擎模块 (Gemini 版本)
 负责调用 Google Gemini API，处理 tool calling
 """
 import httpx
-from bot.tools import TOOLS
+from bot.tools import TOOLS, TOOL_ROUND_REMINDER
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool,
     chat as _base_chat, scheduled_action as _base_scheduled_action,
     simple_completion as _base_simple_completion,
 )
+from bot.logger import get_logger
 import config
+
+logger = get_logger(__name__)
 
 
 async def chat(db: Database, user_message: str, timestamp: str,
@@ -105,7 +108,7 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
 
             resp = await client.post(url, json=gemini_payload, timeout=60.0)
             if resp.status_code != 200:
-                print(f"❌ Gemini API Error: {resp.text}")
+                logger.error(f"❌ Gemini API Error: {resp.text}")
                 return f"（内部错误：API 请求失败 {resp.status_code}）"
 
             data = resp.json()
@@ -138,7 +141,7 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
 
             # 中间轮：发送文本，继续处理 tool calling
             if round_text:
-                print(f"💬 中间轮文本: {round_text}")
+                logger.info(f"💬 中间轮文本: {round_text}")
                 if send_callback:
                     await send_callback(round_text)
                 all_texts.append(round_text)
@@ -160,6 +163,9 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                         "response": result
                     }
                 })
+            # 在 functionResponse 之后追加一条 text part 作为系统提示，
+            # 防止模型在下一轮重复之前已发送的内容
+            tool_responses.append({"text": TOOL_ROUND_REMINDER})
 
             current_messages.append({
                 "role": "user",

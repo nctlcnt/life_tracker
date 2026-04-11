@@ -9,7 +9,10 @@ from datetime import datetime
 from bot.ai_engine import chat, simple_completion
 from bot.weather import get_weather_brief, WEATHER_REPORT_PROMPT
 from bot.database import Database
+from bot.logger import get_logger
 import config
+
+logger = get_logger(__name__)
 
 
 class LifeTrackerBot(commands.Bot):
@@ -25,10 +28,10 @@ class LifeTrackerBot(commands.Bot):
         self.tree.add_command(_todo_group(self))
         self.tree.add_command(_weather_command(self))
         await self.tree.sync()
-        print("✅ 斜杠命令已同步")
+        logger.info("✅ 斜杠命令已同步")
 
     async def on_ready(self):
-        print(f"✅ Discord Bot 已上线: {self.user}")
+        logger.info(f"✅ Discord Bot 已上线: {self.user}")
 
     async def on_message(self, message: discord.Message):
         # 忽略自己的消息
@@ -44,7 +47,7 @@ class LifeTrackerBot(commands.Bot):
         if message.content.startswith("/"):
             return
 
-        print(f"📨 收到消息: {message.author} ({message.author.id}): {message.content}")
+        logger.info(f"📨 收到消息: {message.author} ({message.author.id}): {message.content}")
 
         # 记住频道 ID，用于主动发消息
         self.target_channel_id = message.channel.id
@@ -62,7 +65,7 @@ class LifeTrackerBot(commands.Bot):
                     author_name = "你说过" if ref_msg.author == self.user else "我曾发过"
                     content_to_send = f'[回复 {author_name} 的消息: "{quote}"]\n{message.content}'
             except Exception as e:
-                print(f"⚠️ 无法获取引用的消息: {e}")
+                logger.warning(f"⚠️ 无法获取引用的消息: {e}")
 
         try:
             async def send_reply(text):
@@ -72,7 +75,7 @@ class LifeTrackerBot(commands.Bot):
             await chat(self.db, content_to_send, timestamp, send_callback=send_reply)
         except Exception as e:
             error_msg = f"❌ {type(e).__name__}: {e}"
-            print(error_msg)
+            logger.exception(error_msg)
             await message.channel.send(error_msg[:2000])
 
     async def send_proactive_message(self, text: str):

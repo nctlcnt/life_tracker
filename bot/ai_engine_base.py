@@ -9,7 +9,10 @@ AI 引擎公共模块
 from bot.tools import SYSTEM_PROMPT, POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, SCHEDULED_TOOL_NAMES
 from bot.weather import is_morning, get_weather_brief
 from bot.database import Database
+from bot.logger import get_logger
 import config
+
+logger = get_logger(__name__)
 
 
 def _build_dynamic_context(db: Database, weather: str | None = None) -> str:
@@ -164,9 +167,6 @@ async def chat(db: Database, user_message: str, timestamp: str,
     处理用户消息的完整流程。
     call_with_tools_fn: 各引擎的 _call_with_tools 实现。
     """
-    # 先登记为待处理，防止 AI 调用失败时消息丢失
-    pending_id = db.add_pending_message(user_message, timestamp)
-
     # 保存用户消息到对话记录
     db.add_message("user", f"[{timestamp}] {user_message}")
 
@@ -179,18 +179,6 @@ async def chat(db: Database, user_message: str, timestamp: str,
     # 构建动态上下文
     dynamic_ctx = _build_dynamic_context(db, weather=weather)
 
-    # 检查是否有历史未处理消息
-    pending = db.get_pending_messages()
-    earlier_pending = pending[:-1] if pending else []
-    if earlier_pending:
-        lines = "\n".join(
-            f"- [{p['timestamp']}] {p['content']}" for p in earlier_pending
-        )
-        if dynamic_ctx:
-            dynamic_ctx += f"\n\n【注意】以下消息之前因服务不可用未能处理，请一并处理：\n{lines}"
-        else:
-            dynamic_ctx = f"【注意】以下消息之前因服务不可用未能处理，请一并处理：\n{lines}"
-
     # 调用大模型（可能需要多轮 tool calling）
     reply = await call_with_tools_fn(
         db, SYSTEM_PROMPT, messages,
@@ -201,9 +189,6 @@ async def chat(db: Database, user_message: str, timestamp: str,
 
     # 保存 AI 回复到数据库
     db.add_message("assistant", reply)
-
-    # 处理成功，删除 pending 记录
-    db.delete_pending_message(pending_id)
 
     return reply
 

@@ -5,6 +5,9 @@
 import httpx
 from datetime import datetime
 from typing import Optional
+from bot.logger import get_logger
+
+logger = get_logger(__name__)
 
 # 悉尼，AEST
 CITY = "Sydney"
@@ -63,7 +66,7 @@ async def get_weather_brief() -> str | None:
 
             return brief
     except Exception as e:
-        print(f"⚠️ 天气查询失败: {e}")
+        logger.warning(f"⚠️ 天气查询失败: {e}")
         return None
 
 

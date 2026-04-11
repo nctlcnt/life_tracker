@@ -54,13 +54,6 @@ class Database:
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
-            -- 未处理消息表（AI 不可见，和聊天记录隔离）
-            CREATE TABLE IF NOT EXISTS pending_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                content TEXT NOT NULL,
-                timestamp TEXT NOT NULL
-            );
-
             -- 记忆表（AI 的持久记忆）
             CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -281,36 +274,6 @@ class Database:
         ).fetchone()
         conn.close()
         return row["next_time"] if row and row["next_time"] else None
-
-    # ============ 未处理消息队列 ============
-
-    def add_pending_message(self, content: str, timestamp: str) -> int:
-        """记录一条因服务不可用而未能处理的用户消息"""
-        conn = self._get_conn()
-        cursor = conn.execute(
-            "INSERT INTO pending_messages (content, timestamp) VALUES (?, ?)",
-            (content, timestamp)
-        )
-        conn.commit()
-        pending_id = cursor.lastrowid
-        conn.close()
-        return pending_id
-
-    def get_pending_messages(self) -> list[dict]:
-        """获取所有未处理的消息，按时间正序"""
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM pending_messages ORDER BY id"
-        ).fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
-
-    def delete_pending_message(self, pending_id: int):
-        """删除一条已处理的待处理消息"""
-        conn = self._get_conn()
-        conn.execute("DELETE FROM pending_messages WHERE id = ?", (pending_id,))
-        conn.commit()
-        conn.close()
 
     # ============ 记忆系统 ============
 

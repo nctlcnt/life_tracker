@@ -28,3 +28,7 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "data", "life_tracker.db")
 # 随机轮询间隔范围（秒）
 POLL_MIN_SECONDS = 60      # 最短 1 分钟
 POLL_MAX_SECONDS = 3600    # 最长 60 分钟
+
+# 日志配置
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_FILE = os.getenv("LOG_FILE") or None  # 留空只输出 stdout（Docker 友好）

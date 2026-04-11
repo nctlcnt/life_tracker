@@ -8,6 +8,9 @@ AI 引擎路由模块
 外部只需 from bot.ai_engine import chat, scheduled_action, simple_completion
 """
 import config
+from bot.logger import get_logger
+
+logger = get_logger(__name__)
 
 _provider = config.AI_PROVIDER.lower().strip()
 
@@ -19,4 +22,4 @@ else:
     # 默认 claude
     from bot.ai_engine_claude import chat, scheduled_action, simple_completion
 
-print(f"🧠 AI 引擎: {_provider} (chat={config.CHAT_MODEL}, poll={config.POLL_MODEL})")
+logger.info(f"🧠 AI 引擎: {_provider} (chat={config.CHAT_MODEL}, poll={config.POLL_MODEL})")

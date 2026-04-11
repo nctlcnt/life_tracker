@@ -10,7 +10,10 @@ import random
 from datetime import datetime, timedelta
 from bot.ai_engine import scheduled_action
 from bot.database import Database
+from bot.logger import get_logger
 import config
+
+logger = get_logger(__name__)
 
 
 # ── Prompt 模板 ──────────────────────────────────────────────
@@ -65,7 +68,7 @@ class Scheduler:
     async def start(self):
         """启动所有定时任务"""
         self._running = True
-        print("⏰ 定时调度器已启动")
+        logger.info("⏰ 定时调度器已启动")
         await asyncio.gather(
             self._timer_loop(),
             self._reminder_loop(),
@@ -104,7 +107,7 @@ class Scheduler:
                 wait = 1  # 避免负数
 
             label = "轮询" if action_type == "poll" else "睡前提醒"
-            print(f"🔄 下次{label}在 {next_time.strftime('%H:%M:%S')} ({int(wait)}s 后)")
+            logger.info(f"🔄 下次{label}在 {next_time.strftime('%H:%M:%S')} ({int(wait)}s 后)")
             await asyncio.sleep(wait)
 
             if not self._running:
@@ -145,9 +148,9 @@ class Scheduler:
                     send_callback=self.send, allow_silent=True
                 )
                 if reply:
-                    print(f"📤 主动发送: {reply[:50]}...")
+                    logger.info(f"📤 主动发送: {reply[:50]}...")
             except Exception as e:
-                print(f"❌ 轮询出错: {e}")
+                logger.exception(f"❌ 轮询出错: {e}")
 
     async def _do_bedtime_reminder(self, timestamp: str):
         """执行睡前提醒"""
@@ -159,9 +162,9 @@ class Scheduler:
                     send_callback=self.send
                 )
                 if reply:
-                    print(f"😴 睡前提醒: {reply[:50]}...")
+                    logger.info(f"😴 睡前提醒: {reply[:50]}...")
             except Exception as e:
-                print(f"❌ 睡前提醒出错: {e}")
+                logger.exception(f"❌ 睡前提醒出错: {e}")
 
     # ── Reminder 循环：数据库提醒，倒计时 + Event 唤醒 ────────
 
@@ -180,18 +183,18 @@ class Scheduler:
             if next_time_str:
                 next_time = datetime.fromisoformat(next_time_str)
                 wait = max((next_time - datetime.now()).total_seconds(), 0)
-                print(f"⏰ 下条提醒在 {next_time_str} ({int(wait)}s 后)")
+                logger.info(f"⏰ 下条提醒在 {next_time_str} ({int(wait)}s 后)")
             else:
                 # 没有待触发的提醒，等 event 唤醒
                 wait = 3600  # 最多等 1 小时再检查一次
-                print(f"⏰ 暂无提醒，等待新增...")
+                logger.info("⏰ 暂无提醒，等待新增...")
 
             # 等 sleep 到期 或 event 触发（新增提醒）
             self._reminder_event.clear()
             try:
                 await asyncio.wait_for(self._reminder_event.wait(), timeout=wait)
                 # event 触发了 → 有新提醒插入，回到循环顶部重新算
-                print(f"⏰ 收到新提醒通知，重新计算...")
+                logger.info("⏰ 收到新提醒通知，重新计算...")
             except asyncio.TimeoutError:
                 # sleep 到期 → 继续处理到期提醒
                 pass
@@ -231,6 +234,6 @@ class Scheduler:
                         send_callback=self.send
                     )
                     if reply and "[SILENT]" not in reply:
-                        print(f"🔔 提醒发送: {reply[:50]}...")
+                        logger.info(f"🔔 提醒发送: {reply[:50]}...")
                 except Exception as e:
-                    print(f"❌ 提醒处理出错: {e}")
+                    logger.exception(f"❌ 提醒处理出错: {e}")

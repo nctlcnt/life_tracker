@@ -4,14 +4,17 @@ AI 引擎模块 (Claude 原生版)
 """
 import json
 from anthropic import AsyncAnthropic
-from bot.tools import TOOLS_ANTHROPIC
+from bot.tools import TOOLS_ANTHROPIC, TOOL_ROUND_REMINDER
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool,
     chat as _base_chat, scheduled_action as _base_scheduled_action,
     simple_completion as _base_simple_completion,
 )
+from bot.logger import get_logger
 import config
+
+logger = get_logger(__name__)
 
 client = AsyncAnthropic(
     api_key=config.AI_API_KEY
@@ -80,8 +83,8 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
 
         response = await client.messages.create(**kwargs)
 
-        print(f"🤖 stop_reason: {response.stop_reason}")
-        print(f"🤖 content: {response.content}")
+        logger.info(f"🤖 stop_reason: {response.stop_reason}")
+        logger.info(f"🤖 content: {response.content}")
 
         # Token usage & prompt caching 验证
         if hasattr(response, 'usage'):
@@ -89,10 +92,10 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
             cache_create = getattr(u, 'cache_creation_input_tokens', 0) or 0
             cache_read = getattr(u, 'cache_read_input_tokens', 0) or 0
             total_input = u.input_tokens + cache_create + cache_read
-            print(f"📊 Token usage: input={u.input_tokens}, output={u.output_tokens}, total_input={total_input}")
-            print(f"   cache_creation={cache_create}, cache_read={cache_read}")
+            logger.info(f"📊 Token usage: input={u.input_tokens}, output={u.output_tokens}, total_input={total_input}")
+            logger.info(f"   cache_creation={cache_create}, cache_read={cache_read}")
             if total_input > 0:
-                print(f"   cache_hit_rate={cache_read / total_input * 100:.1f}%")
+                logger.info(f"   cache_hit_rate={cache_read / total_input * 100:.1f}%")
 
         # 提取文本回复和 tool 调用
         text_parts = []
@@ -116,7 +119,7 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
         # 中间轮：发送文本，继续处理 tool calling
         if response.stop_reason == "tool_use" and tool_uses:
             if round_text:
-                print(f"💬 中间轮文本: {round_text}")
+                logger.info(f"💬 中间轮文本: {round_text}")
                 if send_callback:
                     await send_callback(round_text)
                 all_texts.append(round_text)
@@ -134,7 +137,13 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                     "content": json.dumps(result, ensure_ascii=False)
                 })
 
-            # 把 tool 结果作为 user 消息加入
-            messages.append({"role": "user", "content": tool_results})
+            # 把 tool 结果作为 user 消息加入；同时附加一条 system 风格的 text block
+            # 提醒模型别在下一轮重复已经说过的话
+            messages.append({
+                "role": "user",
+                "content": tool_results + [
+                    {"type": "text", "text": TOOL_ROUND_REMINDER}
+                ],
+            })
 
     return "（内部错误：工具调用次数过多）"

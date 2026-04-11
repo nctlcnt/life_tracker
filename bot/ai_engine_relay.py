@@ -4,14 +4,17 @@ AI 引擎模块 (中转站版)
 """
 import json
 import httpx
-from bot.tools import TOOLS, SYSTEM_PROMPT
+from bot.tools import TOOLS, SYSTEM_PROMPT, TOOL_ROUND_REMINDER
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool,
     chat as _base_chat, scheduled_action as _base_scheduled_action,
     simple_completion as _base_simple_completion,
 )
+from bot.logger import get_logger
 import config
+
+logger = get_logger(__name__)
 
 
 async def chat(db: Database, user_message: str, timestamp: str,
@@ -45,7 +48,7 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
         "Content-Type": "application/json"
     }
 
-    print(f"🌐 Relay URL: {url}")
+    logger.info(f"🌐 Relay URL: {url}")
 
     # system prompt 合并动态上下文
     full_system = system_prompt
@@ -72,20 +75,20 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
 
             resp = await client.post(url, json=payload, headers=headers, timeout=120.0)
 
-            print(f"🌐 Relay status: {resp.status_code}")
-            print(f"🌐 Relay body (first 500): {resp.text[:500]}")
+            logger.info(f"🌐 Relay status: {resp.status_code}")
+            logger.info(f"🌐 Relay body (first 500): {resp.text[:500]}")
 
             if resp.status_code != 200:
-                print(f"❌ Relay API Error ({resp.status_code}): {resp.text[:500]}")
+                logger.error(f"❌ Relay API Error ({resp.status_code}): {resp.text[:500]}")
                 return f"（内部错误：中转站 API 请求失败 {resp.status_code}）"
 
             try:
                 data = resp.json()
             except Exception as e:
-                print(f"❌ JSON 解析失败: {e}, body={resp.text[:200]}")
+                logger.error(f"❌ JSON 解析失败: {e}, body={resp.text[:200]}")
                 return f"（内部错误：中转站返回非 JSON 内容）"
 
-            print(f"🤖 raw response keys: {list(data.keys())}")
+            logger.info(f"🤖 raw response keys: {list(data.keys())}")
 
             choices = data.get("choices", [])
             if not choices:
@@ -95,7 +98,7 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
             message = choice.get("message", {})
             finish_reason = choice.get("finish_reason", "")
 
-            print(f"🤖 finish_reason: {finish_reason}")
+            logger.info(f"🤖 finish_reason: {finish_reason}")
 
             round_text = (message.get("content") or "").strip()
             tool_calls = message.get("tool_calls") or []
@@ -110,7 +113,7 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
 
             # 中间轮：发送文本，继续处理 tool calling
             if round_text:
-                print(f"💬 中间轮文本: {round_text}")
+                logger.info(f"💬 中间轮文本: {round_text}")
                 if send_callback:
                     await send_callback(round_text)
                 all_texts.append(round_text)
@@ -140,5 +143,12 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                     "tool_call_id": tc.get("id", ""),
                     "content": json.dumps(result, ensure_ascii=False)
                 })
+
+            # 在所有 tool 消息之后追加一条 system 风格的 user 消息
+            # 提醒模型别重复已经说过的内容
+            full_messages.append({
+                "role": "user",
+                "content": TOOL_ROUND_REMINDER,
+            })
 
     return "（内部错误：工具调用次数过多）"

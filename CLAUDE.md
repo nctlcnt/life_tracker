@@ -28,6 +28,8 @@ docker run -e DISCORD_TOKEN=... -e AI_API_KEY=... life-tracker
 - `AI_BASE_URL` - base URL for relay mode only
 - `ALLOWED_USER_ID` - Discord user ID (single-user restriction)
 - `API_PORT` - FastAPI port (defaults to `8080`)
+- `LOG_LEVEL` - logging level: DEBUG/INFO/WARNING/ERROR (defaults to `INFO`)
+- `LOG_FILE` - optional path to write a rotating log file (defaults to stdout-only)
 
 There is no test suite or linter configured.
 
@@ -71,7 +73,6 @@ SQLite at `data/life_tracker.db`, managed by `bot/database.py`:
 - `events` - timeline entries with `start_time`, `end_time`, `content`, `category`, `notes`, `session_id`
 - `messages` - conversation history (last 10-20 fetched per AI call)
 - `reminders` - with `trigger_time`, `action`, `group_id`, `priority`, `status` (pending/triggered/cancelled)
-- `pending_messages` - queue for messages received while AI was unavailable
 - `memories` - AI's persistent memory store
 
 When a reminder is added, `Database` fires `_on_reminder_added` callback to wake the scheduler's reminder loop via `asyncio.Event`.
@@ -83,6 +84,7 @@ Schema migrations are handled inline via `ALTER TABLE` with `try/except` for ide
 - **Single-user**: all Discord messages from non-`ALLOWED_USER_ID` users are silently ignored
 - **Dependency injection**: `Database` instance created once in `main.py`, passed to all components; FastAPI receives it via `set_database()`
 - **Event merging**: `bot/merge.py` merges adjacent events with same content+category into time segments for the `/api/timeline` endpoint
+- **Logging**: centralized in `bot/logger.py`. `main.py` calls `setup_logging()` before importing other modules; each module gets its own logger via `get_logger(__name__)`. All config (format, level, handlers) lives in `bot/logger.py` — change it in one place.
 
 ### Codebase Language
 
