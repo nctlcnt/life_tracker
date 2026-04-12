@@ -58,9 +58,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
 
     # 拍平 PromptParts 为单个字符串
-    full_system_prompt = prompt.flatten() if prompt else ""
-    # 预计算中间轮用的精简版（去掉 tool_guidelines 省 token）
-    concise_prompt_text = prompt.concise().flatten() if prompt else None
+    system_prompt = prompt.flatten() if prompt else ""
 
     # 转换工具格式
     def convert_type(schema):
@@ -99,15 +97,10 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
     async with httpx.AsyncClient() as client:
         current_messages = [m.copy() for m in messages]
 
-        for round_idx in range(5):
-            # 中间轮使用精简版 prompt（去掉 tool_guidelines 省 token）
-            current_prompt = full_system_prompt
-            if round_idx > 0 and concise_prompt_text:
-                current_prompt = concise_prompt_text
-
+        for _ in range(5):
             gemini_payload = {
                 "systemInstruction": {
-                    "parts": [{"text": current_prompt}]
+                    "parts": [{"text": system_prompt}]
                 },
                 "contents": _convert_to_gemini_format(current_messages),
             }

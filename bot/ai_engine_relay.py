@@ -55,8 +55,6 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
 
     # 拍平 PromptParts 为单个字符串
     full_system = prompt.flatten() if prompt else ""
-    # 预计算中间轮用的精简版（去掉 tool_guidelines 省 token）
-    concise_system = prompt.concise().flatten() if prompt else None
 
     # 按 tool_names 过滤工具子集
     tools = TOOLS
@@ -67,11 +65,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
     all_texts = []  # 收集所有轮次的文本
 
     async with httpx.AsyncClient() as client:
-        for round_idx in range(5):
-            # 中间轮换成精简 system，省掉每轮都重复讲的工具指南
-            if round_idx > 0 and concise_system is not None:
-                full_messages[0] = {"role": "system", "content": concise_system}
-
+        for _ in range(5):
             payload = {
                 "model": model,
                 "max_tokens": 4096,
