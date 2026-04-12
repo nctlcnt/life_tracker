@@ -9,9 +9,8 @@ AI 引擎公共模块
 import re
 from bot.tools import POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, SCHEDULED_TOOL_NAMES
 from bot.prompts import (
-    SYSTEM_PROMPT,
-    LABEL_MEMORIES, LABEL_ONGOING, LABEL_REMINDERS, LABEL_WEATHER,
-    WEATHER_CONTEXT_SUFFIX,
+    CHAT_PROMPT_TEMPLATE, POLL_PROMPT_TEMPLATE,
+    render_static_prompt, render_dynamic_context,
 )
 from bot.weather import is_morning, get_weather_brief
 from bot.database import Database
@@ -41,48 +40,22 @@ def split_thinking(text: str) -> tuple[str, str]:
     return cleaned, thinking
 
 
-def _build_dynamic_context(db: Database, weather: str | None = None) -> str:
+def _build_dynamic_context(db: Database, weather: str | None = None) -> dict[str, str]:
     """
-    构建动态上下文（记忆 + 进行中事件 + 待触发提醒 + 天气），每次调用注入。
+    从 DB 取数据，交给 prompts.render_dynamic_context 构建各段落。
 
-    ⚠️ 这里只放**数据本体**，不放规则文字。
-    "⚠️ 新建事件前先扫一眼这里 / ⚠️ 去重规则..." 这类规则 SYSTEM_PROMPT 的
-    TOOL_GUIDELINES 段已经讲过一次，每次请求都重复发送纯粹浪费 token。
+    ⚠️ 这里只负责取数据，格式化逻辑全部在 prompts.py 的模板和渲染函数里。
+    返回 dict: 每个 key 对应模板中的 {{XXX_SECTION}} 占位符。
     """
-    parts = []
-
-    # 记忆
     memories = db.get_all_memories()
-    if memories:
-        lines = [f"- [id={m['id']}] {m['content']}" for m in memories]
-        parts.append(f"{LABEL_MEMORIES}\n" + "\n".join(lines))
-
-    # 进行中的事件
     ongoing = db.get_ongoing_events(limit=5)
-    if ongoing:
-        lines = []
-        for e in ongoing:
-            line = f"- [ID={e['id']}] {e['start_time']} | {e['category']} | {e['content']}"
-            if e.get("notes"):
-                line += f" | 备注: {e['notes']}"
-            lines.append(line)
-        parts.append(f"{LABEL_ONGOING}\n" + "\n".join(lines))
-
-    # 待触发提醒计划
     reminders = db.list_active_reminders()
-    if reminders:
-        lines = [
-            f"- [id={r['id']}] [{r['priority']}] {r['trigger_time']} | {r['action']} "
-            f"(group: {r.get('group_id', '无')})"
-            for r in reminders
-        ]
-        parts.append(f"{LABEL_REMINDERS}\n" + "\n".join(lines))
-
-    # 天气（早上时段注入）
-    if weather:
-        parts.append(f"{LABEL_WEATHER}\n{weather}\n{WEATHER_CONTEXT_SUFFIX}")
-
-    return "\n\n".join(parts)
+    return render_dynamic_context(
+        memories=memories or None,
+        ongoing=ongoing or None,
+        reminders=reminders or None,
+        weather=weather,
+    )
 
 
 def _ensure_valid_messages(messages: list[dict]) -> list[dict]:
@@ -218,6 +191,8 @@ async def chat(db: Database, messages: list[dict],
 
     DB 只作为备份：调用方在进入这里之前应已把当前用户消息写入 messages 表；
     这里只负责把 AI 回复写回 DB 做备份。
+
+    使用 CHAT_PROMPT_TEMPLATE：完整工具指南 + Chat 版时间感知。
     """
     # 规范化消息序列（首条必须是 user，合并连续同角色）
     messages = _ensure_valid_messages(messages)
@@ -228,11 +203,14 @@ async def chat(db: Database, messages: list[dict],
     # 构建动态上下文（记忆 + 进行中事件 + 待触发提醒 + 天气）
     dynamic_ctx = _build_dynamic_context(db, weather=weather)
 
+    # 渲染 Chat 场景的静态 prompt
+    system_prompt = render_static_prompt(CHAT_PROMPT_TEMPLATE)
+
     # 调用大模型（可能需要多轮 tool calling）
     reply = await call_with_tools_fn(
-        db, SYSTEM_PROMPT, messages,
+        db, system_prompt, messages,
         send_callback=send_callback,
-        dynamic_context=dynamic_ctx or None,
+        dynamic_context=dynamic_ctx,
         model=config.CHAT_MODEL
     )
 
@@ -253,6 +231,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     history: 调用方从 Discord 拉来的对话历史（不含本次调度指令）
     allow_silent: 是否允许 AI 返回 [SILENT] 不发消息（随机轮询时为 True）
     返回 None 表示 AI 选择不发消息。
+
+    使用 POLL_PROMPT_TEMPLATE：完整时间感知 + Poll 版回复规则。
     """
     # 注：历史为空不代表"没聊过"——也可能是 bot 刚重启或 Discord 历史拉取失败。
     # 此时仍然继续调用 AI，让它基于 memory / 待触发提醒 / 当前时间 / 天气等
@@ -263,6 +243,9 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
 
     dynamic_ctx = _build_dynamic_context(db, weather=weather)
 
+    # 渲染 Poll 场景的静态 prompt
+    system_prompt = render_static_prompt(POLL_PROMPT_TEMPLATE)
+
     messages = [
         *history,
         {"role": "user", "content": prompt}
@@ -271,9 +254,9 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
 
     # 允许 silent 时不传 send_callback，需要先检查 [SILENT]
     reply = await call_with_tools_fn(
-        db, SYSTEM_PROMPT, messages,
+        db, system_prompt, messages,
         send_callback=None if allow_silent else send_callback,
-        dynamic_context=dynamic_ctx or None,
+        dynamic_context=dynamic_ctx,
         model=config.POLL_MODEL,
         tool_names=SCHEDULED_TOOL_NAMES,
     )

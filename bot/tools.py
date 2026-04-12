@@ -283,15 +283,6 @@ REMINDER_TOOL_NAMES = {
 # 主动聊天时可以 set_reminder，提醒触发时可以 cancel_reminders，按 prompt 类型动态选择
 SCHEDULED_TOOL_NAMES = POLL_TOOL_NAMES | REMINDER_TOOL_NAMES
 
-
-# === Prompt 字符串已全部迁到 bot/prompts.py ===
-# 原先这里有：TOOL_ROUND_REMINDER、TOOL_POST_HINTS、build_tool_round_hint、
-# PROMPT_PERSONA/RESPONSE_GUIDELINES/TIME_PERCEPTION/TOOL_GUIDELINES、
-# SYSTEM_PROMPT、SYSTEM_PROMPT_CONCISE、PERSONA_MARKER
-# —— 都搬到了 bot/prompts.py，以便所有 prompt 在一个地方集中维护、减少重复发送。
-
-
-
 # Anthropic Claude 格式的工具定义
 TOOLS_ANTHROPIC = [
     {

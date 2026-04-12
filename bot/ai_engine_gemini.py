@@ -4,7 +4,12 @@ AI 引擎模块 (Gemini 版本)
 """
 import httpx
 from bot.tools import TOOLS
-from bot.prompts import build_tool_round_hint, SYSTEM_PROMPT_CONCISE, PERSONA_MARKER
+from bot.prompts import (
+    build_tool_round_hint, PERSONA_MARKER,
+    apply_dynamic_sections,
+    SYSTEM_PROMPT_CONCISE_CHAT, SYSTEM_PROMPT_CONCISE_POLL,
+    TOOL_GUIDELINES_CHAT,
+)
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool, split_thinking,
@@ -46,7 +51,7 @@ def _convert_to_gemini_format(messages: list[dict]) -> list[dict]:
 
 
 async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict],
-                           send_callback=None, dynamic_context: str | None = None,
+                           send_callback=None, dynamic_context: dict[str, str] | None = None,
                            model: str | None = None, tool_names: set | None = None) -> str:
     """使用 httpx 直接调用 Gemini REST API"""
     api_key = config.AI_API_KEY
@@ -56,10 +61,8 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
     model_name = model if "gemini" in model.lower() else "gemini-2.0-flash"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
 
-    # 合并 System Prompt
-    full_system_prompt = system_prompt
-    if dynamic_context:
-        full_system_prompt += "\n\n" + dynamic_context
+    # 合并 System Prompt：将 {{XXX_SECTION}} 占位符替换为实际动态上下文段落
+    full_system_prompt = apply_dynamic_sections(system_prompt, dynamic_context or {})
 
     # 转换工具格式
     def convert_type(schema):
@@ -101,11 +104,12 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
         for round_idx in range(5):
             # 动态决定当前轮次的 System Prompt
             # 如果是中间轮次（>0），并且基础模板是核心人格模板，就换成精简版以节省大量由于"解释怎么使用工具"导致的 Token 浪费
+            # 通过检查原始 system_prompt 中是否含有 Chat 版工具指南来区分 Chat/Poll 场景
             current_prompt = full_system_prompt
             if round_idx > 0 and PERSONA_MARKER in system_prompt:
-                current_prompt = SYSTEM_PROMPT_CONCISE
-                if dynamic_context:
-                    current_prompt += "\n\n" + dynamic_context
+                is_chat = TOOL_GUIDELINES_CHAT.strip()[:50] in system_prompt
+                concise_base = SYSTEM_PROMPT_CONCISE_CHAT if is_chat else SYSTEM_PROMPT_CONCISE_POLL
+                current_prompt = apply_dynamic_sections(concise_base, dynamic_context or {})
 
             gemini_payload = {
                 "systemInstruction": {

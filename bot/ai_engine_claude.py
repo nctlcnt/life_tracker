@@ -39,7 +39,7 @@ async def simple_completion(prompt: str) -> str:
 
 
 async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict],
-                           send_callback=None, dynamic_context: str | None = None,
+                           send_callback=None, dynamic_context: dict[str, str] | None = None,
                            model: str | None = None, tool_names: set | None = None) -> str:
     """
     调用 Anthropic Claude，处理可能的多轮 tool calling。
@@ -49,18 +49,30 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
     动态 dynamic_context 不缓存。
     """
     # 构建 system blocks，静态部分开启 prompt caching
+    # system_prompt 模板里含 {{XXX_SECTION}} 动态占位符，在 Claude 引擎里我们不做替换，
+    # 而是把静态部分和动态部分分成两个 block：静态部分标记 cache_control 做 prompt caching，
+    # 动态部分（每次请求都不同）不缓存。
+    from bot.prompts import _DYNAMIC_SECTION_KEYS, _CLEANUP_RE
     system_blocks = []
     if system_prompt:
+        # 剥掉所有动态占位符 {{MEMORIES_SECTION}} 等，只保留纯静态内容
+        static_text = system_prompt
+        for key in _DYNAMIC_SECTION_KEYS:
+            static_text = static_text.replace(f"{{{{{key}}}}}", "")
+        static_text = _CLEANUP_RE.sub("\n\n", static_text).strip()
         system_blocks.append({
             "type": "text",
-            "text": system_prompt,
+            "text": static_text,
             "cache_control": {"type": "ephemeral"}
         })
     if dynamic_context:
-        system_blocks.append({
-            "type": "text",
-            "text": dynamic_context
-        })
+        # 将各段落合并为一个文本 block
+        combined = "\n\n".join(v for v in dynamic_context.values() if v)
+        if combined.strip():
+            system_blocks.append({
+                "type": "text",
+                "text": combined
+            })
 
     # 按 tool_names 过滤工具子集
     tools = TOOLS_ANTHROPIC
