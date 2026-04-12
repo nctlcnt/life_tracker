@@ -62,8 +62,7 @@ def _build_dynamic_context(db: Database, weather: str | None = None) -> str:
     if ongoing:
         lines = []
         for e in ongoing:
-            parallel_tag = " [平行]" if e.get("is_parallel") else ""
-            line = f"- [ID={e['id']}]{parallel_tag} {e['start_time']} | {e['category']} | {e['content']}"
+            line = f"- [ID={e['id']}] {e['start_time']} | {e['category']} | {e['content']}"
             if e.get("notes"):
                 line += f" | 备注: {e['notes']}"
             lines.append(line)
@@ -120,7 +119,7 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
             category=args.get("category", "uncategorized"),
             notes=args.get("notes"),
             session_id=args.get("session_id"),
-            is_parallel=bool(args.get("is_parallel", False)),
+            is_parallel=False,
         )
         old_id = args.get("session_id")
         if old_id:
@@ -157,9 +156,14 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
         return {"success": True, "events": events, "count": len(events)}
 
     elif tool_name == "update_timeline_event":
-        fields = {k: args[k] for k in ("end_time", "content", "category", "notes") if k in args}
-        if "is_parallel" in args:
-            fields["is_parallel"] = 1 if bool(args["is_parallel"]) else 0
+        fields = {k: args[k] for k in ("end_time", "content", "category") if k in args}
+        # notes 追加模式：新 notes 拼接到已有内容后面
+        if "notes" in args and args["notes"]:
+            existing = db.get_event_by_id(args["event_id"])
+            if existing and existing.get("notes"):
+                fields["notes"] = existing["notes"] + "\n" + args["notes"]
+            else:
+                fields["notes"] = args["notes"]
         ok = db.update_event(args["event_id"], **fields)
         if ok:
             return {"success": True, "message": "事件已更新"}
