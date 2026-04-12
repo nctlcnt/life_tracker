@@ -1,37 +1,26 @@
 """
 Prompt 集中管理模块
 
-这里是所有发送给大模型的 prompt 的**唯一真实源**。包括：
-
-- 核心人设（PERSONA）
-- 回复规则：共用部分 + Chat 专属 + Poll 专属
-- 时间感知：Chat 版 + Poll 版（深度覆盖任务启动、时间盲、过渡困难、情绪捕捉）
-- 工具指南：Chat 完整版 + Poll 极简版
-- 模板：CHAT_PROMPT_TEMPLATE / POLL_PROMPT_TEMPLATE（及精简版）
-- 渲染函数：render_static_prompt() / render_dynamic_context()
-- 工具多轮调用的系统提示 / 定向后置提示
-- 动态上下文的段落标题
-- Scheduler 调度场景模板（随机轮询 / 提醒触发 / 睡前提醒）
-- 独立任务模板（天气播报）
-
-集中的目的：
-1. 统一维护，不会出现多份文件各写一份措辞、语气互相漂移
-2. 方便审计每次 AI 请求到底塞了多少 token、哪些地方重复了
-3. 主动减少"同一条规则在 N 个地方反复发送"的 token 浪费
-
-⚠️ 去重原则：**SYSTEM_PROMPT 是唯一一次讲清规则的地方**。Scheduler 模板、
-   TOOL_ROUND_REMINDER、动态上下文段落都只放"本次场景独有的信息"，
-   通用规则（记录、提醒去重、发言节奏、<think> 标签）一律依赖 SYSTEM_PROMPT
-   里讲过一次就够，不要在每次请求里重复发送。
+所有发送给大模型的 prompt 的**唯一真实源**。
 
 架构：
 - 每个 prompt 段落是独立的字符串常量
-- CHAT_PROMPT_TEMPLATE / POLL_PROMPT_TEMPLATE 用 {{XXX}} 占位符定义结构
-- render_static_prompt() 渲染静态段落（{{DYNAMIC_CONTEXT}} 保留不替换，由引擎拼接）
-- render_dynamic_context() 渲染动态数据（记忆、进行中事件、提醒、天气）
+- PromptParts dataclass 按变化频率分三层（静态 / 半动态 / 动态）
+- build_prompt() 一步构建完整的 PromptParts 对象
+- 各引擎直接消费 PromptParts 的方法：
+  - Claude: prompt.to_claude_blocks() → 3 个 cached system block
+  - Gemini/Relay: prompt.flatten() → 单个字符串
+  - 中间轮省 token: prompt.concise().flatten()
+
+⚠️ 去重原则：PromptParts 的静态层是唯一一次讲清规则的地方。
+   Scheduler 模板、TOOL_ROUND_REMINDER 只放"本次场景独有的信息"。
 """
 
+from __future__ import annotations
+
+import copy
 import re
+from dataclasses import dataclass
 
 
 # ══════════════════════════════════════════════════════════════
@@ -366,169 +355,121 @@ TOOL_GUIDELINES_POLL = """
 """
 
 
-# ══════════════════════════════════════════════════════════════
-# 5. Prompt 模板：用 {{XXX}} 占位符定义完整结构
-# ══════════════════════════════════════════════════════════════
-#
-# 打开模板就能看到 AI 收到的完整 prompt 结构，包括动态数据段落。
-# 静态段落（{{PERSONA}} 等）由 render_static_prompt() 替换。
-# 动态段落（{{MEMORIES_SECTION}} 等）由 apply_dynamic_sections() 替换，
-# 有数据时展示标题+数据，没数据时整段移除。
-#
-# Claude 引擎：静态部分标记 cache_control 做 prompt caching，
-#              动态段落剥离后作为单独 block 发送不缓存。
-# Gemini/Relay 引擎：直接在完整 prompt 上做替换。
-
-CHAT_PROMPT_TEMPLATE = """{{PERSONA}}
-
-{{RESPONSE_CORE}}
-
-{{RESPONSE_CHAT}}
-
-{{TIME_PERCEPTION_CHAT}}
-
-{{TOOL_GUIDELINES_CHAT}}
-
----
-
-以下是本次对话的动态上下文：
-
-{{MEMORIES_SECTION}}
-
-{{ONGOING_SECTION}}
-
-{{REMINDERS_SECTION}}
-
-{{DEADLINES_SECTION}}
-
-{{WEATHER_SECTION}}"""
-
-
-POLL_PROMPT_TEMPLATE = """{{PERSONA}}
-
-{{RESPONSE_CORE}}
-
-{{RESPONSE_POLL}}
-
-{{TIME_PERCEPTION_POLL}}
-
-{{TOOL_GUIDELINES_POLL}}
-
----
-
-以下是本次对话的动态上下文：
-
-{{MEMORIES_SECTION}}
-
-{{ONGOING_SECTION}}
-
-{{REMINDERS_SECTION}}
-
-{{DEADLINES_SECTION}}
-
-{{WEATHER_SECTION}}"""
-
-
-# 精简版模板：中间轮切换使用，去掉 TOOL_GUIDELINES 段
-# （第一轮已判断过是否要用工具，后续轮次省掉工具详细指南节省 token）
-CHAT_PROMPT_TEMPLATE_CONCISE = """{{PERSONA}}
-
-{{RESPONSE_CORE}}
-
-{{RESPONSE_CHAT}}
-
-{{TIME_PERCEPTION_CHAT}}
-
----
-
-以下是本次对话的动态上下文：
-
-{{MEMORIES_SECTION}}
-
-{{ONGOING_SECTION}}
-
-{{REMINDERS_SECTION}}
-
-{{DEADLINES_SECTION}}
-
-{{WEATHER_SECTION}}"""
-
-
-POLL_PROMPT_TEMPLATE_CONCISE = """{{PERSONA}}
-
-{{RESPONSE_CORE}}
-
-{{RESPONSE_POLL}}
-
-{{TIME_PERCEPTION_POLL}}
-
----
-
-以下是本次对话的动态上下文：
-
-{{MEMORIES_SECTION}}
-
-{{ONGOING_SECTION}}
-
-{{REMINDERS_SECTION}}
-
-{{DEADLINES_SECTION}}
-
-{{WEATHER_SECTION}}"""
 
 
 # ══════════════════════════════════════════════════════════════
-# 6. 模板渲染函数
+# 5. PromptParts dataclass + build_prompt()
 # ══════════════════════════════════════════════════════════════
-
-# 所有可替换的静态段落映射
-_STATIC_SECTIONS = {
-    "PERSONA": PERSONA,
-    "RESPONSE_CORE": RESPONSE_CORE,
-    "RESPONSE_CHAT": RESPONSE_CHAT,
-    "RESPONSE_POLL": RESPONSE_POLL,
-    "TIME_PERCEPTION_CHAT": TIME_PERCEPTION_CHAT,
-    "TIME_PERCEPTION_POLL": TIME_PERCEPTION_POLL,
-    "TOOL_GUIDELINES_CHAT": TOOL_GUIDELINES_CHAT,
-    "TOOL_GUIDELINES_POLL": TOOL_GUIDELINES_POLL,
-}
 
 _CLEANUP_RE = re.compile(r"\n{3,}")
 
 
-# 动态段落的占位符名称（render_static_prompt 会保留这些不替换）
-_DYNAMIC_SECTION_KEYS = {
-    "MEMORIES_SECTION", "ONGOING_SECTION", "REMINDERS_SECTION", "DEADLINES_SECTION", "WEATHER_SECTION",
-}
+def _join_nonempty(*parts: str) -> str:
+    """连接非空段落，用双换行分隔，清理多余空行。"""
+    joined = "\n\n".join(p.strip() for p in parts if p and p.strip())
+    return _CLEANUP_RE.sub("\n\n", joined).strip()
 
 
-def render_static_prompt(template: str) -> str:
+@dataclass
+class PromptParts:
     """
-    渲染 prompt 模板的静态段落。
+    按变化频率分三层的结构化 prompt。
 
-    将 {{PERSONA}}、{{RESPONSE_CORE}} 等占位符替换为对应的 prompt 段落。
-    动态段落占位符（{{MEMORIES_SECTION}} 等）保留不替换——它们由
-    apply_dynamic_sections() 在引擎发送时替换为实际数据。
+    静态层：人设、回复规则、时间感知、工具指南（几乎不变）
+    半动态层：memories、deadlines（每次请求可能变，但频率低）
+    动态层：ongoing、reminders、weather（高频变化）
+
+    Claude 引擎按三层拆成 3 个 cached system block，前缀缓存命中率最高。
+    Gemini/Relay 用 flatten() 拍平成单个字符串。
     """
-    result = template
-    for key, value in _STATIC_SECTIONS.items():
-        result = result.replace(f"{{{{{key}}}}}", value.strip())
-    result = _CLEANUP_RE.sub("\n\n", result).strip()
-    return result
+    mode: str  # "chat" | "poll"
+
+    # 静态层
+    persona: str
+    response_core: str
+    response_mode: str          # RESPONSE_CHAT or RESPONSE_POLL
+    time_perception: str        # TIME_PERCEPTION_CHAT or TIME_PERCEPTION_POLL
+    tool_guidelines: str | None  # None = concise 模式（中间轮省 token）
+
+    # 半动态层
+    memories: str = ""
+    deadlines: str = ""
+
+    # 动态层
+    ongoing: str = ""
+    reminders: str = ""
+    weather: str = ""
+
+    def static_text(self) -> str:
+        """拼接所有静态段落。"""
+        parts = [self.persona, self.response_core, self.response_mode, self.time_perception]
+        if self.tool_guidelines:
+            parts.append(self.tool_guidelines)
+        return _join_nonempty(*parts)
+
+    def semi_dynamic_text(self) -> str:
+        """拼接半动态段落（memories + deadlines）。"""
+        return _join_nonempty(self.memories, self.deadlines)
+
+    def dynamic_text(self) -> str:
+        """拼接动态段落（ongoing + reminders + weather）。"""
+        return _join_nonempty(self.ongoing, self.reminders, self.weather)
+
+    def flatten(self) -> str:
+        """拍平为单个字符串（Gemini / Relay 用）。"""
+        return _join_nonempty(self.static_text(), self.semi_dynamic_text(), self.dynamic_text())
+
+    def to_claude_blocks(self) -> list[dict]:
+        """
+        构建 Anthropic system blocks（最多 3 个 cached block）。
+
+        Block 1: 静态指令（永远命中缓存）
+        Block 2: 稳定动态 = memories + deadlines（变化频率低，TTL 内常命中）
+        Block 3: 易变动态 = ongoing + reminders + weather（变化时只失效此 block）
+        """
+        blocks = []
+        static = self.static_text()
+        if static:
+            blocks.append({
+                "type": "text",
+                "text": static,
+                "cache_control": {"type": "ephemeral"},
+            })
+        semi = self.semi_dynamic_text()
+        if semi:
+            blocks.append({
+                "type": "text",
+                "text": semi,
+                "cache_control": {"type": "ephemeral"},
+            })
+        dyn = self.dynamic_text()
+        if dyn:
+            blocks.append({
+                "type": "text",
+                "text": dyn,
+                "cache_control": {"type": "ephemeral"},
+            })
+        return blocks
+
+    def concise(self) -> PromptParts:
+        """返回去掉 tool_guidelines 的副本（中间轮省 token）。"""
+        c = copy.copy(self)
+        c.tool_guidelines = None
+        return c
 
 
-# 动态上下文段落标题
+# ── 动态段落格式化函数 ──────────────────────────────────────────
+
 LABEL_MEMORIES = "【你现在记着的事】"
 LABEL_ONGOING = "【当前进行中的事件（end_time 为空）】"
 LABEL_REMINDERS = "【待触发的跟进计划】"
 LABEL_DEADLINES = "【待完成的 Deadline】"
 LABEL_WEATHER = "【今日天气】"
 
-# 天气段落后的一句行动提示（不和别处重复，保留）
 WEATHER_CONTEXT_SUFFIX = "可以自然地提一下天气，但不要像天气预报一样念数据。"
 
 
-def _format_countdown(due_time_str: str) -> str:
+def format_countdown(due_time_str: str) -> str:
     """
     根据 due_time 和当前时间计算倒计时文本。
 
@@ -567,101 +508,98 @@ def _format_countdown(due_time_str: str) -> str:
         return "⏳ 时间格式异常"
 
 
-def render_dynamic_context(
+def _format_memories(memories: list[dict] | None) -> str:
+    if not memories:
+        return ""
+    lines = [f"- [id={m['id']}] {m['content']}" for m in memories]
+    return f"{LABEL_MEMORIES}\n" + "\n".join(lines)
+
+
+def _format_ongoing(ongoing: list[dict] | None) -> str:
+    if not ongoing:
+        return ""
+    lines = []
+    for e in ongoing:
+        line = f"- [ID={e['id']}] {e['start_time']} | {e['category']} | {e['content']}"
+        if e.get("notes"):
+            line += f" | 备注: {e['notes']}"
+        lines.append(line)
+    return f"{LABEL_ONGOING}\n" + "\n".join(lines)
+
+
+def _format_reminders(reminders: list[dict] | None) -> str:
+    if not reminders:
+        return ""
+    lines = [
+        f"- [id={r['id']}] [{r['priority']}] {r['trigger_time']} | {r['action']} "
+        f"(group: {r.get('group_id', '无')})"
+        for r in reminders
+    ]
+    return f"{LABEL_REMINDERS}\n" + "\n".join(lines)
+
+
+def _format_weather(weather: str | None) -> str:
+    if not weather:
+        return ""
+    return f"{LABEL_WEATHER}\n{weather}\n{WEATHER_CONTEXT_SUFFIX}"
+
+
+def _format_deadlines(deadlines: list[dict] | None) -> str:
+    if not deadlines:
+        return ""
+    lines = []
+    for d in deadlines:
+        countdown = format_countdown(d["due_time"])
+        line = f"- [id={d['id']}] {d['title']} | 📅 {d['due_time']} | {countdown}"
+        lines.append(line)
+    return f"{LABEL_DEADLINES}\n" + "\n".join(lines)
+
+
+# ── mode → 静态段落的映射 ────────────────────────────────────────
+
+_MODE_SECTIONS = {
+    "chat": {
+        "response_mode": RESPONSE_CHAT,
+        "time_perception": TIME_PERCEPTION_CHAT,
+        "tool_guidelines": TOOL_GUIDELINES_CHAT,
+    },
+    "poll": {
+        "response_mode": RESPONSE_POLL,
+        "time_perception": TIME_PERCEPTION_POLL,
+        "tool_guidelines": TOOL_GUIDELINES_POLL,
+    },
+}
+
+
+def build_prompt(
+    mode: str,
+    *,
     memories: list[dict] | None = None,
     ongoing: list[dict] | None = None,
     reminders: list[dict] | None = None,
     weather: str | None = None,
     deadlines: list[dict] | None = None,
-) -> dict[str, str]:
+) -> PromptParts:
     """
-    构建动态上下文各段落。
+    一步构建完整的 PromptParts 对象。
 
-    返回 dict: 每个 key 对应模板中的 {{XXX_SECTION}} 占位符，
-    value 为格式化好的段落文本（含标题），或空字符串（该段没数据时）。
-    由 apply_dynamic_sections() 替换到 prompt 模板中。
+    mode: "chat"（用户对话）或 "poll"（调度主动聊天）
+    其余参数：从 DB 取来的原始数据，由内部 _format_* 函数格式化。
     """
-    sections: dict[str, str] = {}
-
-    if memories:
-        lines = [f"- [id={m['id']}] {m['content']}" for m in memories]
-        sections["MEMORIES_SECTION"] = f"{LABEL_MEMORIES}\n" + "\n".join(lines)
-    else:
-        sections["MEMORIES_SECTION"] = ""
-
-    if ongoing:
-        lines = []
-        for e in ongoing:
-            line = f"- [ID={e['id']}] {e['start_time']} | {e['category']} | {e['content']}"
-            if e.get("notes"):
-                line += f" | 备注: {e['notes']}"
-            lines.append(line)
-        sections["ONGOING_SECTION"] = f"{LABEL_ONGOING}\n" + "\n".join(lines)
-    else:
-        sections["ONGOING_SECTION"] = ""
-
-    if reminders:
-        lines = [
-            f"- [id={r['id']}] [{r['priority']}] {r['trigger_time']} | {r['action']} "
-            f"(group: {r.get('group_id', '无')})"
-            for r in reminders
-        ]
-        sections["REMINDERS_SECTION"] = f"{LABEL_REMINDERS}\n" + "\n".join(lines)
-    else:
-        sections["REMINDERS_SECTION"] = ""
-
-    if weather:
-        sections["WEATHER_SECTION"] = f"{LABEL_WEATHER}\n{weather}\n{WEATHER_CONTEXT_SUFFIX}"
-    else:
-        sections["WEATHER_SECTION"] = ""
-
-    if deadlines:
-        lines = []
-        for d in deadlines:
-            countdown = _format_countdown(d["due_time"])
-            line = f"- [id={d['id']}] {d['title']} | 📅 {d['due_time']} | {countdown}"
-            lines.append(line)
-        sections["DEADLINES_SECTION"] = f"{LABEL_DEADLINES}\n" + "\n".join(lines)
-    else:
-        sections["DEADLINES_SECTION"] = ""
-
-    return sections
-
-
-def apply_dynamic_sections(prompt: str, sections: dict[str, str]) -> str:
-    """
-    将动态段落数据替换到 prompt 中的 {{XXX_SECTION}} 占位符。
-
-    有数据的段落替换为标题+数据，没数据的段落（空字符串）连占位符一起移除。
-    最终清理多余空行。
-    """
-    result = prompt
-    for key, value in sections.items():
-        result = result.replace(f"{{{{{key}}}}}", value)
-    # 未命中的动态占位符置空（防御性）
-    for key in _DYNAMIC_SECTION_KEYS:
-        result = result.replace(f"{{{{{key}}}}}", "")
-    result = _CLEANUP_RE.sub("\n\n", result).strip()
-    return result
-
-
-# ══════════════════════════════════════════════════════════════
-# 向后兼容：PERSONA_MARKER / SYSTEM_PROMPT_CONCISE
-# ══════════════════════════════════════════════════════════════
-#
-# 引擎在中间轮判断是否切换精简版时用 PERSONA_MARKER 做启发式匹配。
-# ⚠️ 如果改了 PERSONA 的开头，同步更新这里。
-
-PERSONA_MARKER = "你是一名叫【日和】的小助手"
-
-# 预渲染的精简版（给引擎中间轮用，不含 TOOL_GUIDELINES）
-# 注意：这些是纯静态部分，{{DYNAMIC_CONTEXT}} 仍保留在其中
-SYSTEM_PROMPT_CONCISE_CHAT = render_static_prompt(CHAT_PROMPT_TEMPLATE_CONCISE)
-SYSTEM_PROMPT_CONCISE_POLL = render_static_prompt(POLL_PROMPT_TEMPLATE_CONCISE)
-
-# 旧的 SYSTEM_PROMPT_CONCISE 仍然导出，供未更新的引擎临时使用
-# TODO: 引擎全部更新后移除
-SYSTEM_PROMPT_CONCISE = SYSTEM_PROMPT_CONCISE_CHAT
+    sections = _MODE_SECTIONS[mode]
+    return PromptParts(
+        mode=mode,
+        persona=PERSONA.strip(),
+        response_core=RESPONSE_CORE.strip(),
+        response_mode=sections["response_mode"].strip(),
+        time_perception=sections["time_perception"].strip(),
+        tool_guidelines=sections["tool_guidelines"].strip(),
+        memories=_format_memories(memories),
+        deadlines=_format_deadlines(deadlines),
+        ongoing=_format_ongoing(ongoing),
+        reminders=_format_reminders(reminders),
+        weather=_format_weather(weather),
+    )
 
 
 # ══════════════════════════════════════════════════════════════

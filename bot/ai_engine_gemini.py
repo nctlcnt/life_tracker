@@ -4,12 +4,7 @@ AI 引擎模块 (Gemini 版本)
 """
 import httpx
 from bot.tools import TOOLS
-from bot.prompts import (
-    build_tool_round_hint, PERSONA_MARKER,
-    apply_dynamic_sections,
-    SYSTEM_PROMPT_CONCISE_CHAT, SYSTEM_PROMPT_CONCISE_POLL,
-    TOOL_GUIDELINES_CHAT,
-)
+from bot.prompts import build_tool_round_hint, PromptParts
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool, split_thinking,
@@ -23,8 +18,8 @@ logger = get_logger(__name__)
 
 
 async def chat(db: Database, messages: list[dict],
-               send_callback=None) -> str:
-    return await _base_chat(db, messages, _call_with_tools, send_callback)
+               send_callback=None, tool_callback=None) -> str:
+    return await _base_chat(db, messages, _call_with_tools, send_callback, tool_callback)
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
@@ -51,8 +46,8 @@ def _convert_to_gemini_format(messages: list[dict]) -> list[dict]:
     return gemini_messages
 
 
-async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict],
-                           send_callback=None, dynamic_context: dict[str, str] | None = None,
+async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: list[dict],
+                           send_callback=None, tool_callback=None,
                            model: str | None = None, tool_names: set | None = None) -> str:
     """使用 httpx 直接调用 Gemini REST API"""
     api_key = config.AI_API_KEY
@@ -62,8 +57,10 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
     model_name = model if "gemini" in model.lower() else "gemini-2.0-flash"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
 
-    # 合并 System Prompt：将 {{XXX_SECTION}} 占位符替换为实际动态上下文段落
-    full_system_prompt = apply_dynamic_sections(system_prompt, dynamic_context or {})
+    # 拍平 PromptParts 为单个字符串
+    full_system_prompt = prompt.flatten() if prompt else ""
+    # 预计算中间轮用的精简版（去掉 tool_guidelines 省 token）
+    concise_prompt_text = prompt.concise().flatten() if prompt else None
 
     # 转换工具格式
     def convert_type(schema):
@@ -103,14 +100,10 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
         current_messages = [m.copy() for m in messages]
 
         for round_idx in range(5):
-            # 动态决定当前轮次的 System Prompt
-            # 如果是中间轮次（>0），并且基础模板是核心人格模板，就换成精简版以节省大量由于"解释怎么使用工具"导致的 Token 浪费
-            # 通过检查原始 system_prompt 中是否含有 Chat 版工具指南来区分 Chat/Poll 场景
+            # 中间轮使用精简版 prompt（去掉 tool_guidelines 省 token）
             current_prompt = full_system_prompt
-            if round_idx > 0 and PERSONA_MARKER in system_prompt:
-                is_chat = TOOL_GUIDELINES_CHAT.strip()[:50] in system_prompt
-                concise_base = SYSTEM_PROMPT_CONCISE_CHAT if is_chat else SYSTEM_PROMPT_CONCISE_POLL
-                current_prompt = apply_dynamic_sections(concise_base, dynamic_context or {})
+            if round_idx > 0 and concise_prompt_text:
+                current_prompt = concise_prompt_text
 
             gemini_payload = {
                 "systemInstruction": {
@@ -197,5 +190,8 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                 "role": "user",
                 "content": tool_responses
             })
+
+            if tool_callback and called_names:
+                await tool_callback()
 
         return "\n".join(all_texts) or "（内部错误：工具调用次数过多）"

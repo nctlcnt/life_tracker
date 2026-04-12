@@ -5,7 +5,7 @@ AI 引擎模块 (Claude 原生版)
 import json
 from anthropic import AsyncAnthropic
 from bot.tools import TOOLS_ANTHROPIC
-from bot.prompts import build_tool_round_hint
+from bot.prompts import build_tool_round_hint, PromptParts
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool, split_thinking,
@@ -23,8 +23,8 @@ client = AsyncAnthropic(
 
 
 async def chat(db: Database, messages: list[dict],
-               send_callback=None) -> str:
-    return await _base_chat(db, messages, _call_with_tools, send_callback)
+               send_callback=None, tool_callback=None) -> str:
+    return await _base_chat(db, messages, _call_with_tools, send_callback, tool_callback)
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
@@ -39,41 +39,17 @@ async def simple_completion(prompt: str) -> str:
     return await _base_simple_completion(prompt, _call_with_tools)
 
 
-async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict],
-                           send_callback=None, dynamic_context: dict[str, str] | None = None,
+async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: list[dict],
+                           send_callback=None, tool_callback=None,
                            model: str | None = None, tool_names: set | None = None) -> str:
     """
     调用 Anthropic Claude，处理可能的多轮 tool calling。
     中间轮的文本通过 send_callback 发送。
 
-    使用 Anthropic prompt caching：静态 system_prompt 标记 cache_control，
-    动态 dynamic_context 不缓存。
+    使用 Anthropic prompt caching：PromptParts 的三层直接映射到 3 个 cached system block。
     """
-    # 构建 system blocks，静态部分开启 prompt caching
-    # system_prompt 模板里含 {{XXX_SECTION}} 动态占位符，在 Claude 引擎里我们不做替换，
-    # 而是把静态部分和动态部分分成两个 block：静态部分标记 cache_control 做 prompt caching，
-    # 动态部分（每次请求都不同）不缓存。
-    from bot.prompts import _DYNAMIC_SECTION_KEYS, _CLEANUP_RE
-    system_blocks = []
-    if system_prompt:
-        # 剥掉所有动态占位符 {{MEMORIES_SECTION}} 等，只保留纯静态内容
-        static_text = system_prompt
-        for key in _DYNAMIC_SECTION_KEYS:
-            static_text = static_text.replace(f"{{{{{key}}}}}", "")
-        static_text = _CLEANUP_RE.sub("\n\n", static_text).strip()
-        system_blocks.append({
-            "type": "text",
-            "text": static_text,
-            "cache_control": {"type": "ephemeral"}
-        })
-    if dynamic_context:
-        # 将各段落合并为一个文本 block
-        combined = "\n\n".join(v for v in dynamic_context.values() if v)
-        if combined.strip():
-            system_blocks.append({
-                "type": "text",
-                "text": combined
-            })
+    # 构建 system blocks（3 个 cached block）
+    system_blocks = prompt.to_claude_blocks() if prompt else []
 
     # 按 tool_names 过滤工具子集
     tools = TOOLS_ANTHROPIC
@@ -169,5 +145,8 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                     {"type": "text", "text": round_hint}
                 ],
             })
+
+            if tool_callback and called_names:
+                await tool_callback()
 
     return "（内部错误：工具调用次数过多）"

@@ -105,14 +105,14 @@ async def get_todos(all: bool = False):
 @app.get("/api/deadlines")
 async def get_deadlines():
     """获取所有 active 的 deadline（含倒计时）"""
-    from bot.prompts import _format_countdown
+    from bot.prompts import format_countdown
     db.expire_past_deadlines()
     deadlines = db.get_active_deadlines()
     result = []
     for d in deadlines:
         result.append({
             **d,
-            "countdown": _format_countdown(d["due_time"]),
+            "countdown": format_countdown(d["due_time"]),
         })
     return {"deadlines": result, "count": len(result)}
 

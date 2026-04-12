@@ -5,12 +5,7 @@ AI 引擎模块 (中转站版)
 import json
 import httpx
 from bot.tools import TOOLS
-from bot.prompts import (
-    build_tool_round_hint, PERSONA_MARKER,
-    apply_dynamic_sections,
-    SYSTEM_PROMPT_CONCISE_CHAT, SYSTEM_PROMPT_CONCISE_POLL,
-    TOOL_GUIDELINES_CHAT,
-)
+from bot.prompts import build_tool_round_hint, PromptParts
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool, split_thinking,
@@ -24,8 +19,8 @@ logger = get_logger(__name__)
 
 
 async def chat(db: Database, messages: list[dict],
-               send_callback=None) -> str:
-    return await _base_chat(db, messages, _call_with_tools, send_callback)
+               send_callback=None, tool_callback=None) -> str:
+    return await _base_chat(db, messages, _call_with_tools, send_callback, tool_callback)
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
@@ -40,8 +35,8 @@ async def simple_completion(prompt: str) -> str:
     return await _base_simple_completion(prompt, _call_with_tools)
 
 
-async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict],
-                           send_callback=None, dynamic_context: dict[str, str] | None = None,
+async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: list[dict],
+                           send_callback=None, tool_callback=None,
                            model: str | None = None, tool_names: set | None = None) -> str:
     """用 httpx 直接调用 OpenAI 兼容的中转站 API。"""
     if not model:
@@ -58,18 +53,10 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
 
     logger.info(f"🌐 Relay URL: {url}")
 
-    # system prompt 合并动态上下文：将 {{XXX_SECTION}} 占位符替换为实际动态上下文段落
-    full_system = apply_dynamic_sections(system_prompt, dynamic_context or {})
-
-    # 中间轮精简版：去掉 TOOL_GUIDELINES 段，只留核心人设+回复规则+时间感知
-    # Relay 没有 prompt caching，这个开关每个中间轮直接省下几千 token。
-    # 通过检查原始 system_prompt 中是否含有 Chat 版工具指南来区分 Chat/Poll 场景
-    concise_switch = bool(system_prompt) and PERSONA_MARKER in system_prompt
-    concise_system = None
-    if concise_switch:
-        is_chat = TOOL_GUIDELINES_CHAT.strip()[:50] in system_prompt
-        concise_base = SYSTEM_PROMPT_CONCISE_CHAT if is_chat else SYSTEM_PROMPT_CONCISE_POLL
-        concise_system = apply_dynamic_sections(concise_base, dynamic_context or {})
+    # 拍平 PromptParts 为单个字符串
+    full_system = prompt.flatten() if prompt else ""
+    # 预计算中间轮用的精简版（去掉 tool_guidelines 省 token）
+    concise_system = prompt.concise().flatten() if prompt else None
 
     # 按 tool_names 过滤工具子集
     tools = TOOLS
@@ -174,5 +161,8 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                 "role": "user",
                 "content": build_tool_round_hint(called_names),
             })
+
+            if tool_callback and called_names:
+                await tool_callback()
 
     return "\n".join(all_texts) or "（内部错误：工具调用次数过多）"
