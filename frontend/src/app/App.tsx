@@ -29,6 +29,7 @@ export default function App() {
   const [memories, setMemories] = useState<ListItem[]>([]);
   const [reminders, setReminders] = useState<ListItem[]>([]);
   const [todos, setTodos] = useState<ListItem[]>([]);
+  const [deadlines, setDeadlines] = useState<ListItem[]>([]);
 
   useEffect(() => {
     // Fetch timeline
@@ -112,6 +113,19 @@ export default function App() {
         })));
       })
       .catch(err => console.error("Failed to load todos:", err));
+
+    // Fetch Deadlines
+    fetch('/api/deadlines')
+      .then(res => res.json())
+      .then(data => {
+        setDeadlines((data.deadlines || []).map((d: any) => ({
+          id: String(d.id),
+          title: d.title,
+          dueDate: new Date(d.due_time),
+          countdown: d.countdown,
+        })));
+      })
+      .catch(err => console.error("Failed to load deadlines:", err));
   }, [currentDate]);
 
   const handleTodoToggle = (id: string) => {
@@ -167,7 +181,12 @@ export default function App() {
         </div>
 
         <div className="flex-1 px-6 py-6 border-b border-border">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+            <ItemList
+              title="Deadline"
+              items={deadlines}
+              type="deadline"
+            />
             <ItemList
               title="记忆"
               items={memories}
