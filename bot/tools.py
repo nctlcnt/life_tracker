@@ -322,10 +322,12 @@ TOOLS = [
 
 # ── 工具子集：轮询和提醒路径不需要全部工具 ──
 
-# 只读查询工具（不修改数据，不需要 ✅ reaction）
-QUERY_TOOL_NAMES = {
-    "query_timeline",
-    "list_reminders",
+# 新建类工具：只有这些操作才触发 ✅ reaction（update/delete/query 均不触发）
+SET_TOOL_NAMES = {
+    "log_timeline_event",
+    "set_reminder",
+    "save_memory",
+    "add_deadline",
 }
 
 # 随机轮询：主要是聊天、设提醒、管记忆

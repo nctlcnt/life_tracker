@@ -574,6 +574,7 @@ _MODE_SECTIONS = {
 def build_prompt(
     mode: str,
     *,
+    provider: str = "claude",
     memories: list[dict] | None = None,
     ongoing: list[dict] | None = None,
     reminders: list[dict] | None = None,
@@ -583,9 +584,16 @@ def build_prompt(
     """
     一步构建完整的 PromptParts 对象。
 
-    mode: "chat"（用户对话）或 "poll"（调度主动聊天）
+    mode:     "chat"（用户对话）或 "poll"（调度主动聊天）
+    provider: AI 引擎标识（"claude" / "gemini" / "relay"）。
+              TODO(provider-prompt): 目前所有引擎共用同一套 prompt；
+              后续按 provider 从 _PROVIDER_SECTIONS 中选对应的 persona /
+              response_core / tool_guidelines 等 section，以适配不同模型的
+              理解习惯（如 Gemini 需要更简短直接的指令风格）。
     其余参数：从 DB 取来的原始数据，由内部 _format_* 函数格式化。
     """
+    # TODO(provider-prompt): sections = _PROVIDER_SECTIONS[provider][mode]
+    _ = provider  # 预留参数，暂时未使用
     sections = _MODE_SECTIONS[mode]
     return PromptParts(
         mode=mode,

@@ -24,7 +24,8 @@ client = AsyncAnthropic(
 
 async def chat(db: Database, messages: list[dict],
                send_callback=None, tool_callback=None) -> str:
-    return await _base_chat(db, messages, _call_with_tools, send_callback, tool_callback)
+    return await _base_chat(db, messages, _call_with_tools, send_callback, tool_callback,
+                            provider="claude")
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
@@ -32,7 +33,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            send_callback=None, allow_silent: bool = False,
                            trigger: str | None = None) -> str | None:
     return await _base_scheduled_action(db, prompt, timestamp, history, _call_with_tools,
-                                        send_callback, allow_silent, trigger)
+                                        send_callback, allow_silent, trigger,
+                                        provider="claude")
 
 
 async def simple_completion(prompt: str) -> str:

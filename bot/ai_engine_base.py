@@ -81,11 +81,13 @@ def split_thinking(text: str) -> tuple[str, str]:
     return cleaned, thinking
 
 
-def _build_prompt(db: Database, mode: str, weather: str | None = None) -> PromptParts:
+def _build_prompt(db: Database, mode: str, provider: str = "claude",
+                  weather: str | None = None) -> PromptParts:
     """
     从 DB 取数据，构建完整的 PromptParts 对象。
 
-    mode: "chat"（用户对话）或 "poll"（调度主动聊天）
+    mode:     "chat"（用户对话）或 "poll"（调度主动聊天）
+    provider: AI 引擎标识，透传给 build_prompt（预留 provider-specific prompt 扩展）
     """
     memories = db.get_all_memories()
     ongoing = db.get_ongoing_events(limit=5)
@@ -98,6 +100,7 @@ def _build_prompt(db: Database, mode: str, weather: str | None = None) -> Prompt
 
     return build_prompt(
         mode,
+        provider=provider,
         memories=memories or None,
         ongoing=ongoing or None,
         reminders=reminders or None,
@@ -249,7 +252,8 @@ async def simple_completion(prompt: str, call_with_tools_fn) -> str:
 
 
 async def chat(db: Database, messages: list[dict],
-               call_with_tools_fn, send_callback=None, tool_callback=None) -> str:
+               call_with_tools_fn, send_callback=None, tool_callback=None,
+               provider: str = "claude") -> str:
     """
     处理用户消息的完整流程。
     messages: 调用方（discord_bot）已经从 Discord 历史构造好的消息列表，
@@ -268,7 +272,7 @@ async def chat(db: Database, messages: list[dict],
     weather = await get_weather_brief() if is_morning() else None
 
     # 构建 PromptParts（静态 + 动态上下文一步到位）
-    prompt = _build_prompt(db, "chat", weather=weather)
+    prompt = _build_prompt(db, "chat", provider=provider, weather=weather)
 
     # 调用大模型（可能需要多轮 tool calling）
     reply = await call_with_tools_fn(
@@ -288,7 +292,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            history: list[dict], call_with_tools_fn,
                            send_callback=None,
                            allow_silent: bool = False,
-                           trigger: str | None = None) -> str | None:
+                           trigger: str | None = None,
+                           provider: str = "claude") -> str | None:
     """
     统一的调度入口：处理主动聊天、提醒触发、睡前提醒等所有非用户消息的 AI 调用。
 
@@ -311,7 +316,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     # 早上时段查天气
     weather = await get_weather_brief() if is_morning() else None
 
-    prompt_parts = _build_prompt(db, "poll", weather=weather)
+    prompt_parts = _build_prompt(db, "poll", provider=provider, weather=weather)
 
     messages = [
         *history,

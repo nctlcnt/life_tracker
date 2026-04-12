@@ -11,7 +11,7 @@ from bot.ai_engine import chat, simple_completion
 from bot.weather import get_weather_brief
 from bot.prompts import WEATHER_REPORT_PROMPT
 from bot.database import Database
-from bot.tools import QUERY_TOOL_NAMES
+from bot.tools import SET_TOOL_NAMES
 from bot.logger import get_logger
 import config
 
@@ -100,7 +100,7 @@ class LifeTrackerBot(commands.Bot):
             tool_called_flag = False
             async def on_tool_call(tool_names: list[str]):
                 nonlocal tool_called_flag
-                if not tool_called_flag and any(n not in QUERY_TOOL_NAMES for n in tool_names):
+                if not tool_called_flag and any(n in SET_TOOL_NAMES for n in tool_names):
                     tool_called_flag = True
                     try:
                         await message.add_reaction("✅")
