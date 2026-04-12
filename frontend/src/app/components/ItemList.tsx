@@ -1,5 +1,5 @@
 import { motion } from 'motion/react';
-import { Check, Circle, Clock, Brain } from 'lucide-react';
+import { Check, Circle, Clock, Brain, CalendarClock } from 'lucide-react';
 
 export interface ListItem {
   id: string;
@@ -8,12 +8,13 @@ export interface ListItem {
   completed?: boolean;
   priority?: 'low' | 'medium' | 'high';
   dueDate?: Date;
+  countdown?: string;
 }
 
 interface ItemListProps {
   title: string;
   items: ListItem[];
-  type: 'memory' | 'reminder' | 'todo';
+  type: 'memory' | 'reminder' | 'todo' | 'deadline';
   onToggle?: (id: string) => void;
   maxHeight?: string;
 }
@@ -27,6 +28,8 @@ export function ItemList({ title, items, type, onToggle, maxHeight = '400px' }: 
         return <Clock className="w-4 h-4" />;
       case 'todo':
         return <Circle className="w-4 h-4" />;
+      case 'deadline':
+        return <CalendarClock className="w-4 h-4" />;
     }
   };
 
@@ -90,6 +93,13 @@ export function ItemList({ title, items, type, onToggle, maxHeight = '400px' }: 
                       <div className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
                         <Clock className="w-3 h-3" />
                         {item.dueDate.toLocaleDateString('zh-CN')}
+                      </div>
+                    )}
+                    {item.countdown && (
+                      <div className={`text-xs mt-1 font-medium ${
+                        item.countdown.includes('⚠️') ? 'text-destructive' : 'text-muted-foreground'
+                      }`}>
+                        {item.countdown}
                       </div>
                     )}
                   </div>

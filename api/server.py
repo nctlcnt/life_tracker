@@ -102,6 +102,21 @@ async def get_todos(all: bool = False):
     return {"todos": todos, "count": len(todos)}
 
 
+@app.get("/api/deadlines")
+async def get_deadlines():
+    """获取所有 active 的 deadline（含倒计时）"""
+    from bot.prompts import _format_countdown
+    db.expire_past_deadlines()
+    deadlines = db.get_active_deadlines()
+    result = []
+    for d in deadlines:
+        result.append({
+            **d,
+            "countdown": _format_countdown(d["due_time"]),
+        })
+    return {"deadlines": result, "count": len(result)}
+
+
 @app.get("/api/health")
 async def health_check():
     """健康检查"""
