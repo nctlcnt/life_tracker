@@ -89,7 +89,8 @@ def _build_prompt(db: Database, mode: str, weather: str | None = None) -> Prompt
     """
     memories = db.get_all_memories()
     ongoing = db.get_ongoing_events(limit=5)
-    reminders = db.list_active_reminders()
+    # poll 模式不传 reminders：提醒到时间自会触发，AI 不需要看待触发清单
+    reminders = db.list_active_reminders() if mode == "chat" else None
 
     # Deadline：先自动过期，再取 active
     db.expire_past_deadlines()
