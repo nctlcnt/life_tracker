@@ -1,6 +1,5 @@
 import { motion } from 'motion/react';
 import { Check, Circle, Clock, Brain } from 'lucide-react';
-import { ScrollArea } from './ui/scroll-area';
 
 export interface ListItem {
   id: string;
@@ -52,8 +51,7 @@ export function ItemList({ title, items, type, onToggle, maxHeight = '400px' }: 
         <div className="ml-auto text-sm text-muted-foreground">{items.length}</div>
       </div>
 
-      <ScrollArea style={{ maxHeight }}>
-        <div className="divide-y divide-border">
+      <div className="divide-y divide-border overflow-y-auto" style={{ maxHeight }}>
           {items.length === 0 ? (
             <div className="px-4 py-8 text-center text-sm text-muted-foreground">
               暂无{title}
@@ -106,8 +104,7 @@ export function ItemList({ title, items, type, onToggle, maxHeight = '400px' }: 
               </motion.div>
             ))
           )}
-        </div>
-      </ScrollArea>
+      </div>
     </div>
   );
 }
