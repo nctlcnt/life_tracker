@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { GanttChart } from './components/GanttChart';
 import { TimeDistribution } from './components/TimeDistribution';
 import { ItemList, ListItem } from './components/ItemList';
+import { WeekView, getMonday } from './components/WeekView';
 
 // 莫兰迪色系：低饱和、柔和的大地色调
 const CAT_COLORS: Record<string, string> = {
@@ -19,11 +20,18 @@ function catColor(cat: string) {
   return CAT_COLORS[cat] || CAT_COLORS['uncategorized'];
 }
 
+// ── 日期格式化 ─────────────────────────────────────────────────
+const DAY_NAMES_FULL = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+
+function fmtDateStr(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 export default function App() {
-  const [currentDate, setCurrentDate] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  });
+  const [viewMode, setViewMode] = useState<'day' | 'week'>('day');
+
+  // ── Day View State ───────────────────────────────────────────
+  const [currentDate, setCurrentDate] = useState(() => fmtDateStr(new Date()));
 
   const [ganttTasks, setGanttTasks] = useState<any[]>([]);
   const [memories, setMemories] = useState<ListItem[]>([]);
@@ -31,7 +39,18 @@ export default function App() {
   const [todos, setTodos] = useState<ListItem[]>([]);
   const [deadlines, setDeadlines] = useState<ListItem[]>([]);
 
+  // ── Week View State ──────────────────────────────────────────
+  const [weekStart, setWeekStart] = useState(() => getMonday(new Date()));
+
+  // ── 今日显示 ─────────────────────────────────────────────────
+  const today = new Date();
+  const todayDate = today.getDate();
+  const todayMonth = today.getMonth() + 1;
+  const todayDayName = DAY_NAMES_FULL[today.getDay()];
+
   useEffect(() => {
+    if (viewMode !== 'day') return;
+
     // Fetch timeline
     const startIso = `${currentDate}T00:00:00`;
     const endIso = `${currentDate}T23:59:59`;
@@ -126,7 +145,7 @@ export default function App() {
         })));
       })
       .catch(err => console.error("Failed to load deadlines:", err));
-  }, [currentDate]);
+  }, [currentDate, viewMode]);
 
   const handleTodoToggle = (id: string) => {
     // Optionally call backend if exists, for now just toggle state
@@ -140,7 +159,7 @@ export default function App() {
   const shiftDate = (days: number) => {
     const d = new Date(currentDate + 'T00:00:00');
     d.setDate(d.getDate() + days);
-    setCurrentDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+    setCurrentDate(fmtDateStr(d));
   };
 
   const chartStart = new Date(`${currentDate}T00:00:00`);
@@ -150,61 +169,105 @@ export default function App() {
     <div className="size-full bg-background overflow-auto text-foreground">
       <div className="min-h-full flex flex-col">
         <header className="px-6 py-4 border-b border-border flex items-center justify-between">
-          <h1 className="text-lg font-semibold">Life Tracker</h1>
-          <div className="flex items-center gap-2">
-            <button onClick={() => shiftDate(-1)} className="px-2 py-1 rounded border border-border hover:bg-muted text-sm transition-colors">‹</button>
-            <input 
-              type="date" 
-              value={currentDate} 
-              onChange={e => setCurrentDate(e.target.value)}
-              className="px-2 py-1 rounded border border-border bg-transparent text-sm min-w-[125px] outline-none"
-            />
-            <button onClick={() => shiftDate(1)} className="px-2 py-1 rounded border border-border hover:bg-muted text-sm transition-colors">›</button>
-            <button 
-              onClick={() => {
-                const d = new Date();
-                setCurrentDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
-              }}
-              className="px-3 py-1 rounded border border-border hover:bg-muted text-sm transition-colors ml-1"
-            >
-              今天
-            </button>
+          {/* 左上角：今日日期 */}
+          <div className="flex items-baseline gap-2">
+            <h1 className="text-2xl font-bold tracking-tight text-foreground leading-none" style={{ fontFamily: "'Inter', 'SF Pro Display', -apple-system, sans-serif" }}>
+              {todayMonth}月{todayDate}日
+            </h1>
+            <span className="text-sm text-muted-foreground font-medium">{todayDayName}</span>
+          </div>
+
+          {/* 右侧：视图切换 + 日期导航 */}
+          <div className="flex items-center gap-3">
+            {/* 日/周 切换 */}
+            <div className="flex rounded-md border border-border overflow-hidden">
+              <button
+                onClick={() => setViewMode('day')}
+                className={`px-3 py-1 text-sm transition-colors ${
+                  viewMode === 'day'
+                    ? 'bg-foreground text-background font-medium'
+                    : 'bg-transparent text-muted-foreground hover:bg-muted'
+                }`}
+              >
+                日
+              </button>
+              <button
+                onClick={() => setViewMode('week')}
+                className={`px-3 py-1 text-sm transition-colors ${
+                  viewMode === 'week'
+                    ? 'bg-foreground text-background font-medium'
+                    : 'bg-transparent text-muted-foreground hover:bg-muted'
+                }`}
+              >
+                周
+              </button>
+            </div>
+
+            {/* 日视图的日期导航 */}
+            {viewMode === 'day' && (
+              <div className="flex items-center gap-2">
+                <button onClick={() => shiftDate(-1)} className="px-2 py-1 rounded border border-border hover:bg-muted text-sm transition-colors">‹</button>
+                <input 
+                  type="date" 
+                  value={currentDate} 
+                  onChange={e => setCurrentDate(e.target.value)}
+                  className="px-2 py-1 rounded border border-border bg-transparent text-sm min-w-[125px] outline-none"
+                />
+                <button onClick={() => shiftDate(1)} className="px-2 py-1 rounded border border-border hover:bg-muted text-sm transition-colors">›</button>
+                <button 
+                  onClick={() => setCurrentDate(fmtDateStr(new Date()))}
+                  className="px-3 py-1 rounded border border-border hover:bg-muted text-sm transition-colors ml-1"
+                >
+                  今天
+                </button>
+              </div>
+            )}
           </div>
         </header>
 
-        <div className="flex-none pt-4 border-b border-border">
-            <GanttChart tasks={ganttTasks} startDate={chartStart} endDate={chartEnd} />
-        </div>
-
-        <div className="flex-none border-b border-border">
-            <TimeDistribution tasks={ganttTasks} catColors={CAT_COLORS} />
-        </div>
-
-        <div className="flex-1 px-6 py-6 border-b border-border">
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-            <ItemList
-              title="Deadline"
-              items={deadlines}
-              type="deadline"
-            />
-            <ItemList
-              title="记忆"
-              items={memories}
-              type="memory"
-            />
-            <ItemList
-              title="提醒"
-              items={reminders}
-              type="reminder"
-            />
-            <ItemList
-              title="待办"
-              items={todos}
-              type="todo"
-              onToggle={handleTodoToggle}
-            />
+        {viewMode === 'week' ? (
+          /* ── 周视图 ──────────────────────────────────────── */
+          <div className="flex-1">
+            <WeekView weekStart={weekStart} onWeekChange={setWeekStart} />
           </div>
-        </div>
+        ) : (
+          /* ── 日视图（原有内容）──────────────────────────── */
+          <>
+            <div className="flex-none pt-4 border-b border-border">
+                <GanttChart tasks={ganttTasks} startDate={chartStart} endDate={chartEnd} />
+            </div>
+
+            <div className="flex-none border-b border-border">
+                <TimeDistribution tasks={ganttTasks} catColors={CAT_COLORS} />
+            </div>
+
+            <div className="flex-1 px-6 py-6 border-b border-border">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+                <ItemList
+                  title="Deadline"
+                  items={deadlines}
+                  type="deadline"
+                />
+                <ItemList
+                  title="记忆"
+                  items={memories}
+                  type="memory"
+                />
+                <ItemList
+                  title="提醒"
+                  items={reminders}
+                  type="reminder"
+                />
+                <ItemList
+                  title="待办"
+                  items={todos}
+                  type="todo"
+                  onToggle={handleTodoToggle}
+                />
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
