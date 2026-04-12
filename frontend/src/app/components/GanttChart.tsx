@@ -14,6 +14,7 @@ interface GanttTask {
   startDate: Date;
   endDate: Date;
   color?: string;
+  notes?: string | null;
   row: number;
 }
 
@@ -197,6 +198,11 @@ export function GanttChart({ tasks, startDate, endDate }: GanttChartProps) {
                         {task.category && (
                           <div className="text-[10px] text-muted-foreground pl-4">
                             {task.category}
+                          </div>
+                        )}
+                        {task.notes && (
+                          <div className="text-[10px] text-muted-foreground pl-4 leading-relaxed whitespace-pre-line">
+                            {task.notes}
                           </div>
                         )}
                         <div className="text-[10px] text-muted-foreground pl-4 tabular-nums">
