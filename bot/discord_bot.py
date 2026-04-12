@@ -96,7 +96,17 @@ class LifeTrackerBot(commands.Bot):
             async def send_reply(text):
                 await _send_chat_chunks(message.channel, text)
 
-            await chat(self.db, ai_messages, send_callback=send_reply)
+            tool_called_flag = False
+            async def on_tool_call():
+                nonlocal tool_called_flag
+                if not tool_called_flag:
+                    tool_called_flag = True
+                    try:
+                        await message.add_reaction("✅")
+                    except Exception as react_err:
+                        logger.warning(f"⚠️ 无法添加反馈 emoji: {react_err}")
+
+            await chat(self.db, ai_messages, send_callback=send_reply, tool_callback=on_tool_call)
         except Exception as e:
             error_msg = f"❌ {type(e).__name__}: {e}"
             logger.exception(error_msg)
@@ -144,6 +154,13 @@ class LifeTrackerBot(commands.Bot):
                 # 时间戳前缀（转本地时区）
                 ts = m.created_at.astimezone().strftime("%Y-%m-%d %H:%M")
                 content = f"[{ts}] {m.content}" if m.content else f"[{ts}] "
+                
+                # 如果消息上有 ✅ 标记（代表曾被工具处理过），给 AI 增加一个已执行提示
+                for r in m.reactions:
+                    if str(r.emoji) == "✅":
+                        content += " [已执行✅]"
+                        break
+
                 raw_messages.append({"role": role, "content": content})
 
             # Discord 返回的是新→旧，反转成时间顺序
