@@ -5,7 +5,12 @@ AI 引擎模块 (中转站版)
 import json
 import httpx
 from bot.tools import TOOLS
-from bot.prompts import build_tool_round_hint, SYSTEM_PROMPT_CONCISE, PERSONA_MARKER
+from bot.prompts import (
+    build_tool_round_hint, PERSONA_MARKER,
+    apply_dynamic_sections,
+    SYSTEM_PROMPT_CONCISE_CHAT, SYSTEM_PROMPT_CONCISE_POLL,
+    TOOL_GUIDELINES_CHAT,
+)
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool, split_thinking,
@@ -35,7 +40,7 @@ async def simple_completion(prompt: str) -> str:
 
 
 async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict],
-                           send_callback=None, dynamic_context: str | None = None,
+                           send_callback=None, dynamic_context: dict[str, str] | None = None,
                            model: str | None = None, tool_names: set | None = None) -> str:
     """用 httpx 直接调用 OpenAI 兼容的中转站 API。"""
     if not model:
@@ -52,19 +57,18 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
 
     logger.info(f"🌐 Relay URL: {url}")
 
-    # system prompt 合并动态上下文
-    full_system = system_prompt
-    if dynamic_context:
-        full_system += "\n\n" + dynamic_context
+    # system prompt 合并动态上下文：将 {{XXX_SECTION}} 占位符替换为实际动态上下文段落
+    full_system = apply_dynamic_sections(system_prompt, dynamic_context or {})
 
-    # 中间轮精简版：去掉 TOOL_GUIDELINES 段，只留 PERSONA + RESPONSE_GUIDELINES + TIME_PERCEPTION
+    # 中间轮精简版：去掉 TOOL_GUIDELINES 段，只留核心人设+回复规则+时间感知
     # Relay 没有 prompt caching，这个开关每个中间轮直接省下几千 token。
+    # 通过检查原始 system_prompt 中是否含有 Chat 版工具指南来区分 Chat/Poll 场景
     concise_switch = bool(system_prompt) and PERSONA_MARKER in system_prompt
     concise_system = None
     if concise_switch:
-        concise_system = SYSTEM_PROMPT_CONCISE
-        if dynamic_context:
-            concise_system += "\n\n" + dynamic_context
+        is_chat = TOOL_GUIDELINES_CHAT.strip()[:50] in system_prompt
+        concise_base = SYSTEM_PROMPT_CONCISE_CHAT if is_chat else SYSTEM_PROMPT_CONCISE_POLL
+        concise_system = apply_dynamic_sections(concise_base, dynamic_context or {})
 
     # 按 tool_names 过滤工具子集
     tools = TOOLS
