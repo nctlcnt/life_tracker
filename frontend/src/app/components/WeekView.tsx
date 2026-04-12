@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { motion } from 'motion/react';
-import { CalendarClock, Clock, StickyNote } from 'lucide-react';
+import { CalendarClock } from 'lucide-react';
 
 // ── 莫兰迪色系（与 App 保持一致）──────────────────────────────
 const CAT_COLORS: Record<string, string> = {
@@ -221,12 +221,12 @@ export function WeekView({ weekStart, onWeekChange }: WeekViewProps) {
           加载中…
         </div>
       ) : (
-        <div className="flex-1 overflow-auto px-4 py-4 sm:px-6">
+        <div className="flex-1 min-h-0 px-4 py-3 sm:px-5">
           <div
-            className="grid gap-3"
+            className="grid gap-3 h-full"
             style={{
               gridTemplateColumns: 'repeat(3, 1fr)',
-              gridTemplateRows: 'auto auto auto',
+              gridTemplateRows: '1fr 1fr 1fr',
             }}
           >
             {/* 周一 ~ 周六（前 6 天）*/}
@@ -273,12 +273,11 @@ interface DayCardProps {
 
 function DayCard({ day, dayName, isToday, hasDeadline, index }: DayCardProps) {
   const dateNum = day.date.getDate();
-  const notesEvents = day.segments.filter(s => s.notes);
 
   return (
     <motion.div
       className={`
-        rounded-lg border overflow-hidden flex flex-col
+        rounded-lg border overflow-hidden flex flex-col min-h-0
         ${isToday
           ? 'border-foreground/20 bg-muted/30 shadow-sm'
           : 'border-border bg-background hover:bg-muted/20'
@@ -291,7 +290,7 @@ function DayCard({ day, dayName, isToday, hasDeadline, index }: DayCardProps) {
     >
       {/* 日历头 */}
       <div className={`
-        px-3 py-2 flex items-baseline gap-2 border-b
+        px-3 py-2 flex items-baseline gap-2 border-b flex-shrink-0
         ${isToday ? 'border-foreground/10' : 'border-border'}
       `}>
         <span className={`
@@ -316,13 +315,13 @@ function DayCard({ day, dayName, isToday, hasDeadline, index }: DayCardProps) {
         )}
       </div>
 
-      {/* 事件列表 */}
-      <div className="flex-1 px-3 py-2 space-y-1.5 min-h-[60px] max-h-[200px] overflow-y-auto">
+      {/* 事件列表（含 notes 内联） */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-2">
         {day.segments.length === 0 ? (
           <div className="text-xs text-muted-foreground/50 italic py-2">无事件</div>
         ) : (
           day.segments.map((seg, i) => (
-            <div key={seg.id || i} className="flex items-start gap-2 group">
+            <div key={seg.id || i} className="flex items-start gap-2 min-h-[1.375rem]">
               {/* 类别圆点 */}
               <span
                 className="w-2 h-2 rounded-full mt-[5px] flex-shrink-0"
@@ -343,27 +342,16 @@ function DayCard({ day, dayName, isToday, hasDeadline, index }: DayCardProps) {
                     </>
                   )}
                 </div>
+                {seg.notes && (
+                  <div className="text-[11px] text-muted-foreground leading-relaxed mt-0.5 whitespace-pre-line">
+                    {seg.notes}
+                  </div>
+                )}
               </div>
             </div>
           ))
         )}
       </div>
-
-      {/* 笔记区域 */}
-      {notesEvents.length > 0 && (
-        <div className="border-t border-border/60 px-3 py-2 space-y-1">
-          <div className="flex items-center gap-1 text-muted-foreground mb-0.5">
-            <StickyNote className="w-3 h-3" />
-            <span className="text-[10px] font-medium">笔记</span>
-          </div>
-          {notesEvents.map((seg, i) => (
-            <div key={`note-${seg.id || i}`} className="text-[11px] text-muted-foreground leading-relaxed pl-4">
-              <span className="text-foreground/60 mr-1">{seg.content}:</span>
-              <span className="whitespace-pre-line">{seg.notes}</span>
-            </div>
-          ))}
-        </div>
-      )}
     </motion.div>
   );
 }
@@ -391,7 +379,7 @@ function DeadlinePanel({ deadlines, style }: DeadlinePanelProps) {
       </div>
 
       {/* 列表 */}
-      <div className="flex-1 px-4 py-2 space-y-2 overflow-y-auto max-h-[200px]">
+      <div className="flex-1 min-h-0 px-4 py-2 space-y-2 overflow-y-auto">
         {deadlines.length === 0 ? (
           <div className="text-xs text-muted-foreground/50 italic py-4 text-center">本周暂无 Deadline</div>
         ) : (
