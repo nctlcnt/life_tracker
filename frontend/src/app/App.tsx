@@ -84,7 +84,14 @@ export default function App() {
     fetch('/api/reminders')
       .then(res => res.json())
       .then(data => {
-        setReminders(data.map((r: any) => ({
+        const sorted = [...data].sort((a: any, b: any) => {
+          const aIsPending = a.status === 'pending' ? 0 : 1;
+          const bIsPending = b.status === 'pending' ? 0 : 1;
+          if (aIsPending !== bIsPending) return aIsPending - bIsPending;
+          // Within same group, sort by trigger_time ascending (nearest first)
+          return new Date(a.trigger_time).getTime() - new Date(b.trigger_time).getTime();
+        });
+        setReminders(sorted.map((r: any) => ({
           id: String(r.id),
           title: r.action,
           description: `状态: ${r.status}`,

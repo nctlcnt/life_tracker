@@ -1,5 +1,6 @@
 import { motion } from 'motion/react';
 import { Check, Circle, Clock, Brain } from 'lucide-react';
+import { ScrollArea } from './ui/scroll-area';
 
 export interface ListItem {
   id: string;
@@ -15,9 +16,10 @@ interface ItemListProps {
   items: ListItem[];
   type: 'memory' | 'reminder' | 'todo';
   onToggle?: (id: string) => void;
+  maxHeight?: string;
 }
 
-export function ItemList({ title, items, type, onToggle }: ItemListProps) {
+export function ItemList({ title, items, type, onToggle, maxHeight = '400px' }: ItemListProps) {
   const getIcon = () => {
     switch (type) {
       case 'memory':
@@ -50,60 +52,62 @@ export function ItemList({ title, items, type, onToggle }: ItemListProps) {
         <div className="ml-auto text-sm text-muted-foreground">{items.length}</div>
       </div>
 
-      <div className="divide-y divide-border">
-        {items.length === 0 ? (
-          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-            暂无{title}
-          </div>
-        ) : (
-          items.map((item, idx) => (
-            <motion.div
-              key={item.id}
-              className="px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer"
-              onClick={() => onToggle?.(item.id)}
-              initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.2, delay: idx * 0.03 }}
-            >
-              <div className="flex items-start gap-3">
-                {type === 'todo' && (
-                  <div className="mt-0.5">
-                    {item.completed ? (
-                      <Check className="w-4 h-4 text-primary" />
-                    ) : (
-                      <Circle className="w-4 h-4 text-muted-foreground" />
+      <ScrollArea style={{ maxHeight }}>
+        <div className="divide-y divide-border">
+          {items.length === 0 ? (
+            <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+              暂无{title}
+            </div>
+          ) : (
+            items.map((item, idx) => (
+              <motion.div
+                key={item.id}
+                className="px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer"
+                onClick={() => onToggle?.(item.id)}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ duration: 0.2, delay: idx * 0.03 }}
+              >
+                <div className="flex items-start gap-3">
+                  {type === 'todo' && (
+                    <div className="mt-0.5">
+                      {item.completed ? (
+                        <Check className="w-4 h-4 text-primary" />
+                      ) : (
+                        <Circle className="w-4 h-4 text-muted-foreground" />
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex-1 min-w-0">
+                    <div className={`text-sm ${item.completed ? 'line-through text-muted-foreground' : 'text-foreground'}`}>
+                      {item.title}
+                    </div>
+                    {item.description && (
+                      <div className="text-xs text-muted-foreground mt-1">
+                        {item.description}
+                      </div>
+                    )}
+                    {item.dueDate && (
+                      <div className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
+                        <Clock className="w-3 h-3" />
+                        {item.dueDate.toLocaleDateString('zh-CN')}
+                      </div>
                     )}
                   </div>
-                )}
 
-                <div className="flex-1 min-w-0">
-                  <div className={`text-sm ${item.completed ? 'line-through text-muted-foreground' : 'text-foreground'}`}>
-                    {item.title}
-                  </div>
-                  {item.description && (
-                    <div className="text-xs text-muted-foreground mt-1">
-                      {item.description}
-                    </div>
-                  )}
-                  {item.dueDate && (
-                    <div className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
-                      <Clock className="w-3 h-3" />
-                      {item.dueDate.toLocaleDateString('zh-CN')}
-                    </div>
+                  {item.priority && (
+                    <div
+                      className="w-1.5 h-1.5 rounded-full mt-2"
+                      style={{ backgroundColor: getPriorityColor(item.priority) }}
+                    />
                   )}
                 </div>
-
-                {item.priority && (
-                  <div
-                    className="w-1.5 h-1.5 rounded-full mt-2"
-                    style={{ backgroundColor: getPriorityColor(item.priority) }}
-                  />
-                )}
-              </div>
-            </motion.div>
-          ))
-        )}
-      </div>
+              </motion.div>
+            ))
+          )}
+        </div>
+      </ScrollArea>
     </div>
   );
 }
