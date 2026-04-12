@@ -226,7 +226,7 @@ export function WeekView({ weekStart, onWeekChange }: WeekViewProps) {
             className="grid gap-3 h-full"
             style={{
               gridTemplateColumns: 'repeat(3, 1fr)',
-              gridTemplateRows: '1fr 1fr 1fr',
+              gridTemplateRows: 'repeat(3, minmax(0, 1fr))',
             }}
           >
             {/* 周一 ~ 周六（前 6 天）*/}
