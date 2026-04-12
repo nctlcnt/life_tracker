@@ -167,7 +167,7 @@ export default function App() {
 
   return (
     <div className="size-full bg-background overflow-hidden flex flex-col text-foreground">
-        <header className="px-6 py-4 border-b border-border flex items-center justify-between">
+        <header className="px-8 py-5 border-b border-border flex items-center justify-between">
           {/* 左上角：今日日期 */}
           <div className="flex items-baseline gap-2">
             <h1 className="text-2xl font-bold tracking-tight text-foreground leading-none" style={{ fontFamily: "'Inter', 'SF Pro Display', -apple-system, sans-serif" }}>
@@ -240,8 +240,8 @@ export default function App() {
                 <TimeDistribution tasks={ganttTasks} catColors={CAT_COLORS} />
             </div>
 
-            <div className="flex-1 px-6 py-6 border-b border-border">
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+            <div className="flex-1 px-8 py-8 border-b border-border">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-8">
                 <ItemList
                   title="Deadline"
                   items={deadlines}
