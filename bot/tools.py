@@ -324,14 +324,14 @@ TOOLS = [
 
 # 随机轮询：主要是聊天、设提醒、管记忆
 POLL_TOOL_NAMES = {
-    "set_reminder", "delete_reminder", "query_timeline", "list_reminders",
+    "set_reminder", "delete_reminder", "list_reminders",
     "save_memory", "delete_memory", "update_memory",
     "add_deadline", "complete_deadline", "delete_deadline",
 }
 
 # 提醒触发：回应提醒、管记忆、取消后续提醒（禁止 set_reminder 防死循环）
 REMINDER_TOOL_NAMES = {
-    "query_timeline", "list_reminders", "cancel_reminders", "delete_reminder",
+    "list_reminders", "cancel_reminders", "delete_reminder",
     "save_memory", "delete_memory", "update_memory",
 }
 
