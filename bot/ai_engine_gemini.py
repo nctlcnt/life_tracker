@@ -29,9 +29,10 @@ async def chat(db: Database, messages: list[dict],
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            history: list[dict],
-                           send_callback=None, allow_silent: bool = False) -> str | None:
+                           send_callback=None, allow_silent: bool = False,
+                           trigger: str | None = None) -> str | None:
     return await _base_scheduled_action(db, prompt, timestamp, history, _call_with_tools,
-                                        send_callback, allow_silent)
+                                        send_callback, allow_silent, trigger)
 
 
 async def simple_completion(prompt: str) -> str:
@@ -150,7 +151,7 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
                 if round_text:
                     user_text, thinking = split_thinking(round_text)
                     if thinking:
-                        logger.info(f"🧠 最后一轮独白（已剥离）: {thinking}")
+                        logger.info(f"🧠 最后一轮独白（已剥离）:\n{thinking.strip()}")
                     if user_text:
                         if send_callback:
                             await send_callback(user_text)
@@ -160,7 +161,8 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
             # 中间轮：文本视为内心独白，不发给用户、不计入最终回复
             if round_text:
                 _u, _t = split_thinking(round_text)
-                logger.info(f"🧠 内心独白: {_t or _u or round_text}")
+                monologue = (_t or _u or round_text).strip()
+                logger.info(f"🧠 内心独白:\n{monologue}")
 
             current_messages.append({
                 "role": "model",
@@ -173,6 +175,12 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
             for tc in tool_calls:
                 func_name = tc.get("name")
                 func_args = tc.get("args", {})
+                
+                desc = next((t["function"].get("description", "") for t in TOOLS if t["function"]["name"] == func_name), "")
+                desc_first = desc.split("。")[0] if desc else ""
+                logger.info(f"🛠️ 调用工具: {func_name} | {desc_first}")
+                logger.info(f"   参数: {func_args}")
+                
                 result = _execute_tool(db, func_name, func_args)
                 called_names.append(func_name)
                 tool_responses.append({

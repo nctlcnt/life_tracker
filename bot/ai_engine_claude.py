@@ -29,9 +29,10 @@ async def chat(db: Database, messages: list[dict],
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            history: list[dict],
-                           send_callback=None, allow_silent: bool = False) -> str | None:
+                           send_callback=None, allow_silent: bool = False,
+                           trigger: str | None = None) -> str | None:
     return await _base_scheduled_action(db, prompt, timestamp, history, _call_with_tools,
-                                        send_callback, allow_silent)
+                                        send_callback, allow_silent, trigger)
 
 
 async def simple_completion(prompt: str) -> str:
@@ -97,9 +98,6 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
 
         response = await client.messages.create(**kwargs)
 
-        logger.info(f"🤖 stop_reason: {response.stop_reason}")
-        logger.info(f"🤖 content: {response.content}")
-
         # Token usage & prompt caching 验证
         if hasattr(response, 'usage'):
             u = response.usage
@@ -127,7 +125,7 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
             if round_text:
                 user_text, thinking = split_thinking(round_text)
                 if thinking:
-                    logger.info(f"🧠 最后一轮独白（已剥离）: {thinking}")
+                    logger.info(f"🧠 最后一轮独白（已剥离）:\n{thinking.strip()}")
                 if user_text:
                     if send_callback:
                         await send_callback(user_text)
@@ -139,7 +137,8 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
             if round_text:
                 # 中间轮的 <think> 或 <thinking> 标签可有可无，有的话只记干净版本到日志
                 _u, _t = split_thinking(round_text)
-                logger.info(f"🧠 内心独白: {_t or _u or round_text}")
+                monologue = (_t or _u or round_text).strip()
+                logger.info(f"🧠 内心独白:\n{monologue}")
 
             # 把 assistant 的完整回复加入消息（包含 text + tool_use）
             messages.append({"role": "assistant", "content": response.content})
@@ -148,6 +147,11 @@ async def _call_with_tools(db: Database, system_prompt: str, messages: list[dict
             tool_results = []
             called_names = []
             for tool_use in tool_uses:
+                desc = next((t.get("description", "") for t in TOOLS_ANTHROPIC if t["name"] == tool_use.name), "")
+                desc_first = desc.split("。")[0] if desc else ""
+                logger.info(f"🛠️ 调用工具: {tool_use.name} | {desc_first}")
+                logger.info(f"   参数: {tool_use.input}")
+                
                 result = _execute_tool(db, tool_use.name, tool_use.input)
                 called_names.append(tool_use.name)
                 tool_results.append({
