@@ -166,8 +166,7 @@ export default function App() {
   const chartEnd = new Date(`${currentDate}T23:59:59`);
 
   return (
-    <div className="size-full bg-background overflow-auto text-foreground">
-      <div className="min-h-full flex flex-col">
+    <div className="size-full bg-background overflow-hidden flex flex-col text-foreground">
         <header className="px-6 py-4 border-b border-border flex items-center justify-between">
           {/* 左上角：今日日期 */}
           <div className="flex items-baseline gap-2">
@@ -232,7 +231,7 @@ export default function App() {
           </div>
         ) : (
           /* ── 日视图（原有内容）──────────────────────────── */
-          <>
+          <div className="flex-1 overflow-auto flex flex-col min-h-0">
             <div className="flex-none pt-4 border-b border-border">
                 <GanttChart tasks={ganttTasks} startDate={chartStart} endDate={chartEnd} />
             </div>
@@ -266,9 +265,8 @@ export default function App() {
                 />
               </div>
             </div>
-          </>
+          </div>
         )}
-      </div>
     </div>
   );
 }
