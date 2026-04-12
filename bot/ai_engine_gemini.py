@@ -57,8 +57,9 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
     model_name = model if "gemini" in model.lower() else "gemini-2.0-flash"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
 
-    # 拍平 PromptParts 为单个字符串
+    # 拍平 PromptParts 为单个字符串（全量）；中间轮用精简版省 token，最后一轮用全量
     system_prompt = prompt.flatten() if prompt else ""
+    concise_prompt = prompt.concise().flatten() if prompt else None
 
     # 转换工具格式
     def convert_type(schema):
@@ -96,11 +97,14 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
 
     async with httpx.AsyncClient() as client:
         current_messages = [m.copy() for m in messages]
+        is_intermediate = False  # 首轮发全量；有过工具调用后切精简
 
         for _ in range(5):
+            current_prompt = (concise_prompt if is_intermediate and concise_prompt
+                              else system_prompt)
             gemini_payload = {
                 "systemInstruction": {
-                    "parts": [{"text": system_prompt}]
+                    "parts": [{"text": current_prompt}]
                 },
                 "contents": _convert_to_gemini_format(current_messages),
             }
@@ -139,6 +143,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                     if thinking:
                         logger.info(f"🧠 最后一轮独白（已剥离）:\n{thinking.strip()}")
                     if user_text:
+                        logger.info(f"💬 发送回复:\n{user_text}")
                         if send_callback:
                             await send_callback(user_text)
                         all_texts.append(user_text)
@@ -183,6 +188,8 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                 "role": "user",
                 "content": tool_responses
             })
+
+            is_intermediate = True  # 已有过工具调用，后续轮次用精简 prompt
 
             if tool_callback and called_names:
                 await tool_callback(called_names)

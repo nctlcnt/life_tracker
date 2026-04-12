@@ -103,6 +103,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                 if thinking:
                     logger.info(f"🧠 最后一轮独白（已剥离）:\n{thinking.strip()}")
                 if user_text:
+                    logger.info(f"💬 发送回复:\n{user_text}")
                     if send_callback:
                         await send_callback(user_text)
                     all_texts.append(user_text)
