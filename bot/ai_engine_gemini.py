@@ -3,9 +3,8 @@ AI 引擎模块 (Gemini 版本)
 负责调用 Google Gemini API，处理 tool calling
 """
 import httpx
-from bot.tools import (
-    TOOLS, build_tool_round_hint, SYSTEM_PROMPT_CONCISE, PERSONA_MARKER,
-)
+from bot.tools import TOOLS
+from bot.prompts import build_tool_round_hint, SYSTEM_PROMPT_CONCISE, PERSONA_MARKER
 from bot.database import Database
 from bot.ai_engine_base import (
     _execute_tool, split_thinking,

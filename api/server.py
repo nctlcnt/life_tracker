@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from bot.database import Database
-from bot.merge import merge_events, merge_parallel_events
+from bot.merge import merge_events
 
 app = FastAPI(title="Life Tracker API")
 
@@ -37,10 +37,8 @@ async def get_timeline(
     """查询时间范围内的合并后时间段（前端主要用这个）"""
     raw_events = db.get_events(start, end)
     segments = merge_events(raw_events)
-    parallel_segments = merge_parallel_events(raw_events)
     return {
         "segments": segments,
-        "parallel_segments": parallel_segments,
         "count": len(segments),
     }
 

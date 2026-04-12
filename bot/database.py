@@ -177,14 +177,24 @@ class Database:
         return affected > 0
 
     def get_events(self, start: str, end: str) -> list[dict]:
-        """查询时间范围内的事件"""
+        """查询时间范围内的事件（包括跨日事件：start_time 在范围之前但 end_time 在范围内的）"""
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT * FROM events WHERE start_time >= ? AND start_time <= ? ORDER BY start_time",
-            (start, end)
+            "SELECT * FROM events WHERE "
+            "(start_time >= ? AND start_time <= ?) "
+            "OR (start_time < ? AND end_time > ?) "
+            "ORDER BY start_time",
+            (start, end, start, start)
         ).fetchall()
         conn.close()
         return [dict(row) for row in rows]
+
+    def get_event_by_id(self, event_id: int) -> Optional[dict]:
+        """根据 ID 获取单条事件"""
+        conn = self._get_conn()
+        row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+        conn.close()
+        return dict(row) if row else None
 
     def get_all_categories(self) -> list[str]:
         """获取所有已有的分类"""
