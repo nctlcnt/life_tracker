@@ -157,7 +157,13 @@ class Scheduler:
             next_time_str = self.db.get_next_reminder_time()
 
             if next_time_str:
+                # AI 偶尔会写带时区偏移的 ISO 串（如 ...+10:00），此时
+                # fromisoformat 返回 tz-aware datetime；但本代码库其它地方
+                # 都用 naive local 时间（datetime.now()），直接相减会抛
+                # TypeError。统一剥掉 tzinfo 当 naive local 用。
                 next_time = datetime.fromisoformat(next_time_str)
+                if next_time.tzinfo is not None:
+                    next_time = next_time.replace(tzinfo=None)
                 wait = max((next_time - datetime.now()).total_seconds(), 0)
                 logger.info(f"⏰ 下条提醒在 {next_time_str} ({int(wait)}s 后)")
             else:
