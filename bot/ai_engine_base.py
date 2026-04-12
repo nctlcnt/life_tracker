@@ -50,11 +50,17 @@ def _build_dynamic_context(db: Database, weather: str | None = None) -> dict[str
     memories = db.get_all_memories()
     ongoing = db.get_ongoing_events(limit=5)
     reminders = db.list_active_reminders()
+
+    # Deadline：先自动过期，再取 active
+    db.expire_past_deadlines()
+    deadlines = db.get_active_deadlines()
+
     return render_dynamic_context(
         memories=memories or None,
         ongoing=ongoing or None,
         reminders=reminders or None,
         weather=weather,
+        deadlines=deadlines or None,
     )
 
 
@@ -159,6 +165,25 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
     elif tool_name == "update_memory":
         db.update_memory(args["memory_id"], args["content"])
         return {"status": "ok"}
+
+    elif tool_name == "add_deadline":
+        deadline_id = db.add_deadline(
+            title=args["title"],
+            due_time=args["due_time"],
+        )
+        return {"success": True, "deadline_id": deadline_id, "message": "Deadline 已记录"}
+
+    elif tool_name == "complete_deadline":
+        ok = db.complete_deadline(args["deadline_id"])
+        if ok:
+            return {"success": True, "message": "Deadline 已标记完成"}
+        return {"success": False, "message": f"未找到 active 的 deadline_id={args['deadline_id']}"}
+
+    elif tool_name == "delete_deadline":
+        ok = db.delete_deadline(args["deadline_id"])
+        if ok:
+            return {"success": True, "message": "Deadline 已删除"}
+        return {"success": False, "message": f"未找到 deadline_id={args['deadline_id']}"}
 
     else:
         return {"success": False, "message": f"未知工具: {tool_name}"}

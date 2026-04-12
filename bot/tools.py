@@ -262,6 +262,61 @@ TOOLS = [
                 "required": ["memory_id", "content"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_deadline",
+            "description": "记录一个 deadline。用户提到截止日期、考试时间、提交时间时调用。系统会自动计算倒计时并在动态上下文中展示。存完后记得检查记忆里有没有纯记录时间的重复条目，有就 delete_memory。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "deadline 标题，简洁明确，如 '数据科学期中考'、'Spark 作业'"
+                    },
+                    "due_time": {
+                        "type": "string",
+                        "description": "截止时间，ISO 8601 格式。相对时间要转成绝对时间"
+                    }
+                },
+                "required": ["title", "due_time"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "complete_deadline",
+            "description": "标记一个 deadline 为已完成。用户说考完了/交了/做完了时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "deadline_id": {
+                        "type": "integer",
+                        "description": "deadline id（从【待完成的 Deadline】中取）"
+                    }
+                },
+                "required": ["deadline_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_deadline",
+            "description": "删除一个 deadline。删错了或不需要了时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "deadline_id": {
+                        "type": "integer",
+                        "description": "deadline id"
+                    }
+                },
+                "required": ["deadline_id"]
+            }
+        }
     }
 ]
 
@@ -271,6 +326,7 @@ TOOLS = [
 POLL_TOOL_NAMES = {
     "set_reminder", "delete_reminder", "query_timeline", "list_reminders",
     "save_memory", "delete_memory", "update_memory",
+    "add_deadline", "complete_deadline", "delete_deadline",
 }
 
 # 提醒触发：回应提醒、管记忆、取消后续提醒（禁止 set_reminder 防死循环）
@@ -510,6 +566,54 @@ TOOLS_ANTHROPIC = [
                 }
             },
             "required": ["memory_id", "content"]
+        }
+    },
+    {
+        "name": "add_deadline",
+        "description": "记录一个 deadline。用户提到截止日期、考试时间、提交时间时调用。"
+                       "系统会自动计算倒计时并在动态上下文中展示。"
+                       "存完后记得检查记忆里有没有纯记录时间的重复条目，有就 delete_memory。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "deadline 标题，简洁明确，如 '数据科学期中考'"
+                },
+                "due_time": {
+                    "type": "string",
+                    "description": "截止时间，ISO 8601 格式"
+                }
+            },
+            "required": ["title", "due_time"]
+        }
+    },
+    {
+        "name": "complete_deadline",
+        "description": "标记一个 deadline 为已完成。用户说考完了/交了/做完了时调用。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "deadline_id": {
+                    "type": "integer",
+                    "description": "deadline id"
+                }
+            },
+            "required": ["deadline_id"]
+        }
+    },
+    {
+        "name": "delete_deadline",
+        "description": "删除一个 deadline。删错了或不需要了时调用。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "deadline_id": {
+                    "type": "integer",
+                    "description": "deadline id"
+                }
+            },
+            "required": ["deadline_id"]
         }
     }
 ]

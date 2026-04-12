@@ -116,6 +116,11 @@ RESPONSE_CORE = """
 
 **硬规则**：
 - ✅ 换行应该对应"下一条想说的话"，而不是排版
+
+## 时间戳
+
+历史消息中的 `[YYYY-MM-DD HH:MM]` 是系统自动添加的时间标注，用于帮你推断时间。
+**你自己回复时绝对不要加这个前缀**——直接说内容就行。
 """
 
 
@@ -328,6 +333,23 @@ TOOL_GUIDELINES_CHAT = """
 **记忆上限20条**，满了会自动清理最旧的。重要的事可以 update 刷新时间。
 
 当前时间会在每条消息中标注（悉尼本地时间）。
+
+## DDL 管理
+
+**什么时候存 deadline（add_deadline）：**
+- 用户提到具体的截止日期/考试/提交时间
+- "周五考试"、"下周一交作业"、"4月20号之前提交"
+- 存的时候把相对时间转成绝对时间
+
+**deadline 和 memory 的去重：**
+- 创建 deadline 后，检查【你现在记着的事】里有没有**纯记录截止时间**的条目（如 "4/16 数据科学考试"），有就 delete_memory
+- 但**关于 deadline 的补充信息留在 memory 里**不要删（如 "考试覆盖第1-5章"、"她说最怕概率题"）
+- 判断标准：如果 memory 的内容去掉时间后 ≈ deadline 的 title，那就是重复项
+
+**和 reminder 的关系：**
+- deadline = 事实（"周五考试"），结构化存储，系统自动计算倒计时
+- reminder = 你给自己的贴心备忘（"今晚关心一下她复习进度"、"看她是不是沉迷了忘了正事"）
+- 同一件事可以同时有 deadline + 多条 reminder
 """
 
 
@@ -377,6 +399,8 @@ CHAT_PROMPT_TEMPLATE = """{{PERSONA}}
 
 {{REMINDERS_SECTION}}
 
+{{DEADLINES_SECTION}}
+
 {{WEATHER_SECTION}}"""
 
 
@@ -399,6 +423,8 @@ POLL_PROMPT_TEMPLATE = """{{PERSONA}}
 {{ONGOING_SECTION}}
 
 {{REMINDERS_SECTION}}
+
+{{DEADLINES_SECTION}}
 
 {{WEATHER_SECTION}}"""
 
@@ -423,6 +449,8 @@ CHAT_PROMPT_TEMPLATE_CONCISE = """{{PERSONA}}
 
 {{REMINDERS_SECTION}}
 
+{{DEADLINES_SECTION}}
+
 {{WEATHER_SECTION}}"""
 
 
@@ -443,6 +471,8 @@ POLL_PROMPT_TEMPLATE_CONCISE = """{{PERSONA}}
 {{ONGOING_SECTION}}
 
 {{REMINDERS_SECTION}}
+
+{{DEADLINES_SECTION}}
 
 {{WEATHER_SECTION}}"""
 
@@ -468,7 +498,7 @@ _CLEANUP_RE = re.compile(r"\n{3,}")
 
 # 动态段落的占位符名称（render_static_prompt 会保留这些不替换）
 _DYNAMIC_SECTION_KEYS = {
-    "MEMORIES_SECTION", "ONGOING_SECTION", "REMINDERS_SECTION", "WEATHER_SECTION",
+    "MEMORIES_SECTION", "ONGOING_SECTION", "REMINDERS_SECTION", "DEADLINES_SECTION", "WEATHER_SECTION",
 }
 
 
@@ -491,10 +521,50 @@ def render_static_prompt(template: str) -> str:
 LABEL_MEMORIES = "【你现在记着的事】"
 LABEL_ONGOING = "【当前进行中的事件（end_time 为空）】"
 LABEL_REMINDERS = "【待触发的跟进计划】"
+LABEL_DEADLINES = "【待完成的 Deadline】"
 LABEL_WEATHER = "【今日天气】"
 
 # 天气段落后的一句行动提示（不和别处重复，保留）
 WEATHER_CONTEXT_SUFFIX = "可以自然地提一下天气，但不要像天气预报一样念数据。"
+
+
+def _format_countdown(due_time_str: str) -> str:
+    """
+    根据 due_time 和当前时间计算倒计时文本。
+
+    < 24h → "⚠️ 剩余 8h"
+    1-7 天 → "⏳ 剩余 2天14h"
+    > 7 天 → "⏳ 剩余 12天"
+    已过期 → "⚠️ 已过期 3h"
+    """
+    from datetime import datetime, timezone, timedelta
+    try:
+        # 尝试解析 ISO 8601
+        due = datetime.fromisoformat(due_time_str)
+        if due.tzinfo is None:
+            # 假设悉尼时区 UTC+10（无夏令时简化）
+            due = due.replace(tzinfo=timezone(timedelta(hours=10)))
+        now = datetime.now(timezone(timedelta(hours=10)))
+        delta = due - now
+        total_hours = delta.total_seconds() / 3600
+
+        if total_hours < 0:
+            # 已过期
+            past_hours = abs(total_hours)
+            if past_hours < 24:
+                return f"⚠️ 已过期 {int(past_hours)}h"
+            return f"⚠️ 已过期 {int(past_hours / 24)}天"
+        elif total_hours < 24:
+            return f"⚠️ 剩余 {int(total_hours)}h"
+        elif total_hours < 24 * 7:
+            days = int(total_hours // 24)
+            hours = int(total_hours % 24)
+            return f"⏳ 剩余 {days}天{hours}h"
+        else:
+            days = int(total_hours / 24)
+            return f"⏳ 剩余 {days}天"
+    except (ValueError, TypeError):
+        return "⏳ 时间格式异常"
 
 
 def render_dynamic_context(
@@ -502,6 +572,7 @@ def render_dynamic_context(
     ongoing: list[dict] | None = None,
     reminders: list[dict] | None = None,
     weather: str | None = None,
+    deadlines: list[dict] | None = None,
 ) -> dict[str, str]:
     """
     构建动态上下文各段落。
@@ -543,6 +614,16 @@ def render_dynamic_context(
         sections["WEATHER_SECTION"] = f"{LABEL_WEATHER}\n{weather}\n{WEATHER_CONTEXT_SUFFIX}"
     else:
         sections["WEATHER_SECTION"] = ""
+
+    if deadlines:
+        lines = []
+        for d in deadlines:
+            countdown = _format_countdown(d["due_time"])
+            line = f"- [id={d['id']}] {d['title']} | 📅 {d['due_time']} | {countdown}"
+            lines.append(line)
+        sections["DEADLINES_SECTION"] = f"{LABEL_DEADLINES}\n" + "\n".join(lines)
+    else:
+        sections["DEADLINES_SECTION"] = ""
 
     return sections
 

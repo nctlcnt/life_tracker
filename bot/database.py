@@ -78,6 +78,15 @@ class Database:
                 value TEXT,
                 updated_at TEXT DEFAULT (datetime('now'))
             );
+
+            -- Deadline 表（结构化截止日期，系统自动计算倒计时）
+            CREATE TABLE IF NOT EXISTS deadlines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                due_time TEXT NOT NULL,
+                status TEXT DEFAULT 'active',
+                created_at TEXT DEFAULT (datetime('now'))
+            );
         """)
         conn.commit()
         # 兼容已有数据库：尝试加列，已存在则忽略
@@ -462,3 +471,60 @@ class Database:
         ).fetchone()
         conn.close()
         return row["value"] if row else None
+
+    # ============ Deadline 管理 ============
+
+    def add_deadline(self, title: str, due_time: str) -> int:
+        """添加一条 deadline，返回 id"""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "INSERT INTO deadlines (title, due_time) VALUES (?, ?)",
+            (title, due_time)
+        )
+        conn.commit()
+        deadline_id = cursor.lastrowid
+        conn.close()
+        return deadline_id
+
+    def complete_deadline(self, deadline_id: int) -> bool:
+        """标记 deadline 为已完成"""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE deadlines SET status = 'completed' WHERE id = ? AND status = 'active'",
+            (deadline_id,)
+        )
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
+    def delete_deadline(self, deadline_id: int) -> bool:
+        """删除一条 deadline"""
+        conn = self._get_conn()
+        cursor = conn.execute("DELETE FROM deadlines WHERE id = ?", (deadline_id,))
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
+    def get_active_deadlines(self) -> list[dict]:
+        """获取所有 active 的 deadline，按 due_time 正序"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM deadlines WHERE status = 'active' ORDER BY due_time ASC"
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def expire_past_deadlines(self) -> int:
+        """将已过期的 active deadline 标记为 expired，返回影响行数"""
+        now = datetime.now().isoformat()
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE deadlines SET status = 'expired' WHERE status = 'active' AND due_time < ?",
+            (now,)
+        )
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected
