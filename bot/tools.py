@@ -29,20 +29,16 @@ TOOLS = [
                     },
                     "content": {
                         "type": "string",
-                        "description": "事件的简短描述，例如：看电视剧《月麟绮纪》、吃午饭、洗衣服"
+                        "description": "事件标题，高度概括这段时间在做什么。简洁的动词+宾语，例如：看剧、吃午饭、洗衣服、写代码"
                     },
                     "notes": {
                         "type": "string",
-                        "description": "用户的原始感想、心情或备注，原文保留，例如：觉得非常开心、有点疲惫但很充实"
+                        "description": "事件的详细信息、感想、心情或备注。包括具体内容（如剧名、菜名、项目名）和用户原话感受。例如：看《月麟绮纪》第3集，剧情好燃；吃了火锅，太辣了肚子疼"
                     },
                     "category": {
                         "type": "string",
                         "description": "事件分类，例如：休息、工作、社交、生活、健康、娱乐、出行"
                     },
-                    "is_parallel": {
-                        "type": "boolean",
-                        "description": "是否是平行事件（一心二用时的次要活动）。用户同时在做另一件事、但这是注意力较次要的那条线时填 true。例：一边吃饭一边看剧 → '吃饭' 正常记，'看剧' 用 is_parallel=true。默认 false。"
-                    }
                 },
                 "required": ["start_time", "content", "category"]
             }
@@ -166,7 +162,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "update_timeline_event",
-            "description": "更新一条已记录的时间轴事件。当用户延续之前的活动、补充结束时间、或修正之前的记录时，用此工具而不是新建。",
+            "description": "更新一条已记录的时间轴事件。当用户延续之前的活动、补充结束时间、或修正之前的记录时，用此工具而不是新建。notes 字段会追加到已有内容后面（用换行分隔），不会覆盖。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -180,7 +176,7 @@ TOOLS = [
                     },
                     "content": {
                         "type": "string",
-                        "description": "更新后的事件描述"
+                        "description": "更新后的事件标题"
                     },
                     "category": {
                         "type": "string",
@@ -188,11 +184,7 @@ TOOLS = [
                     },
                     "notes": {
                         "type": "string",
-                        "description": "更新后的感想/备注"
-                    },
-                    "is_parallel": {
-                        "type": "boolean",
-                        "description": "修正事件的平行标记。通常不用改，除非之前记错了主/次活动。"
+                        "description": "要追加的新信息/感想/备注（会追加到已有 notes 后面，不会覆盖）"
                     }
                 },
                 "required": ["event_id"]
@@ -318,7 +310,7 @@ TOOLS_ANTHROPIC = [
                 },
                 "content": {
                     "type": "string",
-                    "description": "事件的简短描述，例如：看电视剧《月麟绮纪》、吃午饭、洗衣服"
+                    "description": "事件标题，高度概括这段时间在做什么。简洁的动词+宾语，例如：看剧、吃午饭、洗衣服、写代码"
                 },
                 "category": {
                     "type": "string",
@@ -326,15 +318,11 @@ TOOLS_ANTHROPIC = [
                 },
                 "notes": {
                     "type": "string",
-                    "description": "用户的感想、心情、备注。尽量保留用户的原话，不要改写。如果用户没有表达感想则不填。"
+                    "description": "事件的详细信息、感想、心情或备注。包括具体内容（如剧名、菜名、项目名）和用户原话感受。例如：看《月麟绮纪》第3集，剧情好燃；吃了火锅，太辣了肚子疼"
                 },
                 "session_id": {
                     "type": "integer",
                     "description": "如果这是在恢复或继续之前的某个被打断的活动，填入之前那条活动记录的 event_id。如果是全新活动，可以放空。"
-                },
-                "is_parallel": {
-                    "type": "boolean",
-                    "description": "平行事件标记：用户一心二用时的次要活动。例：一边吃饭一边看剧 → '吃饭' 正常记，'看剧' 用 is_parallel=true。平行事件不会打断主活动的时间线，也不计入注意力切换。默认 false。"
                 }
             },
             "required": ["start_time", "content", "category"]
@@ -342,7 +330,7 @@ TOOLS_ANTHROPIC = [
     },
     {
         "name": "update_timeline_event",
-        "description": "更新一条已有的时间轴事件。当用户在延续之前的活动、补充结束时间、或修正之前的记录时使用。",
+        "description": "更新一条已有的时间轴事件。当用户在延续之前的活动、补充结束时间、或修正之前的记录时使用。notes 字段会追加到已有内容后面（用换行分隔），不会覆盖。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -356,7 +344,7 @@ TOOLS_ANTHROPIC = [
                 },
                 "content": {
                     "type": "string",
-                    "description": "更新事件描述"
+                    "description": "更新后的事件标题"
                 },
                 "category": {
                     "type": "string",
@@ -364,11 +352,7 @@ TOOLS_ANTHROPIC = [
                 },
                 "notes": {
                     "type": "string",
-                    "description": "更新备注"
-                },
-                "is_parallel": {
-                    "type": "boolean",
-                    "description": "修正平行标记，通常不用改"
+                    "description": "要追加的新信息/感想/备注（会追加到已有 notes 后面，不会覆盖）"
                 }
             },
             "required": ["event_id"]
