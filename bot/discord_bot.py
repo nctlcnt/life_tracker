@@ -11,6 +11,7 @@ from bot.ai_engine import chat, simple_completion
 from bot.weather import get_weather_brief
 from bot.prompts import WEATHER_REPORT_PROMPT
 from bot.database import Database
+from bot.tools import QUERY_TOOL_NAMES
 from bot.logger import get_logger
 import config
 
@@ -97,16 +98,17 @@ class LifeTrackerBot(commands.Bot):
                 await _send_chat_chunks(message.channel, text)
 
             tool_called_flag = False
-            async def on_tool_call():
+            async def on_tool_call(tool_names: list[str]):
                 nonlocal tool_called_flag
-                if not tool_called_flag:
+                if not tool_called_flag and any(n not in QUERY_TOOL_NAMES for n in tool_names):
                     tool_called_flag = True
                     try:
                         await message.add_reaction("✅")
                     except Exception as react_err:
                         logger.warning(f"⚠️ 无法添加反馈 emoji: {react_err}")
 
-            await chat(self.db, ai_messages, send_callback=send_reply, tool_callback=on_tool_call)
+            async with message.channel.typing():
+                await chat(self.db, ai_messages, send_callback=send_reply, tool_callback=on_tool_call)
         except Exception as e:
             error_msg = f"❌ {type(e).__name__}: {e}"
             logger.exception(error_msg)
