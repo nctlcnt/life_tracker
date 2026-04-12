@@ -7,7 +7,7 @@ AI 引擎公共模块
 - chat / scheduled_action 高层流程
 """
 import re
-from bot.tools import POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, SCHEDULED_TOOL_NAMES
+from bot.tools import POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, SCHEDULED_TOOL_NAMES, TOOLS
 from bot.prompts import (
     CHAT_PROMPT_TEMPLATE, POLL_PROMPT_TEMPLATE,
     render_static_prompt, render_dynamic_context,
@@ -23,6 +23,50 @@ logger = get_logger(__name__)
 # 最后一轮输出里 AI 的内部思考要用 <think>...</think> 或 <thinking>...</thinking> 包起来。
 # 引擎在发送前调用 split_thinking() 剥离标签内容，只把标签外的纯文本发给用户。
 _THINK_BLOCK = re.compile(r"<(?:think|thinking)>(.*?)</(?:think|thinking)>", re.DOTALL | re.IGNORECASE)
+
+# 触发源标签
+_TRIGGER_LABELS = {
+    "poll": "🔄 随机轮询",
+    "reminder": "🔔 提醒触发",
+    "bedtime": "😴 睡前提醒",
+}
+
+# 按工具名索引描述（取描述的第一句话作为简要说明）
+_TOOL_DESC_MAP: dict[str, str] = {}
+for _t in TOOLS:
+    _fn = _t["function"]
+    _desc = _fn["description"]
+    # 取第一句话（句号、句号+换行、或前 40 字符）
+    _short = _desc.split("。")[0].split("\n")[0][:50]
+    _TOOL_DESC_MAP[_fn["name"]] = _short
+
+
+def format_tool_calls_summary(called_names: list[str], called_args: list[dict] | None = None) -> str:
+    """构建中间轮的工具调用摘要日志。
+
+    输出格式示例:
+      🔧 log_timeline_event(start_time='...', content='看剧') — 记录一条生活轨迹时间轴事件
+      🔧 set_reminder(trigger_time='...') — 预约一次未来的主动联系
+    """
+    lines = []
+    for i, name in enumerate(called_names):
+        desc = _TOOL_DESC_MAP.get(name, "")
+        args_str = ""
+        if called_args and i < len(called_args):
+            # 只取前 3 个 key=value，每个 value 截断到 30 字符
+            pairs = []
+            for k, v in list(called_args[i].items())[:3]:
+                vs = str(v)
+                if len(vs) > 30:
+                    vs = vs[:27] + "..."
+                pairs.append(f"{k}={vs!r}")
+            args_str = ", ".join(pairs)
+        sig = f"{name}({args_str})" if args_str else name
+        line = f"🔧 {sig}"
+        if desc:
+            line += f" — {desc}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def split_thinking(text: str) -> tuple[str, str]:
@@ -248,17 +292,23 @@ async def chat(db: Database, messages: list[dict],
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            history: list[dict], call_with_tools_fn,
                            send_callback=None,
-                           allow_silent: bool = False) -> str | None:
+                           allow_silent: bool = False,
+                           trigger: str | None = None) -> str | None:
     """
     统一的调度入口：处理主动聊天、提醒触发、睡前提醒等所有非用户消息的 AI 调用。
 
     prompt: 注入给 AI 的调度指令（作为最后一条 user 消息追加到 history 后面）
     history: 调用方从 Discord 拉来的对话历史（不含本次调度指令）
     allow_silent: 是否允许 AI 返回 [SILENT] 不发消息（随机轮询时为 True）
+    trigger: 触发源标签 ("poll" / "reminder" / "bedtime")，用于日志区分
     返回 None 表示 AI 选择不发消息。
 
     使用 POLL_PROMPT_TEMPLATE：完整时间感知 + Poll 版回复规则。
     """
+    # 日志：标明触发源
+    label = _TRIGGER_LABELS.get(trigger, f"📋 调度({trigger})")
+    logger.info(f"{label} ▸ scheduled_action 开始 [{timestamp}]")
+
     # 注：历史为空不代表"没聊过"——也可能是 bot 刚重启或 Discord 历史拉取失败。
     # 此时仍然继续调用 AI，让它基于 memory / 待触发提醒 / 当前时间 / 天气等
     # 动态上下文自主决定要不要说话。真觉得没得说，它可以返回 [SILENT]。

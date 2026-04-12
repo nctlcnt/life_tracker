@@ -120,7 +120,8 @@ class Scheduler:
                 history = await self.fetch_history(limit=20)
                 reply = await scheduled_action(
                     self.db, prompt, timestamp, history,
-                    send_callback=self.send, allow_silent=True
+                    send_callback=self.send, allow_silent=True,
+                    trigger="poll"
                 )
                 if reply:
                     logger.info(f"📤 主动发送: {reply[:50]}...")
@@ -135,7 +136,8 @@ class Scheduler:
                 history = await self.fetch_history(limit=20)
                 reply = await scheduled_action(
                     self.db, prompt, timestamp, history,
-                    send_callback=self.send
+                    send_callback=self.send,
+                    trigger="bedtime"
                 )
                 if reply:
                     logger.info(f"😴 睡前提醒: {reply[:50]}...")
@@ -214,7 +216,8 @@ class Scheduler:
                     history = await self.fetch_history(limit=20)
                     reply = await scheduled_action(
                         self.db, prompt, timestamp, history,
-                        send_callback=self.send
+                        send_callback=self.send,
+                        trigger="reminder"
                     )
                     if reply and "[SILENT]" not in reply:
                         logger.info(f"🔔 提醒发送: {reply[:50]}...")
