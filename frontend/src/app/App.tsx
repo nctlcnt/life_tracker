@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { GanttChart } from './components/GanttChart';
+import { TimeDistribution } from './components/TimeDistribution';
 import { ItemList, ListItem } from './components/ItemList';
 
 // 莫兰迪色系：低饱和、柔和的大地色调
@@ -38,8 +39,9 @@ export default function App() {
       .then(res => res.json())
       .then(data => {
         const events = data.segments || [];
-        const parallelSegments = data.parallel_segments || [];
-        
+        const dayStart = new Date(startIso);
+        const dayEnd = new Date(endIso);
+
         let rowMap: Record<string, number> = {};
         let nextRow = 0;
 
@@ -47,33 +49,22 @@ export default function App() {
           if (rowMap[e.category] === undefined) {
              rowMap[e.category] = nextRow++;
           }
+          // Clip to day boundaries for cross-day events
+          const rawStart = new Date(e.start_time);
+          const rawEnd = e.end_time ? new Date(e.end_time) : new Date();
           return {
             id: String(e.id || `s-${idx}`),
             name: e.content || e.category,
             category: e.category,
-            startDate: new Date(e.start_time),
-            endDate: e.end_time ? new Date(e.end_time) : new Date(), // ongoing
+            startDate: rawStart < dayStart ? dayStart : rawStart,
+            endDate: rawEnd > dayEnd ? dayEnd : rawEnd,
             color: catColor(e.category),
+            notes: e.notes || null,
             row: rowMap[e.category]
           };
         });
 
-        const parallelTasks = parallelSegments.map((e: any, idx: number) => {
-          if (rowMap[e.category] === undefined) {
-             rowMap[e.category] = nextRow++;
-          }
-          return {
-            id: String(e.id || `p-${idx}`),
-            name: e.content || e.category,
-            category: e.category,
-            startDate: new Date(e.start_time),
-            endDate: e.end_time ? new Date(e.end_time) : new Date(), // ongoing
-            color: catColor(e.category),
-            row: rowMap[e.category]
-          };
-        });
-
-        setGanttTasks([...tasks, ...parallelTasks]);
+        setGanttTasks(tasks);
       })
       .catch(err => console.error("Failed to load timeline:", err));
 
@@ -162,6 +153,10 @@ export default function App() {
 
         <div className="flex-none pt-4 border-b border-border">
             <GanttChart tasks={ganttTasks} startDate={chartStart} endDate={chartEnd} />
+        </div>
+
+        <div className="flex-none border-b border-border">
+            <TimeDistribution tasks={ganttTasks} catColors={CAT_COLORS} />
         </div>
 
         <div className="flex-1 px-6 py-6 border-b border-border">
