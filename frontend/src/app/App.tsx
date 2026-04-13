@@ -148,12 +148,30 @@ export default function App() {
   }, [currentDate, viewMode]);
 
   const handleTodoToggle = (id: string) => {
-    // Optionally call backend if exists, for now just toggle state
-    setTodos((prev) =>
-      prev.map((todo) =>
-        todo.id === id ? { ...todo, completed: !todo.completed } : todo
+    const prev = todos.find((t) => t.id === id);
+    if (!prev) return;
+    const newDone = !prev.completed;
+    // Optimistic update
+    setTodos((list) =>
+      list.map((todo) =>
+        todo.id === id ? { ...todo, completed: newDone } : todo
       )
     );
+    fetch(`/api/todos/${id}/done`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ done: newDone }),
+    }).then((res) => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    }).catch((err) => {
+      console.error("Failed to update todo:", err);
+      // Rollback on error
+      setTodos((list) =>
+        list.map((todo) =>
+          todo.id === id ? { ...todo, completed: prev.completed } : todo
+        )
+      );
+    });
   };
 
   const shiftDate = (days: number) => {

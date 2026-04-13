@@ -442,6 +442,23 @@ class Database:
         conn.close()
         return affected > 0
 
+    def set_todo_done(self, todo_id: int, done: bool) -> bool:
+        conn = self._get_conn()
+        if done:
+            cursor = conn.execute(
+                "UPDATE todos SET done = 1, done_at = datetime('now') WHERE id = ?",
+                (todo_id,)
+            )
+        else:
+            cursor = conn.execute(
+                "UPDATE todos SET done = 0, done_at = NULL WHERE id = ?",
+                (todo_id,)
+            )
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
     def delete_todo(self, todo_id: int) -> bool:
         conn = self._get_conn()
         cursor = conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,))

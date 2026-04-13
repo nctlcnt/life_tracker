@@ -16,7 +16,7 @@ app = FastAPI(title="Life Tracker API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # 生产环境应该改为你的前端域名
-    allow_methods=["GET", "DELETE"],
+    allow_methods=["GET", "DELETE", "PATCH"],
     allow_headers=["*"],
 )
 
@@ -100,6 +100,14 @@ async def get_todos(all: bool = False):
     """获取待办列表"""
     todos = db.get_todos(include_done=all)
     return {"todos": todos, "count": len(todos)}
+
+
+@app.patch("/api/todos/{todo_id}/done")
+async def set_todo_done(todo_id: int, body: dict):
+    """更新待办完成状态"""
+    done = body.get("done", True)
+    db.set_todo_done(todo_id, bool(done))
+    return {"status": "ok"}
 
 
 @app.get("/api/deadlines")
