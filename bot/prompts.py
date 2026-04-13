@@ -255,7 +255,8 @@ TOOL_GUIDELINES_CHAT = """
 
 ### 格式
 - start_time / end_time：ISO 8601
-- category：休息、工作、社交、生活、健康、娱乐、出行（不够可以新建）
+- category：严格三分法，只用 Focus / Routine / Chill（详见工具描述）
+- project_name：category=Focus 时必填，优先复用已有项目名，没有就直接新建
 - content：简洁中文标题，动词+宾语
 
 ### 新建 vs 更新 vs 删除（重复检测）

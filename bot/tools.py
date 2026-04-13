@@ -15,7 +15,16 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "log_timeline_event",
-            "description": "记录一条生活轨迹时间轴事件。当用户提到做了什么事、正在做什么、或者你从对话中推断出用户的活动时，调用此工具记录。",
+            "description": (
+                "记录一条生活轨迹时间轴事件。当用户提到做了什么事、正在做什么、或者你从对话中推断出用户的活动时，调用此工具记录。\n\n"
+                "**三分法分类规则（严格遵守）**：\n"
+                "- Focus（正事/投入）：学习、写代码、做项目、工作等需要脑力投入的活动。必须同时填写 project_name。\n"
+                "  project_name 优先匹配用户已有的项目名，没有合适的就凭直觉新建（如 'Project-大模型探索'）。\n"
+                "  为某个项目查资料、学语法等学习成本也算入该 project 的 Focus 时间。\n"
+                "- Routine（日常维护）：维持生命体征的活动，如吃饭、洗澡、通勤、睡觉、家务。无需 project_name。\n"
+                "- Chill（蓄水放松）：看剧、打游戏、刷手机、听音乐等娱乐放松活动。无需 project_name。\n\n"
+                "如果是有意识的主动娱乐，category=Chill；如果是无聊逃避导致的漫无目的刷手机，在 notes 里标注 [漏水]。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -29,15 +38,20 @@ TOOLS = [
                     },
                     "content": {
                         "type": "string",
-                        "description": "事件标题，高度概括这段时间在做什么。简洁的动词+宾语，例如：看剧、吃午饭、洗衣服、写代码"
-                    },
-                    "notes": {
-                        "type": "string",
-                        "description": "事件的详细信息、感想、心情或备注。包括具体内容（如剧名、菜名、项目名）和用户原话感受。例如：看《月麟绮纪》第3集，剧情好燃；吃了火锅，太辣了肚子疼"
+                        "description": "事件标题，高度概括这段时间在做什么。简洁的动词+宾语，例如：看剧、吃午饭、写代码"
                     },
                     "category": {
                         "type": "string",
-                        "description": "事件分类，例如：休息、工作、社交、生活、健康、娱乐、出行"
+                        "enum": ["Focus", "Routine", "Chill"],
+                        "description": "事件分类：Focus（正事投入）/ Routine（日常维护）/ Chill（蓄水放松）"
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": "项目名称。category=Focus 时必填。优先匹配已有项目，无合适项目可新建，如 'Project-大模型探索'"
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "事件的详细信息、感想、心情或备注。包括具体内容（如剧名、菜名）和用户原话感受。无聊逃避刷手机时加 [漏水] 标注"
                     },
                 },
                 "required": ["start_time", "content", "category"]
@@ -180,7 +194,12 @@ TOOLS = [
                     },
                     "category": {
                         "type": "string",
-                        "description": "更新后的事件分类"
+                        "enum": ["Focus", "Routine", "Chill"],
+                        "description": "更新后的事件分类：Focus / Routine / Chill"
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": "更新项目名称（category=Focus 时适用）"
                     },
                     "notes": {
                         "type": "string",
@@ -351,7 +370,16 @@ SCHEDULED_TOOL_NAMES = POLL_TOOL_NAMES | REMINDER_TOOL_NAMES
 TOOLS_ANTHROPIC = [
     {
         "name": "log_timeline_event",
-        "description": "记录一条生活轨迹时间轴事件。当用户提到做了什么事、正在做什么、或者你从对话中推断出用户的活动时，调用此工具记录。",
+        "description": (
+            "记录一条生活轨迹时间轴事件。当用户提到做了什么事、正在做什么、或者你从对话中推断出用户的活动时，调用此工具记录。\n\n"
+            "**三分法分类规则（严格遵守）**：\n"
+            "- Focus（正事/投入）：学习、写代码、做项目、工作等需要脑力投入的活动。必须同时填写 project_name。\n"
+            "  project_name 优先匹配用户已有的项目名，没有合适的就凭直觉新建（如 'Project-大模型探索'）。\n"
+            "  为某个项目查资料、学语法等学习成本也算入该 project 的 Focus 时间。\n"
+            "- Routine（日常维护）：维持生命体征的活动，如吃饭、洗澡、通勤、睡觉、家务。无需 project_name。\n"
+            "- Chill（蓄水放松）：看剧、打游戏、刷手机、听音乐等娱乐放松活动。无需 project_name。\n\n"
+            "如果是有意识的主动娱乐，category=Chill；如果是无聊逃避导致的漫无目的刷手机，在 notes 里标注 [漏水]。"
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -365,15 +393,20 @@ TOOLS_ANTHROPIC = [
                 },
                 "content": {
                     "type": "string",
-                    "description": "事件标题，高度概括这段时间在做什么。简洁的动词+宾语，例如：看剧、吃午饭、洗衣服、写代码"
+                    "description": "事件标题，高度概括这段时间在做什么。简洁的动词+宾语，例如：看剧、吃午饭、写代码"
                 },
                 "category": {
                     "type": "string",
-                    "description": "事件分类，优先从以下选择：休息、工作、社交、生活、健康、娱乐、出行。如果都不合适，可以自己创建新分类"
+                    "enum": ["Focus", "Routine", "Chill"],
+                    "description": "事件分类：Focus（正事投入）/ Routine（日常维护）/ Chill（蓄水放松）"
+                },
+                "project_name": {
+                    "type": "string",
+                    "description": "项目名称。category=Focus 时必填。优先匹配已有项目，无合适项目可新建，如 'Project-大模型探索'"
                 },
                 "notes": {
                     "type": "string",
-                    "description": "事件的详细信息、感想、心情或备注。包括具体内容（如剧名、菜名、项目名）和用户原话感受。例如：看《月麟绮纪》第3集，剧情好燃；吃了火锅，太辣了肚子疼"
+                    "description": "事件的详细信息、感想、心情或备注。包括具体内容（如剧名、菜名）和用户原话感受。无聊逃避刷手机时加 [漏水] 标注"
                 },
                 "session_id": {
                     "type": "integer",
@@ -403,7 +436,12 @@ TOOLS_ANTHROPIC = [
                 },
                 "category": {
                     "type": "string",
-                    "description": "更新分类"
+                    "enum": ["Focus", "Routine", "Chill"],
+                    "description": "更新后的事件分类：Focus / Routine / Chill"
+                },
+                "project_name": {
+                    "type": "string",
+                    "description": "更新项目名称（category=Focus 时适用）"
                 },
                 "notes": {
                     "type": "string",
