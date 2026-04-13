@@ -22,8 +22,13 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Environment
+# Configuration (secrets)
+config.json
+
+# Environment (legacy)
 .env
+.env.*
+!.env.example
 .venv
 venv/
 ENV/
