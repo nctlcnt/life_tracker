@@ -137,11 +137,8 @@ class LifeTrackerBot(commands.Bot):
           —— 这是故意的，让 AI 看到用户刚刚查询的上下文；prompt 里已明确告知如何识别
         """
         try:
-            from datetime import datetime as _dt
             fetch_limit = limit + (1 if exclude_id else 0)
             raw_messages = []
-            last_user_ts: str | None = None      # 最近一条 user 消息的时间（新→旧顺序，第一个见到的即最新）
-            last_assistant_ts: str | None = None  # 最近一条 assistant 消息的时间
             async for m in channel.history(limit=fetch_limit):
                 if exclude_id and m.id == exclude_id:
                     continue
@@ -156,18 +153,15 @@ class LifeTrackerBot(commands.Bot):
                 else:
                     continue  # 其他用户忽略（单用户限制）
 
-                # 时间戳前缀（转本地时区）——只给 user 消息加，
-                # assistant 消息不加，避免 AI 模仿时间戳格式回复
+                # 时间戳前缀（转本地时区）
+                # 只给 user 消息加，assistant 消息不加——避免 AI 模仿时间戳格式回复。
+                # AI 可以通过 user 消息的时间戳推算时间间隔，无需在 assistant 侧重复。
                 ts = m.created_at.astimezone().strftime("%Y-%m-%d %H:%M")
                 if role == "user":
                     content = f"[{ts}] {m.content}" if m.content else f"[{ts}] "
-                    if last_user_ts is None:
-                        last_user_ts = ts
                 else:
                     content = m.content or ""
-                    if last_assistant_ts is None:
-                        last_assistant_ts = ts
-
+                
                 # 如果消息上有 ✅ 标记（代表曾被工具处理过），给 AI 增加一个已执行提示
                 for r in m.reactions:
                     if str(r.emoji) == "✅":
@@ -178,20 +172,7 @@ class LifeTrackerBot(commands.Bot):
 
             # Discord 返回的是新→旧，反转成时间顺序
             raw_messages.reverse()
-            result = raw_messages[-limit:]
-
-            # 如果历史末尾是 AI 消息（用户尚未回复），注入时间上下文，
-            # 让 AI 知道双方最后发消息的时间及当前时间
-            if result and result[-1]["role"] == "assistant":
-                now_ts = _dt.now().astimezone().strftime("%Y-%m-%d %H:%M")
-                parts = [f"当前时间：{now_ts}"]
-                if last_user_ts:
-                    parts.append(f"我的上条消息：{last_user_ts}")
-                if last_assistant_ts:
-                    parts.append(f"你的上条消息：{last_assistant_ts}")
-                result.append({"role": "user", "content": f"[时间提示] {' | '.join(parts)}"})
-
-            return result
+            return raw_messages[-limit:]  # 保证不超过 limit
         except Exception as e:
             logger.warning(f"⚠️ 拉 Discord 历史失败，返回空历史: {e}")
             return []
