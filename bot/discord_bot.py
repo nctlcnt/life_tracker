@@ -153,9 +153,13 @@ class LifeTrackerBot(commands.Bot):
                 else:
                     continue  # 其他用户忽略（单用户限制）
 
-                # 时间戳前缀（转本地时区）
+                # 时间戳前缀（转本地时区）——只给 user 消息加，
+                # assistant 消息不加，避免 AI 模仿时间戳格式回复
                 ts = m.created_at.astimezone().strftime("%Y-%m-%d %H:%M")
-                content = f"[{ts}] {m.content}" if m.content else f"[{ts}] "
+                if role == "user":
+                    content = f"[{ts}] {m.content}" if m.content else f"[{ts}] "
+                else:
+                    content = m.content or ""
                 
                 # 如果消息上有 ✅ 标记（代表曾被工具处理过），给 AI 增加一个已执行提示
                 for r in m.reactions:
