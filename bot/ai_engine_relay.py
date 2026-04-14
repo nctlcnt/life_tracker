@@ -7,6 +7,7 @@ import httpx
 from bot.tools import TOOLS
 from bot.prompts import build_tool_round_hint, PromptParts
 from bot.database import Database
+from bot.ai_provider_error import AIProviderError
 from bot.ai_engine_base import (
     _execute_tool, split_thinking,
     chat as _base_chat, scheduled_action as _base_scheduled_action,
@@ -83,13 +84,13 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
 
             if resp.status_code != 200:
                 logger.error(f"❌ Relay API Error ({resp.status_code}): {resp.text[:500]}")
-                return f"（内部错误：中转站 API 请求失败 {resp.status_code}）"
+                raise AIProviderError(f"Relay API 错误 ({resp.status_code}): {resp.text[:200]}")
 
             try:
                 data = resp.json()
             except Exception as e:
                 logger.error(f"❌ JSON 解析失败: {e}, body={resp.text[:200]}")
-                return f"（内部错误：中转站返回非 JSON 内容）"
+                raise AIProviderError(f"Relay 返回非 JSON 内容: {e}") from e
 
             logger.info(f"🤖 raw response keys: {list(data.keys())}")
 

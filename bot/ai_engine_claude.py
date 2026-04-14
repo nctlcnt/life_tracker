@@ -7,6 +7,7 @@ from anthropic import AsyncAnthropic
 from bot.tools import TOOLS_ANTHROPIC
 from bot.prompts import build_tool_round_hint, PromptParts
 from bot.database import Database
+from bot.ai_provider_error import AIProviderError
 from bot.ai_engine_base import (
     _execute_tool, split_thinking,
     chat as _base_chat, scheduled_action as _base_scheduled_action,
@@ -17,9 +18,14 @@ import config
 
 logger = get_logger(__name__)
 
-client = AsyncAnthropic(
-    api_key=config.AI_API_KEY
-)
+# 懒加载客户端缓存：按 api_key 存储，避免重复创建
+_clients: dict[str, AsyncAnthropic] = {}
+
+
+def _get_client(api_key: str) -> AsyncAnthropic:
+    if api_key not in _clients:
+        _clients[api_key] = AsyncAnthropic(api_key=api_key)
+    return _clients[api_key]
 
 
 async def chat(db: Database, messages: list[dict],
@@ -43,13 +49,19 @@ async def simple_completion(prompt: str) -> str:
 
 async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: list[dict],
                            send_callback=None, tool_callback=None,
-                           model: str | None = None, tool_names: set | None = None) -> str:
+                           model: str | None = None, tool_names: set | None = None,
+                           api_key: str | None = None) -> str:
     """
     调用 Anthropic Claude，处理可能的多轮 tool calling。
     中间轮的文本通过 send_callback 发送。
 
     使用 Anthropic prompt caching：PromptParts 的三层直接映射到 3 个 cached system block。
+
+    api_key: 覆盖 config.AI_API_KEY（供 fallback 机制使用）。
     """
+    resolved_key = api_key or config.AI_API_KEY
+    client = _get_client(resolved_key)
+
     # 构建 system blocks（3 个 cached block）
     system_blocks = prompt.to_claude_blocks() if prompt else []
 
@@ -74,7 +86,10 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
         if tools:
             kwargs["tools"] = tools
 
-        response = await client.messages.create(**kwargs)
+        try:
+            response = await client.messages.create(**kwargs)
+        except Exception as e:
+            raise AIProviderError(f"Claude API 调用失败: {e}") from e
 
         # Token usage & prompt caching 验证
         if hasattr(response, 'usage'):
@@ -130,7 +145,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                 desc_first = desc.split("。")[0] if desc else ""
                 logger.info(f"🛠️ 调用工具: {tool_use.name} | {desc_first}")
                 logger.info(f"   参数: {tool_use.input}")
-                
+
                 result = _execute_tool(db, tool_use.name, tool_use.input)
                 called_names.append(tool_use.name)
                 tool_results.append({

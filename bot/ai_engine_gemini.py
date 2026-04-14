@@ -6,6 +6,7 @@ import httpx
 from bot.tools import TOOLS
 from bot.prompts import PromptParts
 from bot.database import Database
+from bot.ai_provider_error import AIProviderError
 from bot.ai_engine_base import (
     _execute_tool, split_thinking,
     chat as _base_chat, scheduled_action as _base_scheduled_action,
@@ -50,9 +51,13 @@ def _convert_to_gemini_format(messages: list[dict]) -> list[dict]:
 
 async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: list[dict],
                            send_callback=None, tool_callback=None,
-                           model: str | None = None, tool_names: set | None = None) -> str:
-    """使用 httpx 直接调用 Gemini REST API"""
-    api_key = config.AI_API_KEY
+                           model: str | None = None, tool_names: set | None = None,
+                           api_key: str | None = None) -> str:
+    """使用 httpx 直接调用 Gemini REST API"
+
+    api_key: 覆盖 config.AI_API_KEY（供 fallback 机制使用）。
+    """
+    api_key = api_key or config.AI_API_KEY
     if not model:
         model = getattr(config, 'CHAT_MODEL', 'gemini-2.0-flash')
 
@@ -115,14 +120,14 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
 
             resp = await client.post(url, json=gemini_payload, timeout=60.0)
             if resp.status_code != 200:
-                logger.error(f"❌ Gemini API Error: {resp.text}")
-                return f"（内部错误：API 请求失败 {resp.status_code}）"
+                logger.error(f"❌ Gemini API Error: {resp.text[:500]}")
+                raise AIProviderError(f"Gemini API 错误 ({resp.status_code}): {resp.text[:200]}")
 
             data = resp.json()
 
             candidates = data.get("candidates", [])
             if not candidates:
-                return "（内部错误：Gemini 未返回内容）"
+                raise AIProviderError("Gemini API 未返回有效 candidates")
 
             first_candidate = candidates[0]
             parts = first_candidate.get("content", {}).get("parts", [])

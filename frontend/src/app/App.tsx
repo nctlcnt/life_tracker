@@ -1,24 +1,9 @@
-import { useState, useEffect, useMemo } from 'react';
-import { GanttChart } from './components/GanttChart';
-import { TimeDistribution } from './components/TimeDistribution';
+import { useState, useEffect } from 'react';
 import { ItemList, ListItem } from './components/ItemList';
 import { WeekView, getMonday } from './components/WeekView';
-
-// 莫兰迪色系：低饱和、柔和的大地色调
-const CAT_COLORS: Record<string, string> = {
-  '休息': '#C4BFB0', // 暖米灰
-  '工作': '#94A3B5', // 烟蓝灰
-  '社交': '#A8B9A0', // 鼠尾草绿
-  '生活': '#D4AFA0', // 灰粉
-  '健康': '#9FBAB0', // 青灰
-  '娱乐': '#B5A6BC', // 灰紫
-  '出行': '#CFB897', // 沙黄
-  'uncategorized': '#B5B1A8', // 灰褐
-};
-
-function catColor(cat: string) {
-  return CAT_COLORS[cat] || CAT_COLORS['uncategorized'];
-}
+import { MultiLaneTimeline, TimelineEvent } from './components/MultiLaneTimeline';
+import { ChillDrainChart } from './components/ChillDrainChart';
+import { ProjectOverview } from './components/ProjectOverview';
 
 // ── 日期格式化 ─────────────────────────────────────────────────
 const DAY_NAMES_FULL = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
@@ -27,13 +12,16 @@ function fmtDateStr(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+// ── Tab 类型 ────────────────────────────────────────────────────
+type ViewMode = 'day' | 'week' | 'project';
+
 export default function App() {
-  const [viewMode, setViewMode] = useState<'day' | 'week'>('day');
+  const [viewMode, setViewMode] = useState<ViewMode>('day');
 
   // ── Day View State ───────────────────────────────────────────
   const [currentDate, setCurrentDate] = useState(() => fmtDateStr(new Date()));
 
-  const [ganttTasks, setGanttTasks] = useState<any[]>([]);
+  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
   const [memories, setMemories] = useState<ListItem[]>([]);
   const [reminders, setReminders] = useState<ListItem[]>([]);
   const [todos, setTodos] = useState<ListItem[]>([]);
@@ -51,42 +39,33 @@ export default function App() {
   useEffect(() => {
     if (viewMode !== 'day') return;
 
-    // Fetch timeline
     const startIso = `${currentDate}T00:00:00`;
     const endIso = `${currentDate}T23:59:59`;
-    
+    const dayStart = new Date(startIso);
+    const dayEnd = new Date(endIso);
+
+    // Fetch timeline (segments)
     fetch(`/api/timeline?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`)
       .then(res => res.json())
       .then(data => {
-        const events = data.segments || [];
-        const dayStart = new Date(startIso);
-        const dayEnd = new Date(endIso);
-
-        let rowMap: Record<string, number> = {};
-        let nextRow = 0;
-
-        const tasks = events.map((e: any, idx: number) => {
-          if (rowMap[e.category] === undefined) {
-             rowMap[e.category] = nextRow++;
-          }
-          // Clip to day boundaries for cross-day events
-          const rawStart = new Date(e.start_time);
-          const rawEnd = e.end_time ? new Date(e.end_time) : new Date();
+        const segments = data.segments || [];
+        const events: TimelineEvent[] = segments.map((s: any, idx: number) => {
+          const rawStart = new Date(s.start_time);
+          const rawEnd = s.end_time ? new Date(s.end_time) : new Date();
           return {
-            id: String(e.id || `s-${idx}`),
-            name: e.content || e.category,
-            category: e.category,
+            id: String(s.event_ids?.[0] ?? `s-${idx}`),
+            content: s.content,
+            category: s.category,
             startDate: rawStart < dayStart ? dayStart : rawStart,
             endDate: rawEnd > dayEnd ? dayEnd : rawEnd,
-            color: catColor(e.category),
-            notes: e.notes || null,
-            row: rowMap[e.category]
+            notes: s.notes ?? null,
+            project_name: s.project_name ?? null,
+            energy_type: s.energy_type ?? null,
           };
         });
-
-        setGanttTasks(tasks);
+        setTimelineEvents(events);
       })
-      .catch(err => console.error("Failed to load timeline:", err));
+      .catch(err => console.error('Failed to load timeline:', err));
 
     // Fetch Memories
     fetch('/api/memories')
@@ -98,7 +77,7 @@ export default function App() {
           description: `来源: ${m.source === 'user' ? '用户' : 'AI'}`,
         })));
       })
-      .catch(err => console.error("Failed to load memories:", err));
+      .catch(err => console.error('Failed to load memories:', err));
 
     // Fetch Reminders
     fetch('/api/reminders')
@@ -108,7 +87,6 @@ export default function App() {
           const aIsPending = a.status === 'pending' ? 0 : 1;
           const bIsPending = b.status === 'pending' ? 0 : 1;
           if (aIsPending !== bIsPending) return aIsPending - bIsPending;
-          // Within same group, sort by trigger_time ascending (nearest first)
           return new Date(a.trigger_time).getTime() - new Date(b.trigger_time).getTime();
         });
         setReminders(sorted.map((r: any) => ({
@@ -119,7 +97,7 @@ export default function App() {
           priority: r.priority || 'medium',
         })));
       })
-      .catch(err => console.error("Failed to load reminders:", err));
+      .catch(err => console.error('Failed to load reminders:', err));
 
     // Fetch Todos
     fetch('/api/todos?all=true')
@@ -131,7 +109,7 @@ export default function App() {
           completed: t.done === 1 || t.done === true,
         })));
       })
-      .catch(err => console.error("Failed to load todos:", err));
+      .catch(err => console.error('Failed to load todos:', err));
 
     // Fetch Deadlines
     fetch('/api/deadlines')
@@ -144,28 +122,26 @@ export default function App() {
           countdown: d.countdown,
         })));
       })
-      .catch(err => console.error("Failed to load deadlines:", err));
+      .catch(err => console.error('Failed to load deadlines:', err));
   }, [currentDate, viewMode]);
 
   const handleTodoToggle = (id: string) => {
     const prev = todos.find((t) => t.id === id);
     if (!prev) return;
     const newDone = !prev.completed;
-    // Optimistic update
     setTodos((list) =>
       list.map((todo) =>
         todo.id === id ? { ...todo, completed: newDone } : todo
       )
     );
     fetch(`/api/todos/${id}/done`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ done: newDone }),
     }).then((res) => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     }).catch((err) => {
-      console.error("Failed to update todo:", err);
-      // Rollback on error
+      console.error('Failed to update todo:', err);
       setTodos((list) =>
         list.map((todo) =>
           todo.id === id ? { ...todo, completed: prev.completed } : todo
@@ -180,111 +156,106 @@ export default function App() {
     setCurrentDate(fmtDateStr(d));
   };
 
-  const chartStart = new Date(`${currentDate}T00:00:00`);
-  const chartEnd = new Date(`${currentDate}T23:59:59`);
-
   return (
     <div className="size-full bg-background overflow-hidden flex flex-col text-foreground">
-        <header className="px-8 py-5 border-b border-border flex items-center justify-between">
-          {/* 左上角：今日日期 */}
-          <div className="flex items-baseline gap-2">
-            <h1 className="text-2xl font-bold tracking-tight text-foreground leading-none" style={{ fontFamily: "'Inter', 'SF Pro Display', -apple-system, sans-serif" }}>
-              {todayMonth}月{todayDate}日
-            </h1>
-            <span className="text-sm text-muted-foreground font-medium">{todayDayName}</span>
-          </div>
+      {/* ── Header ────────────────────────────────────────────── */}
+      <header className="px-8 py-5 border-b border-border flex items-center justify-between flex-shrink-0">
+        <div className="flex items-baseline gap-2">
+          <h1
+            className="text-2xl font-bold tracking-tight text-foreground leading-none"
+            style={{ fontFamily: "'Inter', 'SF Pro Display', -apple-system, sans-serif" }}
+          >
+            {todayMonth}月{todayDate}日
+          </h1>
+          <span className="text-sm text-muted-foreground font-medium">{todayDayName}</span>
+        </div>
 
-          {/* 右侧：视图切换 + 日期导航 */}
-          <div className="flex items-center gap-3">
-            {/* 日/周 切换 */}
-            <div className="flex rounded-md border border-border overflow-hidden">
+        <div className="flex items-center gap-3">
+          {/* 三 Tab 切换：日 | 周 | Project Overview */}
+          <div className="flex rounded-md border border-border overflow-hidden">
+            {(['day', 'week', 'project'] as ViewMode[]).map((mode) => (
               <button
-                onClick={() => setViewMode('day')}
+                key={mode}
+                onClick={() => setViewMode(mode)}
                 className={`px-3 py-1 text-sm transition-colors ${
-                  viewMode === 'day'
+                  viewMode === mode
                     ? 'bg-foreground text-background font-medium'
                     : 'bg-transparent text-muted-foreground hover:bg-muted'
                 }`}
               >
-                日
+                {mode === 'day' ? '日' : mode === 'week' ? '周' : 'Project Overview'}
+              </button>
+            ))}
+          </div>
+
+          {/* 日视图的日期导航 */}
+          {viewMode === 'day' && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => shiftDate(-1)}
+                className="px-2 py-1 rounded border border-border hover:bg-muted text-sm transition-colors"
+              >
+                ‹
+              </button>
+              <input
+                type="date"
+                value={currentDate}
+                onChange={e => setCurrentDate(e.target.value)}
+                className="px-2 py-1 rounded border border-border bg-transparent text-sm min-w-[125px] outline-none"
+              />
+              <button
+                onClick={() => shiftDate(1)}
+                className="px-2 py-1 rounded border border-border hover:bg-muted text-sm transition-colors"
+              >
+                ›
               </button>
               <button
-                onClick={() => setViewMode('week')}
-                className={`px-3 py-1 text-sm transition-colors ${
-                  viewMode === 'week'
-                    ? 'bg-foreground text-background font-medium'
-                    : 'bg-transparent text-muted-foreground hover:bg-muted'
-                }`}
+                onClick={() => setCurrentDate(fmtDateStr(new Date()))}
+                className="px-3 py-1 rounded border border-border hover:bg-muted text-sm transition-colors ml-1"
               >
-                周
+                今天
               </button>
             </div>
+          )}
+        </div>
+      </header>
 
-            {/* 日视图的日期导航 */}
-            {viewMode === 'day' && (
-              <div className="flex items-center gap-2">
-                <button onClick={() => shiftDate(-1)} className="px-2 py-1 rounded border border-border hover:bg-muted text-sm transition-colors">‹</button>
-                <input 
-                  type="date" 
-                  value={currentDate} 
-                  onChange={e => setCurrentDate(e.target.value)}
-                  className="px-2 py-1 rounded border border-border bg-transparent text-sm min-w-[125px] outline-none"
-                />
-                <button onClick={() => shiftDate(1)} className="px-2 py-1 rounded border border-border hover:bg-muted text-sm transition-colors">›</button>
-                <button 
-                  onClick={() => setCurrentDate(fmtDateStr(new Date()))}
-                  className="px-3 py-1 rounded border border-border hover:bg-muted text-sm transition-colors ml-1"
-                >
-                  今天
-                </button>
-              </div>
-            )}
+      {/* ── Content ───────────────────────────────────────────── */}
+      {viewMode === 'week' ? (
+        <div className="flex-1 flex flex-col min-h-0">
+          <WeekView weekStart={weekStart} onWeekChange={setWeekStart} />
+        </div>
+      ) : viewMode === 'project' ? (
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          <ProjectOverview />
+        </div>
+      ) : (
+        /* ── 日视图：左 1/4 泳道图 + 右 3/4 ─────────────────── */
+        <div className="flex-1 flex min-h-0 overflow-hidden">
+          {/* 左 1/4：多泳道时间轴 */}
+          <div className="w-1/4 flex-shrink-0 border-r border-border flex flex-col min-h-0">
+            <MultiLaneTimeline events={timelineEvents} date={currentDate} />
           </div>
-        </header>
 
-        {viewMode === 'week' ? (
-          /* ── 周视图 ──────────────────────────────────────── */
-          <div className="flex-1 flex flex-col min-h-0">
-            <WeekView weekStart={weekStart} onWeekChange={setWeekStart} />
-          </div>
-        ) : (
-          /* ── 日视图（原有内容）──────────────────────────── */
-          <div className="flex-1 overflow-auto flex flex-col min-h-0">
-            <div className="flex-none pt-4 border-b border-border">
-                <GanttChart tasks={ganttTasks} startDate={chartStart} endDate={chartEnd} />
+          {/* 右 3/4 */}
+          <div className="flex-1 flex flex-col min-w-0 overflow-auto">
+            {/* 右上：精力分布（蓄水/漏水） */}
+            <div className="flex-shrink-0 border-b border-border">
+              <ChillDrainChart events={timelineEvents} />
             </div>
 
-            <div className="flex-none border-b border-border">
-                <TimeDistribution tasks={ganttTasks} catColors={CAT_COLORS} />
-            </div>
-
-            <div className="flex-1 px-8 py-8 border-b border-border">
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-8">
-                <ItemList
-                  title="Deadline"
-                  items={deadlines}
-                  type="deadline"
-                />
-                <ItemList
-                  title="记忆"
-                  items={memories}
-                  type="memory"
-                />
-                <ItemList
-                  title="提醒"
-                  items={reminders}
-                  type="reminder"
-                />
-                <ItemList
-                  title="待办"
-                  items={todos}
-                  type="todo"
-                  onToggle={handleTodoToggle}
-                />
+            {/* 右下：2×2 四方块 */}
+            <div className="flex-1 px-6 py-6">
+              <div className="grid grid-cols-2 gap-4 h-full">
+                <ItemList title="记忆" items={memories} type="memory" />
+                <ItemList title="提醒" items={reminders} type="reminder" />
+                <ItemList title="待办" items={todos} type="todo" onToggle={handleTodoToggle} />
+                <ItemList title="Deadline" items={deadlines} type="deadline" />
               </div>
             </div>
           </div>
-        )}
+        </div>
+      )}
     </div>
   );
 }

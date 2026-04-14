@@ -1,0 +1,31 @@
+{
+  "discord": {
+    "token": "",
+    "allowed_user_id": 0
+  },
+  "ai": {
+    "provider": "claude",
+    "api_key": "",
+    "base_url": "",
+    "chat_model": "claude-opus-4-6",
+    "poll_model": "claude-3-5-sonnet-latest",
+    "fallback": {
+      "provider": "",
+      "api_key": "",
+      "base_url": "",
+      "chat_model": "",
+      "poll_model": ""
+    }
+  },
+  "server": {
+    "port": 8080
+  },
+  "poll": {
+    "min_seconds": 60,
+    "max_seconds": 3600
+  },
+  "log": {
+    "level": "INFO",
+    "file": null
+  }
+}

@@ -62,6 +62,8 @@ def _start_segment(event: dict) -> dict:
         "content": event["content"],
         "category": event.get("category", "uncategorized"),
         "notes": event.get("notes") or None,
+        "project_name": event.get("project_name") or None,
+        "energy_type": event.get("energy_type") or None,
         "event_ids": [event["id"]],
         "check_in_count": 1,
     }
@@ -101,6 +103,17 @@ def _extend_segment(segment: dict, event: dict):
             segment["notes"] += f"\n{event_notes}"
         else:
             segment["notes"] = event_notes
+
+    # project_name：保留第一个非空值（已在 _start_segment 设置）
+    if not segment.get("project_name") and event.get("project_name"):
+        segment["project_name"] = event["project_name"]
+
+    # energy_type：drain 优先（若任何子事件是漏水则整段标记为漏水）
+    ev_et = event.get("energy_type")
+    if ev_et == "drain":
+        segment["energy_type"] = "drain"
+    elif ev_et and not segment.get("energy_type"):
+        segment["energy_type"] = ev_et
 
 
 def _close_segment(segment: dict, next_start_time: str):

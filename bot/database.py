@@ -104,7 +104,27 @@ class Database:
             conn.execute("ALTER TABLE events ADD COLUMN is_parallel INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
-            
+
+        try:
+            conn.execute("ALTER TABLE events ADD COLUMN project_name TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            conn.execute("ALTER TABLE events ADD COLUMN energy_type TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        # 迁移旧数据：将 notes 里的 [漏水] 标注迁移到 energy_type 字段
+        try:
+            conn.execute(
+                "UPDATE events SET energy_type = 'drain', "
+                "notes = TRIM(REPLACE(REPLACE(notes, '[漏水]', ''), CHAR(10)||CHAR(10), CHAR(10))) "
+                "WHERE notes LIKE '%[漏水]%' AND (energy_type IS NULL OR energy_type = '')"
+            )
+        except sqlite3.OperationalError:
+            pass
+
         try:
             conn.execute("ALTER TABLE reminders ADD COLUMN group_id TEXT")
             conn.execute("ALTER TABLE reminders ADD COLUMN priority TEXT DEFAULT 'normal'")
@@ -124,13 +144,15 @@ class Database:
     def add_event(self, start_time: str, end_time: Optional[str],
                   content: str, category: str = "uncategorized",
                   notes: Optional[str] = None, session_id: Optional[int] = None,
-                  is_parallel: bool = False) -> int:
+                  is_parallel: bool = False,
+                  project_name: Optional[str] = None,
+                  energy_type: Optional[str] = None) -> int:
         """添加一条时间轴事件，返回 event id"""
         conn = self._get_conn()
         cursor = conn.execute(
-            "INSERT INTO events (start_time, end_time, content, category, notes, session_id, is_parallel) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (start_time, end_time, content, category, notes, session_id, 1 if is_parallel else 0)
+            "INSERT INTO events (start_time, end_time, content, category, notes, session_id, is_parallel, project_name, energy_type) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (start_time, end_time, content, category, notes, session_id, 1 if is_parallel else 0, project_name, energy_type)
         )
         conn.commit()
         event_id = cursor.lastrowid
@@ -170,7 +192,7 @@ class Database:
 
     def update_event(self, event_id: int, **fields) -> bool:
         """更新指定事件的字段，只更新传入的字段。返回是否成功（event_id 存在）。"""
-        allowed = {"end_time", "content", "category", "notes", "session_id", "is_parallel"}
+        allowed = {"end_time", "content", "category", "notes", "session_id", "is_parallel", "project_name", "energy_type"}
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return False
