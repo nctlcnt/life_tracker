@@ -10,8 +10,9 @@
 | 阶段 | 状态 | 分支 |
 |---|---|---|
 | 第一阶段：数据层 + 前端布局骨架 | ✅ 已完成 (2026-04-13) | `feature/phase1-tricat-schema` |
-| 第二阶段：Prompt 调优 | 🔄 进行中 | `feature/phase1-tricat-schema` |
-| 第三阶段：前端视图（时间轴 + 比例图实现） | ⬜ 未开始 | — |
+| 第二阶段：Prompt 调优 | ✅ 已完成 (2026-04-13) | `feature/phase1-tricat-schema` |
+| 第三阶段：前端视图 + energy_type 参数化 | ✅ 已完成 (2026-04-14) | `feature/phase3-frontend-energy` |
+| 第四阶段：情绪评分机制 | ⬜ 未开始 | — |
 
 ---
 
@@ -95,8 +96,39 @@
 
 ---
 
+---
+
+### 第三阶段：前端视图大换血 + energy_type 参数化 ✅
+
+完成内容：
+- `energy_type TEXT` 字段加入 events 表，迁移现有 `[漏水]` notes 标记
+- `log_timeline_event` / `update_timeline_event` 工具新增 `energy_type` 参数（chill/drain/null）
+- prompts.py 中改用 `energy_type` 字段描述，移除 `[漏水]` notes 标记约定
+- ai_engine_base.py 透传 `energy_type`；merge_events() 保留 `project_name` 和 `energy_type`
+- 新增 `MultiLaneTimeline` 组件：竖向三泳道（Focus/Routine/Chill），事件块含 tooltip
+- 新增 `ChillDrainChart` 组件：精力分布条形图，蓄水/漏水/Focus/Routine 分行，含筛选 chip
+- 新增 `ProjectOverview` 组件：GitHub 式热力图，按项目×日期展示 Focus 投入分钟
+- 新增 `/api/projects/heatmap` 端点，聚合近 N 天各项目每日 Focus 时长
+- App.tsx 替换所有占位符为实际组件，恢复日视图的 `/api/timeline` 数据获取
+
+---
+
+### 第四阶段：情绪评分机制（待开发）
+
+**目标**：为每条 Chill 类型的时间段打情绪分，以情绪分辅助判断蓄水/漏水，并加成计算比例。
+
+**核心设计思路**：
+- 在 events 表新增 `mood_score INTEGER`（可选，1-5 分或自定义范围）
+- 情绪分由用户在对话中主动打分，或由 AI 根据对话情绪推断
+- 蓄水/漏水最终判断逻辑：`energy_type` 参数 + 情绪分综合加权
+- 蓄水比例计算：`(时长 × 情绪分因子)` 的加权和，高情绪分的 Chill 时间权重更高
+- 前端 ChillDrainChart 可根据情绪分渐变色块深浅
+
+---
+
 ### 实施路线建议 (MVP 跑通法)
 
 1.  **先动后端与 Prompt**：把 DB 字段加好，更新日和的 Function/Tool 定义和规则。✅ 已完成
-2.  **裸跑积攒数据**：完全不管前端怎么显示（甚至让前端先瘫痪着），强迫自己用微信聊天的状态跟日和对话，用新的三分法和 AI 自动分 Project 跑上 3-5 天。← **当前阶段**
-3.  **前端收网**：等你积累了包含"多线程并发"、"脏命名 Project"的真实日志后，再根据最让你有复盘欲望的数据，去手写多泳道图和热力图的代码。带着真实数据调 UI，思路会极其清晰。
+2.  **裸跑积攒数据**：完全不管前端怎么显示，强迫自己用微信聊天的状态跟日和对话，用新的三分法和 AI 自动分 Project 跑上 3-5 天。✅ 已完成
+3.  **前端收网**：多泳道时间轴、蓄水/漏水比例图、Project 热力图均已实现。✅ 已完成
+4.  **情绪评分**：为 Chill 时间段打情绪分，以情绪分加成计算蓄水比例。← **下一阶段**
