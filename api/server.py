@@ -125,6 +125,49 @@ async def get_deadlines():
     return {"deadlines": result, "count": len(result)}
 
 
+@app.get("/api/projects/heatmap")
+async def get_projects_heatmap(days: int = Query(90, description="统计天数，默认90天")):
+    """
+    Project Overview 热力图数据。
+    返回每个项目在最近 N 天里每天的 Focus 时长（分钟）。
+    """
+    from datetime import datetime, timedelta
+
+    end_dt = datetime.now()
+    start_dt = end_dt - timedelta(days=days - 1)
+    start_str = start_dt.strftime("%Y-%m-%dT00:00:00")
+    end_str = end_dt.strftime("%Y-%m-%dT23:59:59")
+
+    events = db.get_events(start_str, end_str)
+
+    # 构建日期列表（YYYY-MM-DD，最近 days 天）
+    dates = [(start_dt + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+
+    # 按 project_name 和日期聚合 Focus 时长
+    from collections import defaultdict
+    project_day: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+
+    for ev in events:
+        if ev.get("category") != "Focus" or not ev.get("project_name"):
+            continue
+        proj = ev["project_name"]
+        day = ev["start_time"][:10]  # YYYY-MM-DD
+        start = datetime.fromisoformat(ev["start_time"])
+        end_t = datetime.fromisoformat(ev["end_time"]) if ev.get("end_time") else end_dt
+        minutes = max(0, (end_t - start).total_seconds() / 60)
+        project_day[proj][day] += minutes
+
+    # 按总时长排序项目（降序）
+    projects = sorted(project_day.keys(), key=lambda p: sum(project_day[p].values()), reverse=True)
+
+    data = {
+        proj: {date: round(project_day[proj].get(date, 0)) for date in dates}
+        for proj in projects
+    }
+
+    return {"projects": projects, "dates": dates, "data": data}
+
+
 @app.get("/api/health")
 async def health_check():
     """健康检查"""

@@ -23,7 +23,7 @@ TOOLS = [
                 "  为某个项目查资料、学语法等学习成本也算入该 project 的 Focus 时间。\n"
                 "- Routine（日常维护）：维持生命体征的活动，如吃饭、洗澡、通勤、睡觉、家务。无需 project_name。\n"
                 "- Chill（蓄水放松）：看剧、打游戏、刷手机、听音乐等娱乐放松活动。无需 project_name。\n\n"
-                "如果是有意识的主动娱乐，category=Chill；如果是无聊逃避导致的漫无目的刷手机，在 notes 里标注 [漏水]。"
+                "category=Chill 时可通过 energy_type 区分：chill=有意识的主动放松（蓄水）；drain=无聊逃避的被动消耗（漏水）。不确定可留空。"
             ),
             "parameters": {
                 "type": "object",
@@ -49,9 +49,14 @@ TOOLS = [
                         "type": "string",
                         "description": "项目名称。category=Focus 时必填。优先匹配已有项目，无合适项目可新建，如 'Project-大模型探索'"
                     },
+                    "energy_type": {
+                        "type": "string",
+                        "enum": ["chill", "drain"],
+                        "description": "仅 category=Chill 时使用。chill=有意识的主动放松（蓄水）；drain=无聊逃避的被动消耗（漏水）。可不填。"
+                    },
                     "notes": {
                         "type": "string",
-                        "description": "事件的详细信息、感想、心情或备注。包括具体内容（如剧名、菜名）和用户原话感受。无聊逃避刷手机时加 [漏水] 标注"
+                        "description": "事件的详细信息、感想、心情或备注。包括具体内容（如剧名、菜名）和用户原话感受。"
                     },
                 },
                 "required": ["start_time", "content", "category"]
@@ -200,6 +205,11 @@ TOOLS = [
                     "project_name": {
                         "type": "string",
                         "description": "更新项目名称（category=Focus 时适用）"
+                    },
+                    "energy_type": {
+                        "type": "string",
+                        "enum": ["chill", "drain"],
+                        "description": "更新蓄水/漏水标记（仅 category=Chill 时适用）"
                     },
                     "notes": {
                         "type": "string",
@@ -378,7 +388,7 @@ TOOLS_ANTHROPIC = [
             "  为某个项目查资料、学语法等学习成本也算入该 project 的 Focus 时间。\n"
             "- Routine（日常维护）：维持生命体征的活动，如吃饭、洗澡、通勤、睡觉、家务。无需 project_name。\n"
             "- Chill（蓄水放松）：看剧、打游戏、刷手机、听音乐等娱乐放松活动。无需 project_name。\n\n"
-            "如果是有意识的主动娱乐，category=Chill；如果是无聊逃避导致的漫无目的刷手机，在 notes 里标注 [漏水]。"
+            "category=Chill 时可通过 energy_type 区分：chill=有意识的主动放松（蓄水）；drain=无聊逃避的被动消耗（漏水）。不确定可留空。"
         ),
         "input_schema": {
             "type": "object",
@@ -404,9 +414,14 @@ TOOLS_ANTHROPIC = [
                     "type": "string",
                     "description": "项目名称。category=Focus 时必填。优先匹配已有项目，无合适项目可新建，如 'Project-大模型探索'"
                 },
+                "energy_type": {
+                    "type": "string",
+                    "enum": ["chill", "drain"],
+                    "description": "仅 category=Chill 时使用。chill=有意识的主动放松（蓄水）；drain=无聊逃避的被动消耗（漏水）。可不填。"
+                },
                 "notes": {
                     "type": "string",
-                    "description": "事件的详细信息、感想、心情或备注。包括具体内容（如剧名、菜名）和用户原话感受。无聊逃避刷手机时加 [漏水] 标注"
+                    "description": "事件的详细信息、感想、心情或备注。包括具体内容（如剧名、菜名）和用户原话感受。"
                 },
                 "session_id": {
                     "type": "integer",
@@ -442,6 +457,11 @@ TOOLS_ANTHROPIC = [
                 "project_name": {
                     "type": "string",
                     "description": "更新项目名称（category=Focus 时适用）"
+                },
+                "energy_type": {
+                    "type": "string",
+                    "enum": ["chill", "drain"],
+                    "description": "更新蓄水/漏水标记（仅 category=Chill 时适用）"
                 },
                 "notes": {
                     "type": "string",
