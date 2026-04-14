@@ -1,0 +1,17 @@
+# Local development — builds image from source on every `docker compose up --build`
+services:
+  app:
+    build: .
+    ports:
+      - "${API_PORT:-8080}:${API_PORT:-8080}"
+    env_file: .env
+    volumes:
+      # SQLite database lives outside the container so it survives rebuilds
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:${API_PORT:-8080}/api/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3

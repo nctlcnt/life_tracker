@@ -1,0 +1,43 @@
+.PHONY: dev down build logs release deploy
+
+## ── Local development ────────────────────────────────────────────────────────
+
+# Build image from source and start (rebuilds when source changes)
+dev:
+	docker compose up --build
+
+# Stop local containers
+down:
+	docker compose down
+
+# Build image without starting
+build:
+	docker build -t life-tracker:dev .
+
+# Tail logs from running container
+logs:
+	docker compose logs -f
+
+## ── Release workflow ─────────────────────────────────────────────────────────
+
+# Create and push a version tag — GitHub Actions will build and push the image.
+# Usage: make release VERSION=v1.0.0
+release:
+	@[ -n "$(VERSION)" ] || (echo "Error: VERSION is required  (e.g. make release VERSION=v1.0.0)" && exit 1)
+	@echo "Tagging $(VERSION) and pushing to origin..."
+	git tag $(VERSION)
+	git push origin $(VERSION)
+	@echo ""
+	@echo "Done. GitHub Actions will build and push:"
+	@echo "  ghcr.io/chachaya/life-tracker:$(VERSION)"
+	@echo "  ghcr.io/chachaya/life-tracker:stable"
+
+## ── Production deployment (run on the server) ────────────────────────────────
+
+# Pull a specific version and restart the production container.
+# Usage: make deploy VERSION=v1.0.0
+deploy:
+	@[ -n "$(VERSION)" ] || (echo "Error: VERSION is required  (e.g. make deploy VERSION=v1.0.0)" && exit 1)
+	VERSION=$(VERSION) docker compose -f docker-compose.prod.yml pull
+	VERSION=$(VERSION) docker compose -f docker-compose.prod.yml up -d
+	@echo "Deployed $(VERSION)"

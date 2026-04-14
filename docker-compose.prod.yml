@@ -1,0 +1,25 @@
+# Production — pulls a pinned image from the registry, never builds locally.
+#
+# Usage:
+#   VERSION=v1.2.0 docker compose -f docker-compose.prod.yml up -d
+#
+# To pin a version permanently on the server, put VERSION=v1.2.0 in .env.prod:
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+#
+# The :stable tag always points to the latest released version.
+# Pinning an explicit version means you control exactly when to upgrade.
+services:
+  app:
+    image: ghcr.io/chachaya/life-tracker:${VERSION:-stable}
+    ports:
+      - "${API_PORT:-8080}:${API_PORT:-8080}"
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:${API_PORT:-8080}/api/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
