@@ -31,6 +31,7 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 | `bot/ai_engine_claude.py` | Claude 原生调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
 | `bot/ai_engine_relay.py` | OpenAI 格式中转站调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
 | `bot/ai_engine_gemini.py` | Gemini 原生 REST API 调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
+| `bot/test_mode.py` | 测试模式：`python main.py --test` 时激活，将所有应用日志和 AI prompt payload 捕获到 `data/test_logs/<end_ts>.jsonl` |
 | `bot/tools.py` | 工具定义大合集 (OpenAI / Anthropic 两种 Schema，共 9 个工具) + System Prompt；category 已改为三分法枚举 Focus/Routine/Chill，log_timeline_event 新增 project_name 字段 |
 | `bot/scheduler.py` | 两个并发循环 + asyncio.Lock：Timer 循环（随机轮询+睡前）+ Reminder 循环（数据库提醒倒计时+Event 唤醒） |
 | `bot/database.py` | SQLite DB 操作 (events, messages, reminders, memories, todos, deadlines)；events 表含 project_name 字段（三分法阶段新增） |
@@ -270,6 +271,11 @@ Gemini 引擎在 `round_idx > 0` 且命中 `PERSONA_MARKER` 时会自动切换�
 - [x] **/weather — 天气查询 + 穿衣建议**
   - 调用 wttr.in 获取天气数据，通过 `simple_completion`（POLL_MODEL，无工具）生成穿��建议
   - 复用 `bot/weather.py` 的数据获取，AI 根据温度/体感/降雨推荐具体衣物
+- [x] **测试模式（`--test` 启动参数）**
+  - `python main.py --test` 激活，进程退出时自动结束
+  - 记录范围：全量应用日志（`life_tracker.*` logger）+ 每次 AI API 调用的完整 payload（system / messages / tools）
+  - 三个 AI 引擎均已接入（Claude / Relay / Gemini），支持多轮 tool calling 的每轮独立记录
+  - 输出：`data/test_logs/<end_ts>.jsonl`，交错 `"type":"log"` 和 `"type":"ai_prompt"` 条目
 - [ ] **/bookmark url — 收藏文章**
   - URL 解析（trafilatura / newspaper3k）提取正文存入独立库
 - [ ] **/summarize url — AI 摘要文章**

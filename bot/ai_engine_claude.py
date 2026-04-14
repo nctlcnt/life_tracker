@@ -14,6 +14,7 @@ from bot.ai_engine_base import (
     simple_completion as _base_simple_completion,
 )
 from bot.logger import get_logger
+from bot import test_mode
 import config
 
 logger = get_logger(__name__)
@@ -75,7 +76,9 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
     if not model:
         model = getattr(config, 'CHAT_MODEL', 'claude-3-opus-20240229')
 
-    for _ in range(5):  # 最多 5 轮 tool calling，防止死循环
+    test_mode.ensure_handler_state()
+
+    for round_idx in range(5):  # 最多 5 轮 tool calling，防止死循环
         kwargs = dict(
             model=model,
             max_tokens=4096,
@@ -85,6 +88,8 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
             kwargs["system"] = system_blocks
         if tools:
             kwargs["tools"] = tools
+
+        test_mode.log_prompt("claude", model, kwargs, round_num=round_idx + 1)
 
         try:
             response = await client.messages.create(**kwargs)
