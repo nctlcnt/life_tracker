@@ -46,6 +46,7 @@ data/*.sqlite3
 
 # Logs
 *.log
+data/test_logs/
 
 # macOS
 .DS_Store

@@ -270,6 +270,18 @@ Gemini 引擎在 `round_idx > 0` 且命中 `PERSONA_MARKER` 时会自动切换�
 - [x] **/weather — 天气查询 + 穿衣建议**
   - 调用 wttr.in 获取天气数据，通过 `simple_completion`（POLL_MODEL，无工具）生成穿��建议
   - 复用 `bot/weather.py` 的数据获取，AI 根据温度/体感/降雨推荐具体衣物
+- [x] **测试模式（`--test` 启动参数）**
+  - `python main.py --test` 激活，进程退出时自动结束
+  - 记录范围：全量应用日志（`life_tracker.*` logger）+ 每次 AI API 调用的完整 payload（system / messages / tools）
+  - 三个 AI 引擎均已接入（Claude / Relay / Gemini），支持多轮 tool calling 的每轮独立记录
+  - 输出：`data/test_logs/<end_ts>.jsonl`，交错 `"type":"log"` 和 `"type":"ai_prompt"` 条目
+- [ ] **/cleanup — 今日 Timeline 整理**
+  - 触发后 AI 调用 `query_timeline` 拉取今天到目前为止的所有事件
+  - 以问答方式逐步确认：时间推断是否正确、内容标题是否准确、category 是否合适、重复/残留事件是否需要删除
+  - 用户可以口语回答（"对""不对，是下午两点""改成 Focus"），AI 持续调用 `update_timeline_event` / `delete_timeline_event` 直到整理完毕
+  - 实现为斜杠命令 `/cleanup`，触发后进入一个独立对话流，完成后退出
+  - 不影响正常的 chat 流程；整理完成后 AI 给一个简短的今日时间分布总结
+  - 不需要全量prompt，不需要人格化，纯工具调用 + 结果确认的闭环流程
 - [ ] **/bookmark url — 收藏文章**
   - URL 解析（trafilatura / newspaper3k）提取正文存入独立库
 - [ ] **/summarize url — AI 摘要文章**
