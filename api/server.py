@@ -153,7 +153,12 @@ async def get_projects_heatmap(days: int = Query(90, description="统计天数�
         proj = ev["project_name"]
         day = ev["start_time"][:10]  # YYYY-MM-DD
         start = datetime.fromisoformat(ev["start_time"])
-        end_t = datetime.fromisoformat(ev["end_time"]) if ev.get("end_time") else end_dt
+        if ev.get("end_time"):
+            end_t = datetime.fromisoformat(ev["end_time"])
+        else:
+            # 使用与 start 时区一致的 now，避免 naive/aware 相减报错
+            tz = start.tzinfo
+            end_t = datetime.now(tz=tz) if tz else datetime.now()
         minutes = max(0, (end_t - start).total_seconds() / 60)
         project_day[proj][day] += minutes
 
