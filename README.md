@@ -106,10 +106,14 @@ GitHub Actions 会把镜像推送到 **GitHub Container Registry (ghcr.io)**，�
 1. 进入仓库 → **Settings** → **Actions** → **General**
 2. 找到 **Workflow permissions**，选择 **Read and write permissions**，保存
 
-首次推送镜像后，还需要把包设为公开（这样服务器不需要登录就能拉取）：
+仓库是 Private，镜像也会是私有的，VPS 拉取镜像前需要先登录。
 
-1. 进入 GitHub 个人主页 → **Packages** → 找到 `life-tracker`
-2. **Package settings** → **Change visibility** → **Public**
+生成一个只读的 Personal Access Token（PAT）：
+
+1. GitHub → **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens**
+2. **Generate new token**，Repository access 选 **Only select repositories** → 选这个仓库
+3. Permissions 里只勾 **Packages** → **Read-only**
+4. 生成后复制 token（只显示一次）
 
 ---
 
@@ -129,7 +133,7 @@ make release VERSION=v1.0.0
 
 ---
 
-### 第三步：在 VPS 上安装 Docker
+### 第三步：在 VPS 上安装 Docker 并登录镜像仓库
 
 SSH 进入服务器后执行：
 
@@ -142,6 +146,9 @@ newgrp docker                          # 或重新登录使权限生效
 # 验证
 docker --version
 docker compose version
+
+# 登录 ghcr.io（用第一步生成的 PAT，凭证会保存在 ~/.docker/config.json）
+echo "你的_PAT" | docker login ghcr.io -u 你的GitHub用户名 --password-stdin
 ```
 
 ---
