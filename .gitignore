@@ -53,7 +53,8 @@ data/*.sqlite3
 *.swp
 
 # Project-specific
-life-tracker-brief.md
+# life-tracker-brief.md
+config.json
 
 # Frontend / Node.js
 node_modules/
