@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 from datetime import datetime
 from bot.ai_engine import chat, simple_completion
-from bot.weather import get_weather_brief
+from bot.weather import get_weather_brief, get_weather_detailed
 from bot.prompts import WEATHER_REPORT_PROMPT
 from bot.database import Database
 from bot.tools import SET_TOOL_NAMES
@@ -246,7 +246,7 @@ def _weather_command(bot: LifeTrackerBot) -> app_commands.Command:
 
         await interaction.response.defer()
 
-        weather_data = await get_weather_brief()
+        weather_data = await get_weather_detailed()
         if not weather_data:
             await interaction.followup.send("天气查询失败了，等会再试试吧")
             return
