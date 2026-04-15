@@ -129,6 +129,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                 raise AIProviderError(f"Gemini API 错误 ({resp.status_code}): {resp.text[:200]}")
 
             data = resp.json()
+            test_mode.log_response("gemini", model, data, round_num=round_idx + 1)
 
             candidates = data.get("candidates", [])
             if not candidates:

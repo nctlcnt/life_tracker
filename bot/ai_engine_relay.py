@@ -80,7 +80,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
             if tools:
                 payload["tools"] = tools
 
-            test_mode.log_prompt("relay", model, {"url": url, "payload": payload}, round_num=round_idx + 1)
+            test_mode.log_prompt("relay", model, payload, round_num=round_idx + 1)
 
             resp = await client.post(url, json=payload, headers=headers, timeout=120.0)
 
@@ -97,6 +97,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                 logger.error(f"❌ JSON 解析失败: {e}, body={resp.text[:200]}")
                 raise AIProviderError(f"Relay 返回非 JSON 内容: {e}") from e
 
+            test_mode.log_response("relay", model, data, round_num=round_idx + 1)
             logger.info(f"🤖 raw response keys: {list(data.keys())}")
 
             choices = data.get("choices", [])

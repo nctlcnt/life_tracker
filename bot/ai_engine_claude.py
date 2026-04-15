@@ -97,6 +97,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
             raise AIProviderError(f"Claude API 调用失败: {e}") from e
 
         # Token usage & prompt caching 验证
+        usage_log = None
         if hasattr(response, 'usage'):
             u = response.usage
             cache_create = getattr(u, 'cache_creation_input_tokens', 0) or 0
@@ -106,6 +107,26 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
             logger.info(f"   cache_creation={cache_create}, cache_read={cache_read}")
             if total_input > 0:
                 logger.info(f"   cache_hit_rate={cache_read / total_input * 100:.1f}%")
+            usage_log = {
+                "input_tokens": u.input_tokens,
+                "output_tokens": u.output_tokens,
+                "cache_creation_input_tokens": cache_create,
+                "cache_read_input_tokens": cache_read,
+            }
+
+        # 记录 AI 响应到测试日志
+        content_log = []
+        for block in response.content:
+            if hasattr(block, 'type'):
+                if block.type == "text":
+                    content_log.append({"type": "text", "text": block.text})
+                elif block.type == "tool_use":
+                    content_log.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
+        test_mode.log_response("claude", model, {
+            "stop_reason": response.stop_reason,
+            "content": content_log,
+            "usage": usage_log,
+        }, round_num=round_idx + 1)
 
         # 提取文本回复和 tool 调用
         text_parts = []

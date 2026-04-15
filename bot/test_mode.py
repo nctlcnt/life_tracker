@@ -116,6 +116,26 @@ def ensure_handler_state() -> None:
         stop()
 
 
+def log_response(provider: str, model: str, response: dict, round_num: int = 1) -> None:
+    """将 AI 返回的响应记录到测试日志。"""
+    if not is_active() or _active_log_path is None:
+        return
+    entry = {
+        "type": "ai_response",
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "provider": provider,
+        "model": model,
+        "round": round_num,
+        "response": response,
+    }
+    try:
+        line = json.dumps(entry, ensure_ascii=False, default=str)
+        with open(_active_log_path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
 def log_prompt(provider: str, model: str, payload: dict, round_num: int = 1) -> None:
     """将完整 AI prompt payload 追加到测试日志。
 
