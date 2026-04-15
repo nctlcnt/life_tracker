@@ -328,8 +328,8 @@ Gemini 引擎在 `round_idx > 0` 且命中 `PERSONA_MARKER` 时会自动切换�
   - [x] 日视图新布局：左 1/4 + 右 3/4（上：比例图区域 / 下：2×2 四方块）
   - [x] 移除 GanttChart 和 TimeDistribution，以占位符替换（标注 coming soon）
   - [x] 记忆 / 提醒 / 待办 / Deadlines 改为 2×2 方块布局（完全可用）
-  - [ ] 多泳道时间轴实现：Focus / Routine / Chill 三条竖向泳道，支持并发显示
-  - [ ] 蓄水/漏水比例图实现：展示今日 Chill vs Drain 时长，含 [蓄水]/[漏水] 筛选 tag
+  - [x] 多泳道时间轴实现：Focus / Routine / Chill 三条竖向泳道，支持并发显示
+  - [x] 蓄水/漏水比例图实现：展示今日 Chill vs Drain 时长，含 [蓄水]/[漏水] 筛选 tag
 - [~] **新 Tab：Project Overview（占位符已上线）**
   - [x] Project Overview Tab 入口已在导航中
   - [ ] GitHub 式项目热力图：Y 轴 = Project，X 轴 = 近 90 天，格子深浅 = 当天投入分钟数
