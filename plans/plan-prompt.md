@@ -258,6 +258,61 @@
 
 ---
 
+# 🚀 部署与回滚（直接 Python 运行）
+
+## 开始前：固定稳定版
+
+```bash
+git tag stable-before-prompt-refactor
+```
+
+## 开发分支
+
+```bash
+git checkout -b feature/prompt-refactor
+# 按本文档各 Step 修改 tools.py / prompts.py
+```
+
+## 本地快速验证（--test 模式）
+
+```bash
+python main.py --test
+# 手动发几条消息跑 Step 7 的验证场景，确认基本行为正确
+```
+
+## 上线测试（跑满一天）
+
+```bash
+git commit -m "feat(prompt): restructure tool decision policy"
+
+# 停掉当前进程（Ctrl+C 或关掉那个窗口）
+# 切到 feature 分支（如果还没 checkout）
+git checkout feature/prompt-refactor
+
+# 正常启动（不加 --test）
+python main.py
+```
+
+## 一天后评估
+
+**行为变好** → 合并回 main：
+
+```bash
+git checkout main
+git merge feature/prompt-refactor
+git tag stable-after-prompt-refactor
+```
+
+**行为变差** → 立刻回滚（30 秒）：
+
+```bash
+# Ctrl+C 停掉当前进程
+git checkout stable-before-prompt-refactor
+python main.py
+```
+
+---
+
 # 🧪 Step 7：验证（必须执行）
 
 对以下场景进行测试：

@@ -40,13 +40,12 @@ venv.bak/
 *.db.bak
 *.sqlite
 *.sqlite3
-data/*.db
-data/*.db.bak
-data/*.sqlite3
+
+# Data directory (runtime files, logs, DB, test flags — all ignored)
+data/
 
 # Logs
 *.log
-data/test_logs/
 
 # macOS
 .DS_Store
