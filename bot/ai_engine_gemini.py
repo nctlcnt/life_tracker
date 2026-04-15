@@ -13,6 +13,7 @@ from bot.ai_engine_base import (
     simple_completion as _base_simple_completion,
 )
 from bot.logger import get_logger
+from bot import test_mode
 import config
 
 logger = get_logger(__name__)
@@ -102,11 +103,13 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
 
     all_texts = []  # 收集所有轮次的文本
 
+    test_mode.ensure_handler_state()
+
     async with httpx.AsyncClient() as client:
         current_messages = [m.copy() for m in messages]
         is_intermediate = False  # 首轮发全量；有过工具调用后切精简
 
-        for _ in range(5):
+        for round_idx in range(5):
             current_prompt = (concise_prompt if is_intermediate and concise_prompt
                               else system_prompt)
             gemini_payload = {
@@ -117,6 +120,8 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
             }
             if gemini_tools:
                 gemini_payload["tools"] = gemini_tools
+
+            test_mode.log_prompt("gemini", model, gemini_payload, round_num=round_idx + 1)
 
             resp = await client.post(url, json=gemini_payload, timeout=60.0)
             if resp.status_code != 200:

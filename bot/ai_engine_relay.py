@@ -14,6 +14,7 @@ from bot.ai_engine_base import (
     simple_completion as _base_simple_completion,
 )
 from bot.logger import get_logger
+from bot import test_mode
 import config
 
 logger = get_logger(__name__)
@@ -67,8 +68,10 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
     full_messages = [{"role": "system", "content": full_system}] + list(messages)
     all_texts = []  # 收集所有轮次的文本
 
+    test_mode.ensure_handler_state()
+
     async with httpx.AsyncClient() as client:
-        for _ in range(5):
+        for round_idx in range(5):
             payload = {
                 "model": model,
                 "max_tokens": 4096,
@@ -76,6 +79,8 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
             }
             if tools:
                 payload["tools"] = tools
+
+            test_mode.log_prompt("relay", model, {"url": url, "payload": payload}, round_num=round_idx + 1)
 
             resp = await client.post(url, json=payload, headers=headers, timeout=120.0)
 

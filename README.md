@@ -20,6 +20,9 @@ pip install -r requirements.txt
 cd frontend && pnpm install && pnpm build && cd ..
 python main.py
 
+# 开启测试模式（记录所有日志和 AI prompt payload 到 data/test_logs/）
+python main.py --test
+
 # 方式二：Docker（推荐，无需本地配置环境）
 make dev                  # 等价于 docker compose up --build
 ```
@@ -49,7 +52,8 @@ make dev                  # 等价于 docker compose up --build
 │   ├── scheduler.py        # 随机 check-in + 提醒轮询
 │   ├── database.py         # SQLite 操作
 │   ├── tools.py            # AI 工具定义
-│   └── prompts.py          # 系统提示词
+│   ├── prompts.py          # 系统提示词
+│   └── test_mode.py        # 测试模式：捕获日志和 AI prompt 到 JSONL 文件
 ├── api/server.py           # FastAPI REST 接口 + 静态文件托管
 ├── frontend/               # React + Vite + TypeScript 前端
 ├── main.py                 # 入口，asyncio.gather 启动所有服务
