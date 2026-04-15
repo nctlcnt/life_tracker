@@ -35,19 +35,25 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 | 文件 | 职责 |
 |---|---|
 | `main.py` | 入口，asyncio.gather 启动 Bot + Scheduler + FastAPI |
+| `config.py` | 环境变量加载，分离 `CHAT_MODEL` 和 `POLL_MODEL` 降低成本 |
 | `bot/discord_bot.py` | Discord 收发消息，支持解析用户的引用/回复消息，过滤非目标用户 |
 | `bot/ai_engine.py` | AI 引擎路由器，根据 `AI_PROVIDER` 分发请求 |
 | `bot/ai_engine_base.py` | 三个引擎共享的逻辑：动态上下文构建、消息格式处理、工具执行、chat/scheduled_action 高层流程 |
 | `bot/ai_engine_claude.py` | Claude 原生调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
 | `bot/ai_engine_relay.py` | OpenAI 格式中转站调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
 | `bot/ai_engine_gemini.py` | Gemini 原生 REST API 调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
-| `bot/tools.py` | 工具定义大合集 (OpenAI / Anthropic 两种 Schema，共 9 个工具) + System Prompt；category 已改为三分法枚举 Focus/Routine/Chill，log_timeline_event 新增 project_name 字段 |
+| `bot/ai_provider_error.py` | 自定义异常类 `AIProviderError`，统一表示 AI 服务商调用失败 |
+| `bot/tools.py` | 工具定义 (OpenAI / Anthropic 两种 Schema，共 9 个工具) + `TOOL_POST_HINTS`；category 三分法枚举 Focus/Routine/Chill，log_timeline_event 含 project_name 字段 |
+| `bot/prompts.py` | Prompt 集中管理：所有 prompt 段落常量、`PromptParts` dataclass（三层缓存结构）、`build_prompt()`；各引擎通过 `to_claude_blocks()` / `flatten()` 消费；`PROACTIVE_PROMPT` / `REMINDER_PROMPT` / `BEDTIME_PROMPT` / `TOOL_POST_HINTS` 也在此定义 |
 | `bot/scheduler.py` | 两个并发循环 + asyncio.Lock：Timer 循环（随机轮询+睡前）+ Reminder 循环（数据库提醒倒计时+Event 唤醒） |
-| `bot/database.py` | SQLite DB 操作 (events, messages, reminders, memories, todos, deadlines)；events 表含 project_name 字段（三分法阶段新增） |
+| `bot/database.py` | SQLite DB 操作 (events, messages, reminders, memories, todos, deadlines)；events 表含 project_name 字段 |
 | `bot/merge.py` | 事件合并模块，将相邻同 content+category 的事件合并为时间段 |
-| `api/server.py` | FastAPI 接口：`/api/timeline`(合并后), `/api/events`, `/api/categories`, `/api/memories`, `/api/reminders`, `/api/todos` |
-| `frontend/` | React + Vite + Tailwind 组件化前端：时间轴日视图 + 周视图 + Project Overview |
-| `config.py` | 环境变量加载，分离 `CHAT_MODEL` 和 `POLL_MODEL` 降低成本 |
+| `bot/weather.py` | 天气查询模块，使用 wttr.in 免费 API（无需 key），早上时段（6-10点）注入天气数据 |
+| `bot/test_mode.py` | 测试模式：`/start-test` 开启后捕获所有日志和 AI prompt payload 写入 JSONL；`/stop-test` 结束并命名文件 |
+| `bot/logger.py` | 集中日志配置，其他模块 `get_logger(__name__)` 统一获取，支持 RotatingFileHandler |
+| `api/server.py` | FastAPI 接口：`/api/timeline`(合并后), `/api/events`, `/api/categories`, `/api/memories`, `/api/reminders`, `/api/todos`, `/api/deadlines`, `/api/projects/heatmap` |
+| `frontend/` | React + Vite + Tailwind 组件化前端：时间轴日视图 (`MultiLaneTimeline`)、周视图 (`WeekView`)、Project Overview (`ProjectOverview`)、甘特图 (`GanttChart`)、时间分布饼图 (`TimeDistribution`)、Chill 消耗图 (`ChillDrainChart`)、通用列表 (`ItemList`) |
+| `scripts/` | 辅助脚本：`cleanup.py`（数据清理）、`test_api.py`（接口测试） |
 
 ### 消息进程与数据流
 
@@ -94,7 +100,7 @@ helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用。
 
 ### Prompt 模块化
 
-`bot/tools.py` 里的 `SYSTEM_PROMPT` 由四段拼成：
+所有 prompt 集中在 `bot/prompts.py`，`SYSTEM_PROMPT` 由四段拼成：
 
 | 段名 | 内容 |
 |---|---|
@@ -103,17 +109,26 @@ helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用。
 | `PROMPT_TIME_PERCEPTION` | 时间感知辅助、hyperfocus 保护 |
 | `PROMPT_TOOL_GUIDELINES` | 时间轴记录规则、平行事件、提醒策略（含 delete_reminder 去重）、记忆管理 |
 
-`SYSTEM_PROMPT_CONCISE`（去掉 `PROMPT_TOOL_GUIDELINES`）用于中间轮切换以节省 token。
+`PromptParts` dataclass 按变化频率分三层：
 
-`_build_dynamic_context()` 每次调用注入（不参与 prompt caching）：
+- **静态层**（参与 prompt caching）：`PROMPT_PERSONA` + `PROMPT_RESPONSE_GUIDELINES` + `PROMPT_TIME_PERCEPTION`
+- **半动态层**（参与 prompt caching）：`PROMPT_TOOL_GUIDELINES`（工具规则较稳定）
+- **动态层**（不参与 caching）：`_build_dynamic_context()` 每次调用注入
+
+各引擎消费方式：
+- Claude: `prompt.to_claude_blocks()` → 3 个 cached system block
+- Gemini / Relay: `prompt.flatten()` → 单个字符串
+- 中间轮省 token: `prompt.concise().flatten()`（去掉 `PROMPT_TOOL_GUIDELINES`）
+
+`_build_dynamic_context()` 动态注入内容：
 - 【你现在记着的事】— 从 `memories` 表取全部
 - 【当前进行中的事件】— `end_time IS NULL` 的活动，带重复检查规则
 - 【待触发的跟进计划】— 所有 pending reminder，**带 `id=` 前缀**
-- 【今日天气】— 早上时段调 `get_weather_brief()`
+- 【今日天气】— 早上时段调 `bot/weather.py::get_weather_brief()`
 
 ### 调度 Prompt 模板
 
-`bot/scheduler.py` 里三段模板：
+均定义在 `bot/prompts.py`：
 - `PROACTIVE_PROMPT` — 随机轮询：给 AI 四选一（聊几句 / 关心 / 提一嘴记忆 / [SILENT]）
 - `REMINDER_PROMPT` — 提醒触发：注入 action + 优先级 + group 进度，硬规定"禁止再 set 相同内容"
 - `BEDTIME_PROMPT` — 睡前提醒：22:30-00:00 随机两次
