@@ -1,5 +1,15 @@
 # Life Tracker — 开发进度
 
+## 近期计划更新
+
+以下计划文件在最近 7 天内有更新（截至 2026-04-16）：
+
+- `plan-Merlin.md` — 2026-04-15 创建并更新，Merlin 精力调度引擎系统架构 v3（离线特征抽取管道、双轨运行机制、分阶段路线图 M1–M4+、LLM 抽取器 benchmark 方案 `bot/merlin/evals/`）
+- `plan-prompt.md` — 2026-04-15 新增，Prompt 重构执行计划（唯一工具决策入口 TOOL DECISION POLICY、Reminder/Timeline 策略下沉至 prompt、`<think>` 机制替代为 runtime 控制）
+- `Plan-Obsidian-Claude-Code.md` — 2026-04-14 新增，Obsidian 课业笔记接入方案（`query_obsidian` 工具 + `obsidian_mcp_server.py`，日和 bot 与 Claude Code 共享同一 `bot/obsidian_search.py` 逻辑）
+
+---
+
 ## 已解决的技术难题
 
 - **跨平台中转站兼容问题**：放弃脆弱的 OpenAI SDK，改用原生 `httpx` 发送请求并自行解析处理工具调用，彻底解决 `str object has no choices` 等诡异闭环问题。
@@ -13,6 +23,9 @@
 - **Reminder 去重能力缺口**：发现 AI 重复 set_reminder 后试图"保留最新的"但无法删除旧条目（set 只新增，cancel 会一锅端整个 group），新增 `delete_reminder` 工具按 id 精准删单条 pending，配合【待触发的跟进计划】里的 `id=` 展示和 `TOOL_POST_HINTS[set_reminder]` 的去重自检提示形成闭环。
 - **三分法 Schema 迁移**：将 category 从自由文本（休息/工作/娱乐等）迁移为严格枚举 Focus/Routine/Chill，events 表新增 project_name 字段。两套工具 schema（OpenAI + Anthropic）同步更新，热迁移方式保留旧数据。旧分类在前端颜色兜底映射，存量数据正常显示。
 - **消息路由（Router）评估不实施**（2026-04-11 验证）：Claude prompt caching 实测 cache hit rate 73-76%，Router 省掉的 token 净收益约 $0.0009/次，不值得；且用户消息天然多意图混合，预分类误判会导致功能缺失。AI 拿全部工具+完整上下文自行决策即是更强的内置 Router。
+- **Prompt 集中管理迁移（`bot/prompts.py` + `PromptParts`）**：将原先散布于 `bot/tools.py` 的所有 prompt 常量与 System Prompt 集中到 `bot/prompts.py`，引入 `PromptParts` dataclass 实现三层缓存结构（静态层 + 半动态层参与 prompt caching，动态层每次调用重建）。Claude 引擎通过 `to_claude_blocks()` 消费，Relay/Gemini 通过 `flatten()` 消费，中间轮省 token 时调用 `concise().flatten()`。`PROACTIVE_PROMPT` / `REMINDER_PROMPT` / `BEDTIME_PROMPT` 也统一移入此模块。
+- **工具调用 Discord Reaction 反馈**：AI 调用写入类工具（log/update/delete/save 等）时，Bot 自动在 AI 消息上追加 ✅ reaction；query 类查询工具不触发，避免 reaction 泛滥。写入工具白名单维护于 `bot/discord_bot.py`。
+- **Docker 容器化支持**：多阶段构建 Dockerfile（Node.js 前端编译 + Python 后端运行）、`docker-compose.yml`（开发）和 `docker-compose.prod.yml`（生产），支持 `config.json` 挂载和镜像发布流程。
 
 ---
 
@@ -83,11 +96,13 @@
 - [x] **/weather — 天气查询 + 穿衣建议**
   - 调用 wttr.in 获取天气数据，通过 `simple_completion`（POLL_MODEL，无工具）生成穿衣建议
   - 复用 `bot/weather.py` 的数据获取，AI 根据温度/体感/降雨推荐具体衣物
+  - （2026-04-15 增强）新增逐时预报展示与防晒建议（紫外线指数 + 防晒推荐）
 - [x] **测试模式（`--test` 启动参数）**
   - `python main.py --test` 激活，进程退出时自动结束
-  - 记录范围：全量应用日志 + 每次 AI API 调用的完整 payload
+  - 记录范围：全量应用日志 + 每次 AI API 调用的完整 payload（system / messages / tools）及 AI 响应内容
   - 三个 AI 引擎均已接入，支持多轮 tool calling 的每轮独立记录
-  - 输出：`data/test_logs/<end_ts>.jsonl`
+  - 输出：`data/test_logs/<end_ts>.jsonl`，交错 `"type":"log"` / `"type":"ai_prompt"` / `"type":"ai_response"` 条目
+  - viewer 支持按会话分组查看
 - [ ] **/cleanup — 今日 Timeline 整理**
   - 触发后 AI 调用 `query_timeline` 拉取今天到目前为止的所有事件
   - 以问答方式逐步确认：时间推断是否正确、内容标题是否准确、category 是否合适、重复/残留事件是否需要删除
@@ -139,6 +154,6 @@
 
 ### Phase 6 — 部署
 
-- [ ] **Docker 容器化改造**
+- [x] **Docker 容器化支持**（多阶段构建 Dockerfile + docker-compose.yml / docker-compose.prod.yml）
 - [ ] **云服务器上云 (EC2/DO 等)**
 - [x] **Prompt Caching 深度优化** (基于 Anthropic 的缓存机制进一步压低成本)

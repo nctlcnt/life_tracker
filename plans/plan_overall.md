@@ -13,7 +13,7 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 ### 技术栈
 
 - **后端**: Python, discord.py, httpx, FastAPI, SQLite
-- **前端**: 单文件静态 HTML（内嵌 CSS + JS），由 FastAPI 静态挂载在 `/app/`
+- **前端**: React + Vite + Tailwind，组件化前端，由 FastAPI 静态挂载在 `/app/`
 - **部署**: Docker → 云服务器
 - **AI 动态路由**: 支持随时通过环境变量切换后端：
   - Anthropic 原生 API (`claude`)
@@ -31,12 +31,17 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 | `bot/ai_engine_claude.py` | Claude 原生调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
 | `bot/ai_engine_relay.py` | OpenAI 格式中转站调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
 | `bot/ai_engine_gemini.py` | Gemini 原生 REST API 调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
-| `bot/tools.py` | 工具定义大合集 (OpenAI / Anthropic 两种 Schema，共 9 个工具) + System Prompt；category 已改为三分法枚举 Focus/Routine/Chill，log_timeline_event 新增 project_name 字段 |
+| `bot/tools.py` | 工具定义 (OpenAI / Anthropic 两种 Schema，共 9 个工具) + `TOOL_POST_HINTS`；category 三分法枚举 Focus/Routine/Chill，log_timeline_event 含 project_name 字段 |
+| `bot/prompts.py` | Prompt 集中管理：所有 prompt 段落常量、`PromptParts` dataclass（三层缓存结构）、`build_prompt()`；各引擎通过 `to_claude_blocks()` / `flatten()` 消费；`PROACTIVE_PROMPT` / `REMINDER_PROMPT` / `BEDTIME_PROMPT` 也在此定义 |
+| `bot/ai_provider_error.py` | 自定义异常类 `AIProviderError`，统一表示 AI 服务商调用失败 |
+| `bot/logger.py` | 集中日志配置，其他模块通过 `get_logger(__name__)` 统一获取，支持 RotatingFileHandler |
+| `bot/weather.py` | 天气查询模块，使用 wttr.in 免费 API（无需 key），支持逐时预报与防晒建议，早上时段（6–10点）注入天气数据 |
+| `bot/test_mode.py` | 测试模式：`--test` 启动参数激活，捕获全量日志和 AI prompt payload（含 AI 响应）写入 JSONL，viewer 按会话分组 |
 | `bot/scheduler.py` | 两个并发循环 + asyncio.Lock：Timer 循环（随机轮询+睡前）+ Reminder 循环（数据库提醒倒计时+Event 唤醒） |
 | `bot/database.py` | SQLite DB 操作 (events, messages, reminders, memories, todos, deadlines)；events 表含 project_name 字段（三分法阶段新增） |
 | `bot/merge.py` | 事件合并模块，将相邻同 content+category 的事件合并为时间段 |
-| `api/server.py` | FastAPI 接口：`/api/timeline`(合并后), `/api/events`, `/api/categories`, `/api/memories`, `/api/reminders`, `/api/todos` |
-| `frontend/index.html` | 单文件静态前端：时间轴日视图 + 记忆/提醒/待办管理页，支持分类筛选、并行事件展示 |
+| `api/server.py` | FastAPI 接口：`/api/timeline`(合并后), `/api/events`, `/api/categories`, `/api/memories`, `/api/reminders`, `/api/todos`, `/api/deadlines`, `/api/projects/heatmap` |
+| `frontend/` | React + Vite + Tailwind 组件化前端：时间轴日视图 (`MultiLaneTimeline`)、周视图 (`WeekView`)、Project Overview (`ProjectOverview`)、Chill 消耗图 (`ChillDrainChart`)、通用列表 (`ItemList`) 等 |
 | `config.py` | 环境变量加载，分离 `CHAT_MODEL` 和 `POLL_MODEL` 降低成本 |
 
 ### 消息进程与数据流
@@ -163,7 +168,7 @@ helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用，�
 
 ### Prompt 模块化
 
-`bot/tools.py` 里的 `SYSTEM_PROMPT` 由四段拼成：
+所有 prompt 集中在 `bot/prompts.py`，`SYSTEM_PROMPT` 由四段拼成：
 
 | 段名 | 内容 |
 |---|---|
@@ -172,18 +177,25 @@ helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用，�
 | `PROMPT_TIME_PERCEPTION` | 时间感知辅助、hyperfocus 保护 |
 | `PROMPT_TOOL_GUIDELINES` | 时间轴记录规则、平行事件、提醒策略（含 delete_reminder 去重）、记忆管理 |
 
-`SYSTEM_PROMPT_CONCISE`（去掉 `PROMPT_TOOL_GUIDELINES`）用于中间轮切换以节省 token。
-Gemini 引擎在 `round_idx > 0` 且命中 `PERSONA_MARKER` 时会自动切换到精简版。
+`PromptParts` dataclass 按变化频率分三层：
+- **静态层**（参与 prompt caching）：`PROMPT_PERSONA` + `PROMPT_RESPONSE_GUIDELINES` + `PROMPT_TIME_PERCEPTION`
+- **半动态层**（参与 prompt caching）：`PROMPT_TOOL_GUIDELINES`（工具规则较稳定）
+- **动态层**（不参与 caching）：`_build_dynamic_context()` 每次调用注入
 
-`_build_dynamic_context()` 每次调用注入（不参与 prompt caching）：
+各引擎消费方式：
+- Claude: `prompt.to_claude_blocks()` → 3 个 cached system block
+- Gemini / Relay: `prompt.flatten()` → 单个字符串
+- 中间轮省 token: `prompt.concise().flatten()`（去掉 `PROMPT_TOOL_GUIDELINES`）
+
+`_build_dynamic_context()` 动态注入内容：
 - 【你现在记着的事】— 从 `memories` 表取全部
 - 【当前进行中的事件】— `end_time IS NULL` 的活动，带重复检查规则
 - 【待触发的跟进计划】— 所有 pending reminder，**带 `id=` 前缀** 让 AI 知道怎么 `delete_reminder`
-- 【今日天气】— 早上时段调 `get_weather_brief()`
+- 【今日天气】— 早上时段调 `bot/weather.py::get_weather_brief()`
 
 ### 调度 Prompt 模板
 
-`bot/scheduler.py` 里三段模板分别对应：
+均定义在 `bot/prompts.py`：
 - `PROACTIVE_PROMPT` — 随机轮询：给 AI 四选一（聊几句 / 关心 / 提一嘴记忆 / [SILENT]）
 - `REMINDER_PROMPT` — 提醒触发：注入 action + 优先级 + group 进度，并硬规定"禁止再 set 相同内容"
 - `BEDTIME_PROMPT` — 睡前提醒：22:30-00:00 随机两次
@@ -200,6 +212,9 @@ Gemini 引擎在 `round_idx > 0` 且命中 `PERSONA_MARKER` 时会自动切换�
 - **中间轮独白化**：多轮 tool calling 的中间轮文本由"即时发给用户"改成"仅作 AI 内心独白"，让模型可以放心做自检、推理、去重决策而不污染用户消息流。由 `TOOL_ROUND_REMINDER` + `PROMPT_RESPONSE_GUIDELINES` + 三引擎共同维护。
 - **Reminder 去重能力缺口**：发现 AI 重复 set_reminder 后试图"保留最新的"但无法删除旧条目（set 只新增，cancel 会一锅端整个 group），新增 `delete_reminder` 工具按 id 精准删单条 pending，配合【待触发的跟进计划】里的 `id=` 展示和 `TOOL_POST_HINTS[set_reminder]` 的去重自检提示形成闭环。
 - **三分法 Schema 迁移**：将 category 从自由文本（休息/工作/娱乐等）迁移为严格枚举 Focus/Routine/Chill，events 表新增 project_name 字段。两套工具 schema（OpenAI + Anthropic）同步更新，热迁移方式保留旧数据。旧分类在前端颜色兜底映射，存量数据正常显示。
+- **Prompt 集中管理迁移（`bot/prompts.py` + `PromptParts`）**：将原先散布于 `bot/tools.py` 的所有 prompt 常量集中到 `bot/prompts.py`，引入 `PromptParts` dataclass 实现三层缓存结构（静态层 + 半动态层参与 prompt caching，动态层每次调用重建）。Claude 引擎通过 `to_claude_blocks()` 消费，Relay/Gemini 通过 `flatten()` 消费。
+- **工具调用 Discord Reaction 反馈**：AI 调用写入类工具时 Bot 自动在消息上追加 ✅ reaction；query 类查询工具不触发，避免 reaction 泛滥。
+- **Docker 容器化支持**：多阶段构建 Dockerfile（Node.js 前端编译 + Python 后端运行）、`docker-compose.yml`（开发）和 `docker-compose.prod.yml`（生产）。
 
 ---
 
@@ -332,7 +347,7 @@ Gemini 引擎在 `round_idx > 0` 且命中 `PERSONA_MARKER` 时会自动切换�
   - [x] 蓄水/漏水比例图实现：展示今日 Chill vs Drain 时长，含 [蓄水]/[漏水] 筛选 tag
 - [~] **新 Tab：Project Overview（占位符已上线）**
   - [x] Project Overview Tab 入口已在导航中
-  - [ ] GitHub 式项目热力图：Y 轴 = Project，X 轴 = 近 90 天，格子深浅 = 当天投入分钟数
+  - [x] GitHub 式项目热力图：Y 轴 = Project，X 轴 = 近 90 天，格子深浅 = 当天投入分钟数
   - [ ] 后续可扩展 Streak、趋势、精力雷达图等
 - [x] **导航 Tab（三 Tab）**：日 | 周 | Project Overview
 - [ ] **部署到 Vercel / Netlify**
@@ -348,6 +363,6 @@ Gemini 引擎在 `round_idx > 0` 且命中 `PERSONA_MARKER` 时会自动切换�
 
 ### Phase 6 — 部署
 
-- [ ] **Docker 容器化改造**
+- [x] **Docker 容器化支持**（多阶段构建 Dockerfile + docker-compose.yml / docker-compose.prod.yml）
 - [ ] **云服务器上云 (EC2/DO等)**
 - [x] **Prompt Caching 深度优化** (基于 Anthropic 的缓存机制进一步压低成本)
