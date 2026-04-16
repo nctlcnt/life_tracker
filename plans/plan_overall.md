@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-Life Tracker 是一个基于 Discord + AI 的个人生活轨迹记录系统。用户通过 Discord 随意聊天，AI 自动从对话中提取活动信息，生成结构化的时间轴记录，并提供主动提醒、时间管理、以及长期记忆功能。前端为单文件静态 HTML Timeline Dashboard，通过 FastAPI 提供数据。
+Life Tracker 是一个基于 Discord + AI 的个人生活轨迹记录系统。用户通过 Discord 随意聊天，AI 自动从对话中提取活动信息，生成结构化的时间轴记录，并提供主动提醒、时间管理、以及长期记忆功能。前端为 React + Vite + Tailwind 组件化前端，通过 FastAPI 提供数据。
 
 ### 核心架构
 

@@ -4,6 +4,7 @@
 
 以下计划文件在最近 7 天内有更新（截至 2026-04-16）：
 
+- `Plan-energy.md` — 2026-04-14 创建，2026-04-15 更新，精力调度三分法落地计划（Focus/Routine/Chill 三阶段进展、energy_type 参数化、前端视图换血；第四阶段情绪评分与第五阶段数据洞察扩展待开发）
 - `plan-Merlin.md` — 2026-04-15 创建并更新，Merlin 精力调度引擎系统架构 v3（离线特征抽取管道、双轨运行机制、分阶段路线图 M1–M4+、LLM 抽取器 benchmark 方案 `bot/merlin/evals/`）
 - `plan-prompt.md` — 2026-04-15 新增，Prompt 重构执行计划（唯一工具决策入口 TOOL DECISION POLICY、Reminder/Timeline 策略下沉至 prompt、`<think>` 机制替代为 runtime 控制）
 - `Plan-Obsidian-Claude-Code.md` — 2026-04-14 新增，Obsidian 课业笔记接入方案（`query_obsidian` 工具 + `obsidian_mcp_server.py`，日和 bot 与 Claude Code 共享同一 `bot/obsidian_search.py` 逻辑）
