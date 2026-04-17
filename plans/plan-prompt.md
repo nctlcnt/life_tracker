@@ -11,6 +11,64 @@
 
 ---
 
+## 📊 当前进度（同步于 2026-04-18）
+
+> ⚠️ **架构决定已变更**：Claude engine 路径**有意放弃了"分层决策 / policy 入口"方向**，优先保障 prompt caching 命中率。2026-04-15 的 `5321bbf` / `a10096b`（Steps 1-2 落地）于 2026-04-17 被 `01b22c2`（"unify chat/poll prompt"）回退是有意为之，不是 regression。
+
+### 为什么回退
+
+- Claude 以 1h ephemeral cache 复用 static + semi-dynamic 两层 block；分层决策结构越细，越容易因语义微调（枚举项增减、措辞调整、引用的动态字段改名）整块 invalidate。
+- 统一 chat / poll 为同一套 prompt 之后，两条 code path 共享同一个 cached 前缀，命中率进一步提升。
+- 实际观察下来 Claude 不需要 Step A/B/C 那种显式步骤化引导也能稳定做对，因此省掉它换 cache 稳定性更划算。
+
+### 当前运行成本（Claude Opus + 1h cache + 全量 prompt）
+
+- **花费**：约 $0.1736 / 小时
+- **cache 命中率**：~85%
+- **模型**：Opus
+- 可以试 Sonnet 进一步降成本，但那属于模型选型，不在本 prompt 优化计划内。
+- 下一阶段的 prompt 优化重点转向 **精简行文、降低全量 prompt 的 token 量**（不改变结构），而不是重建分层决策框架。
+
+### 各 Step 当前状态
+
+| Step | 状态 | 说明 |
+|---|---|---|
+| 1. TOOL DECISION POLICY | ❌ 放弃（Claude） | Claude 不再需要。Gemini / Relay 未决。 |
+| 2. 抽出 TIMELINE / REMINDER STRATEGY | ❌ 放弃（Claude） | 同上，`tools.py` 描述里保留场景与去重规则。 |
+| 3. 移除 `<think>` 机制 | ❌ 未做，且方向相反 | `RESPONSE_CORE` 反而更强调中间轮独白 / 最后一轮 `<think>` 规则，`ai_engine_base.py::split_thinking()` 仍在链路上。若确定保留需把 plan 此项删掉。 |
+| 4. 简化 RESPONSE_CORE | ❌ 未做 | 如果 Step 3 保留 `<think>` 方案，这里"删除"目标要相应改成"只在不损伤 cache 的前提下做局部清理"。 |
+| 5. 上下文注入策略 | ✅ 基本达成 | 代码注入规则与计划表一致；"筛选后的关键信息"这行已不在 `prompts.py` 中。 |
+| 6. 工具语义轻量化 | ❌ 未开始 | 计划本身标记为可选/延后；对 Claude 同样是"不碰就是最好的"。 |
+| 7. 验证 | ❌ 未执行 | 已失去原有依赖；留到下次真正动 prompt 时再跑。 |
+
+### Token 占用分析（来源：`data/token_analytics.html`）
+
+**静态层 Top 3（瘦身优先级从高到低）**：
+
+| 段落 | Tokens | 备注 |
+|---|---|---|
+| `TOOL_GUIDELINES_CHAT` | 995 | 最大头；"记录规则 / 提醒策略 / 记忆管理 / DDL 管理"四块都长，合并重复说明收益最大 |
+| `TIME_PERCEPTION_CHAT` | 482 | 蓄水/漏水、过渡困难、情绪捕捉多段有交叠 |
+| `RESPONSE_CORE` | 459 | 最重要的规则 + 中间轮/最后一轮 + 斜杠命令识别 + 消息节奏 + 时间戳 |
+
+**动态层**：`memories` 占比最高——条数上限（20）已经限了，但**单条长度无限制**，容易被 AI 写成长段描述。
+
+### 建议下一步
+
+1. **Step 1 / 2 / 3 / 4** 如果只面向 Claude，就直接从 plan 里删掉或标记为"废弃（cache 优先）"，避免将来误以为是待办。
+2. 如需针对 Gemini / Relay 做 provider-specific 分层决策，走 `prompts.py::build_prompt()` 里已经留的 `TODO(provider-prompt)` + `_PROVIDER_SECTIONS` 路线，而不是再在 Claude 版本上叠层。
+3. **静态层行文瘦身**（按 Top 3 顺序进攻，保持结构稳定不破 cache）：
+   - `TOOL_GUIDELINES_CHAT`：合并重合 bullet、去掉冗余"比如/例如"、长条件句改短句+枚举。
+   - `TIME_PERCEPTION_CHAT`：蓄水/漏水、过渡困难、情绪捕捉的重复说明只讲一次。
+   - `RESPONSE_CORE`：凝练中间轮/最后一轮的规则，系统输出识别段可以压缩。
+4. **动态层：限制单条 memory 长度**（候选方案）：
+   - 在 `save_memory` / `update_memory` 的 tool description 里加一句"单条 ≤ N 字"（软约束）。
+   - 或在 `bot/database.py` 写入时硬截断；或在 `_format_memories` 渲染时截断。
+   - 需要选一个既能降 token 又不丢语义的 N（初步感觉 40–60 字够用）。
+5. 模型维度：可以单独评估 Opus → Sonnet，但在本 plan 之外。
+
+---
+
 ## 🧭 总体策略（必须遵守）
 
 * 不删除现有功能，只做“结构重排”
