@@ -15,7 +15,6 @@ export interface TimelineEvent {
   endDate: Date;
   notes?: string | null;
   project_name?: string | null;
-  energy_type?: 'chill' | 'drain' | null;
 }
 
 interface MultiLaneTimelineProps {
@@ -33,8 +32,6 @@ const LANE_COLORS: Record<string, string> = {
   '生活': '#D4AFA0', '健康': '#9FBAB0', '娱乐': '#B5A6BC',
   '出行': '#CFB897', 'uncategorized': '#B5B1A8',
 };
-
-const DRAIN_COLOR = '#D4AFA0'; // 漏水专用色（灰粉，偏暖）
 
 const LANES = ['Focus', 'Routine', 'Chill'] as const;
 
@@ -185,8 +182,7 @@ export function MultiLaneTimeline({ events, date }: MultiLaneTimelineProps) {
                   const topRatio = timeToRatio(ev.startDate, dayBase);
                   const botRatio = timeToRatio(ev.endDate, dayBase);
                   const h = Math.max((botRatio - topRatio) * height, 3);
-                  const isDrain = ev.energy_type === 'drain';
-                  const color = isDrain ? DRAIN_COLOR : (LANE_COLORS[lane] || LANE_COLORS.uncategorized);
+                  const color = LANE_COLORS[lane] || LANE_COLORS.uncategorized;
                   const durationMs = ev.endDate.getTime() - ev.startDate.getTime();
 
                   return (
@@ -198,7 +194,7 @@ export function MultiLaneTimeline({ events, date }: MultiLaneTimelineProps) {
                             top: topRatio * height,
                             height: h,
                             backgroundColor: color,
-                            opacity: isDrain ? 0.65 : 0.85,
+                            opacity: 0.85,
                           }}
                         >
                           {h > 18 && (
@@ -226,9 +222,6 @@ export function MultiLaneTimeline({ events, date }: MultiLaneTimelineProps) {
                           </div>
                           {ev.project_name && (
                             <div className="text-[10px] text-muted-foreground pl-3.5">{ev.project_name}</div>
-                          )}
-                          {isDrain && (
-                            <div className="text-[10px] text-muted-foreground pl-3.5">漏水</div>
                           )}
                           {ev.notes && (
                             <div className="text-[10px] text-muted-foreground pl-3.5 leading-relaxed whitespace-pre-line line-clamp-3">
