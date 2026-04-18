@@ -6,7 +6,8 @@
 
 - `Plan-energy.md` — 2026-04-14 创建，2026-04-15 更新；2026-04-18 精力调度三分法 chill/drain 子标签（`energy_type` 字段与 `ChillDrainChart`）已整体移除，Focus/Routine/Chill 三分法保留。后续第四、五阶段（情绪评分 / 数据洞察扩展）转入 Merlin 路线。
 - `plan-Merlin.md` — 2026-04-15 创建并更新，Merlin 精力调度引擎系统架构 v3（离线特征抽取管道、双轨运行机制、分阶段路线图 M1–M4+、LLM 抽取器 benchmark 方案 `bot/merlin/evals/`）
-- `plan-prompt.md` — 2026-04-15 新增，**2026-04-17 更新进度与策略**；已决定放弃 Claude 路径上的「分层决策框架」（Step 1/2/3/4），优先保障 prompt caching 命中率（实测 ~85%，约 $0.1736/h）；下一步重点转向静态层行文瘦身（`TOOL_GUIDELINES_CHAT` / `TIME_PERCEPTION_CHAT` / `RESPONSE_CORE` 按 token 占比压缩）和动态层单条 memory 长度限制（候选 40–60 字软约束或硬截断）。
+- ~~`plan-prompt.md`~~ — **2026-04-18 已废弃并删除，不再继续**。原方向（分层决策框架 Step 1/2/3/4）早前已因 Claude prompt caching 命中率考量放弃，剩余瘦身思路被后续 `plan-prompt-new.md` 取代，历史进度存档在此条目中：2026-04-15 新增；2026-04-17 确认放弃分层决策框架（实测 cache ~85%，约 $0.1736/h）；2026-04-18 完成 chill/drain 子标签清理（计划外附带产出）。
+- `plan-prompt-new.md` — 2026-04-18 新增，**Prompt 结构性重构计划**（分支 `refactor/prompt-sections`）：把现有 `PERSONA / RESPONSE_CORE / RESPONSE_CHAT / RESPONSE_POLL / TIME_PERCEPTION_* / TOOL_GUIDELINES_*` 重排为正交的 5 + 1 section（`IDENTITY` / `USER_MODEL` / `COMMUNICATION` / `PROTOCOLS` / `TOOLS` + 极短的 `INITIATION_CHAT` / `INITIATION_POLL`）。核心改动：去临床标签化（移除 ADHD / Hyperfocus / 启动困难等命名）、所有"怎么说话"规则集中到 `COMMUNICATION`、chat/poll 共用 5 section 仅保留 `INITIATION` 的差异。目标同时降 token、提升 cache 命中、降低维护成本。执行分 Phase 1（解耦 IDENTITY/USER_MODEL/COMMUNICATION）→ Phase 2（合并 PROTOCOLS、精简 TOOLS）→ Phase 3（瘦身 INITIATION、更新 `PromptParts` 与 `_MODE_SECTIONS`）。进度：📋 计划已立，尚未开始代码改动。
 - `Plan-Obsidian-Claude-Code.md` — 2026-04-14 新增，Obsidian 课业笔记接入方案（`query_obsidian` 工具 + `obsidian_mcp_server.py`，日和 bot 与 Claude Code 共享同一 `bot/obsidian_search.py` 逻辑）
 
 ---
