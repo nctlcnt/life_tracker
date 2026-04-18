@@ -91,8 +91,8 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
     """
     memories = db.get_all_memories()
     ongoing = db.get_ongoing_events(limit=5)
-    # poll 模式不传 reminders：提醒到时间自会触发，AI 不需要看待触发清单
-    reminders = db.list_active_reminders() if mode == "chat" else None
+    # chat / poll 统一传 reminders，让动态层也跨模式共享（最大化 cache 命中）
+    reminders = db.list_active_reminders()
 
     # Deadline：先自动过期，再取 active
     db.expire_past_deadlines()
