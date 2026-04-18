@@ -53,7 +53,7 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 | `bot/test_mode.py` | 测试模式：`/start-test` 开启后捕获所有日志和 AI prompt payload 写入 JSONL；`/stop-test` 结束并命名文件 |
 | `bot/logger.py` | 集中日志配置，其他模块 `get_logger(__name__)` 统一获取，支持 RotatingFileHandler |
 | `api/server.py` | FastAPI 接口：`/api/timeline`(合并后), `/api/events`, `/api/categories`, `/api/memories`, `/api/reminders`, `/api/todos`, `/api/deadlines`, `/api/projects/heatmap` |
-| `frontend/` | React + Vite + Tailwind 组件化前端：时间轴日视图 (`MultiLaneTimeline`)、周视图 (`WeekView`)、Project Overview (`ProjectOverview`)、甘特图 (`GanttChart`)、时间分布饼图 (`TimeDistribution`)、Chill 消耗图 (`ChillDrainChart`)、通用列表 (`ItemList`) |
+| `frontend/` | React + Vite + Tailwind 组件化前端：时间轴日视图 (`MultiLaneTimeline`)、周视图 (`WeekView`)、Project Overview (`ProjectOverview`)、甘特图 (`GanttChart`)、时间分布饼图 (`TimeDistribution`)、通用列表 (`ItemList`) |
 | `scripts/` | 辅助脚本：`cleanup.py`（数据清理）、`test_api.py`（接口测试） |
 
 ### 消息进程与数据流

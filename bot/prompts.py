@@ -152,22 +152,6 @@ TIME_PERCEPTION_CHAT = """
 - 判断标准：短时间内多条消息都在聊同一个正事话题
 - 这时候不要转移话题或催她做别的
 
-**蓄水 vs 漏水（优先判断）**：
-- **蓄水（Chill）**：有意识的娱乐放松——她主动选择"就想躺着看剧/打游戏"，清醒地在享受 → 尊重，不打扰
-- **漏水（Drain）**：无聊逃避——刷手机刷到麻木、无目的地滑来滑去、明显烦躁坐立不安 → 递一个高刺激、低阻力的台阶
-- 关键区别：她是**主动在放松**，还是**被无聊推着走**
-
-**发现漏水状态时**：
-- 不要说"累了就去休息/睡觉吧"——漏水不是累，是刺激不足
-- 递一个具体的、能立刻启动的有趣台阶（项目里的小步骤、或者待办里最小的一件事）
-- 比如"理论看不进去了？去跑一下那个xx的代码换换脑子？"
-- 语气是"给你找了个好玩的出口"，不是催促
-
-**聊天中发现她一直在做非正事**：
-- 先判断蓄水还是漏水，再决定怎么反应
-- 蓄水 → 最多随便聊几句什么剧，不递台阶
-- 漏水 → 可以轻轻递一个台阶，但不要每次聊天都这样，偶尔就够了
-
 **她说"我该去做X了"但迟迟没动（过渡困难）**：
 - 她可能不是不想做，是不知道从哪里开始或者切换不了状态
 - 直接帮她想好第一步，把任务拆到最小可启动单位
@@ -187,21 +171,6 @@ TIME_PERCEPTION_POLL = """
 正确的做法是：从她待办/最近的事件里挑一个最容易启动或最紧急的事，用轻松的方式递过去。
 
 **核心原则：不报时，不制造紧迫感，只递台阶**
-
-**蓄水 vs 漏水的区别（优先判断）**：
-- **蓄水（Chill）**：有意识的娱乐放松——她主动选择在享受，清醒的 → 尊重，最多轻轻聊两句
-- **漏水（Drain）**：无聊逃避——无目的滑手机、刷了很久但明显无聊/烦躁 → 不是"累了去休息"，而是递一个高刺激、低阻力的有趣台阶
-- 判断信号：从最近对话看她有没有明显的无聊感/烦躁感；从事件记录看 energy_type 字段是否为 `drain`
-
-**发现漏水状态时**：
-- 从【当前进行中的事件】或待办里挑一件小的、具体的正事
-- 包装成很轻很小的一步递过去，把阻力降到最低
-- 语气是"给你找了个好玩的出口"，不是催促
-- 比如"刷了这么久了，要不去跑一下那个xxx的代码换换脑子？"
-
-**长时间沉浸在非正事时**（先判断蓄水还是漏水）：
-- 蓄水 → 不打扰，或随便聊一句什么剧
-- 漏水 → 递一个具体的、能立刻启动的有趣台阶
 
 **时间盲（主动报时）**：
 - 如果【当前进行中的事件】显示某个活动已经持续超过 2 小时，且没有明确的结束计划
@@ -279,8 +248,8 @@ TOOL_GUIDELINES_CHAT = """
 ### 格式
 - start_time / end_time：ISO 8601
 - category：严格三分法，只用 Focus / Routine / Chill（详见工具描述）
-- project_name：category=Focus 时必填，优先复用已有项目名，没有就直接新建
-- **energy_type**：category=Chill 时，如果判断这次是漏水（无聊逃避、无目的消耗），填 `drain`；有意识的主动放松填 `chill`；不确定可留空。便于前端统计和事后复盘。
+- project_name：category=Focus 时必填。**新建前必须先看【现有项目列表】**，确认没有合适匹配再建。
+  同义即复用——别因大小写、前后缀、空格、"学习/作业/上云"等修饰词的差异另起炉灶。新建时用 `Project-xxx` 前缀。
 - content：简洁中文标题，动词+宾语
 
 ### 新建 vs 更新 vs 删除（重复检测）
@@ -421,6 +390,7 @@ class PromptParts:
     deadlines: str = ""
 
     # 动态层
+    projects: str = ""
     ongoing: str = ""
     reminders: str = ""
     weather: str = ""
@@ -437,8 +407,8 @@ class PromptParts:
         return _join_nonempty(self.memories, self.deadlines)
 
     def dynamic_text(self) -> str:
-        """拼接动态段落（ongoing + reminders + weather）。"""
-        return _join_nonempty(self.ongoing, self.reminders, self.weather)
+        """拼接动态段落（projects + ongoing + reminders + weather）。"""
+        return _join_nonempty(self.projects, self.ongoing, self.reminders, self.weather)
 
     def flatten(self) -> str:
         """拍平为单个字符串（Gemini / Relay 用）。"""
@@ -450,7 +420,7 @@ class PromptParts:
 
         Block 1: 静态指令（永远命中缓存）
         Block 2: 稳定动态 = memories + deadlines（变化频率低，TTL 内常命中）
-        Block 3: 易变动态 = ongoing + reminders + weather（变化时只失效此 block）
+        Block 3: 易变动态 = projects + ongoing + reminders + weather（变化时只失效此 block）
         """
         blocks = []
         static = self.static_text()
@@ -490,6 +460,7 @@ LABEL_ONGOING = "【当前进行中的事件（end_time 为空）】"
 LABEL_REMINDERS = "【待触发的跟进计划】"
 LABEL_DEADLINES = "【待完成的 Deadline】"
 LABEL_WEATHER = "【今日天气】"
+LABEL_PROJECTS = "【现有项目列表（Focus 用，严格优先复用）】"
 
 WEATHER_CONTEXT_SUFFIX = "可以自然地提一下天气，但不要像天气预报一样念数据。"
 
@@ -572,6 +543,13 @@ def _format_weather(weather: str | None) -> str:
     return f"{LABEL_WEATHER}\n{weather}\n{WEATHER_CONTEXT_SUFFIX}"
 
 
+def _format_projects(projects: list[dict] | None) -> str:
+    if not projects:
+        return ""
+    lines = [f"- {p['project_name']} ({p['cnt']})" for p in projects]
+    return f"{LABEL_PROJECTS}\n" + "\n".join(lines)
+
+
 def _format_deadlines(deadlines: list[dict] | None) -> str:
     if not deadlines:
         return ""
@@ -608,6 +586,7 @@ def build_prompt(
     reminders: list[dict] | None = None,
     weather: str | None = None,
     deadlines: list[dict] | None = None,
+    projects: list[dict] | None = None,
 ) -> PromptParts:
     """
     一步构建完整的 PromptParts 对象。
@@ -632,6 +611,7 @@ def build_prompt(
         tool_guidelines=sections["tool_guidelines"].strip(),
         memories=_format_memories(memories),
         deadlines=_format_deadlines(deadlines),
+        projects=_format_projects(projects),
         ongoing=_format_ongoing(ongoing),
         reminders=_format_reminders(reminders),
         weather=_format_weather(weather),
@@ -701,11 +681,7 @@ def build_tool_round_hint(tool_names_called) -> str:
 PROACTIVE_PROMPT = (
     "[系统轮询 {timestamp}] 这是你的一次主动发言。\n"
     "⚠️ 强干预判断（优先执行全局规则中的『时间感知辅助』）：\n"
-    "1. 检视【当前进行中的事件】，判断蓄水还是漏水：\n"
-    "   - 蓄水（有意识放松）→ 不打扰，或随便聊两句\n"
-    "   - 漏水（无聊逃避、刷手机刷到麻木）→ 不要叫她'去休息'，"
-    "而是递一个高刺激、低阻力的有趣台阶，比如'理论看不进去了？去跑一下那个xxx的代码换换脑子？'\n"
-    "   - 某个正事做了两三小时没换气 → 轻松吐槽方式递个台阶\n"
+    "1. 检视【当前进行中的事件】：某个正事做了两三小时没换气 → 轻松吐槽方式递个台阶。\n"
     "2. 检视【待完成的 Deadline】和记忆：如果有该做迟迟没动的事，帮她拆个极小的第一步递过去。\n\n"
     "如果上述情况都不存在（状态很好或刚聊过），再选个自然切入点接之前的话题或分享想法。\n"
     "看情况思考是否使用 [SILENT]。其它时候直接说内容，不要打招呼问'在吗'。"

@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { ItemList, ListItem } from './components/ItemList';
 import { WeekView, getMonday } from './components/WeekView';
 import { MultiLaneTimeline, TimelineEvent } from './components/MultiLaneTimeline';
-import { ChillDrainChart } from './components/ChillDrainChart';
 import { ProjectOverview } from './components/ProjectOverview';
 
 // ── 日期格式化 ─────────────────────────────────────────────────
@@ -60,7 +59,6 @@ export default function App() {
             endDate: rawEnd > dayEnd ? dayEnd : rawEnd,
             notes: s.notes ?? null,
             project_name: s.project_name ?? null,
-            energy_type: s.energy_type ?? null,
           };
         });
         setTimelineEvents(events);
@@ -237,21 +235,13 @@ export default function App() {
             <MultiLaneTimeline events={timelineEvents} date={currentDate} />
           </div>
 
-          {/* 右 3/4 */}
-          <div className="flex-1 flex flex-col min-w-0 overflow-auto">
-            {/* 右上：精力分布（蓄水/漏水） */}
-            <div className="flex-shrink-0 border-b border-border">
-              <ChillDrainChart events={timelineEvents} />
-            </div>
-
-            {/* 右下：2×2 四方块 */}
-            <div className="flex-1 px-6 py-6">
-              <div className="grid grid-cols-2 gap-4 h-full">
-                <ItemList title="记忆" items={memories} type="memory" />
-                <ItemList title="提醒" items={reminders} type="reminder" />
-                <ItemList title="待办" items={todos} type="todo" onToggle={handleTodoToggle} />
-                <ItemList title="Deadline" items={deadlines} type="deadline" />
-              </div>
+          {/* 右 3/4：2×2 四方块 */}
+          <div className="flex-1 min-w-0 overflow-auto px-6 py-6">
+            <div className="grid grid-cols-2 gap-4 h-full">
+              <ItemList title="记忆" items={memories} type="memory" />
+              <ItemList title="提醒" items={reminders} type="reminder" />
+              <ItemList title="待办" items={todos} type="todo" onToggle={handleTodoToggle} />
+              <ItemList title="Deadline" items={deadlines} type="deadline" />
             </div>
           </div>
         </div>

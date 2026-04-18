@@ -19,11 +19,10 @@ TOOLS = [
                 "记录一条生活轨迹时间轴事件。当用户提到做了什么事、正在做什么、或者你从对话中推断出用户的活动时，调用此工具记录。\n\n"
                 "**三分法分类规则（严格遵守）**：\n"
                 "- Focus（正事/投入）：学习、写代码、做项目、工作等需要脑力投入的活动。必须同时填写 project_name。\n"
-                "  project_name 优先匹配用户已有的项目名，没有合适的就凭直觉新建（如 'Project-大模型探索'）。\n"
+                "  project_name 严格优先复用【现有项目列表】里已有的名字，只有确实无合适匹配才新建（新建用 'Project-xxx' 前缀，如 'Project-大模型探索'）。\n"
                 "  为某个项目查资料、学语法等学习成本也算入该 project 的 Focus 时间。\n"
                 "- Routine（日常维护）：维持生命体征的活动，如吃饭、洗澡、通勤、睡觉、家务。无需 project_name。\n"
-                "- Chill（蓄水放松）：看剧、打游戏、刷手机、听音乐等娱乐放松活动。无需 project_name。\n\n"
-                "category=Chill 时可通过 energy_type 区分：chill=有意识的主动放松（蓄水）；drain=无聊逃避的被动消耗（漏水）。不确定可留空。"
+                "- Chill（放松）：看剧、打游戏、刷手机、听音乐等娱乐放松活动。无需 project_name。"
             ),
             "parameters": {
                 "type": "object",
@@ -43,16 +42,11 @@ TOOLS = [
                     "category": {
                         "type": "string",
                         "enum": ["Focus", "Routine", "Chill"],
-                        "description": "事件分类：Focus（正事投入）/ Routine（日常维护）/ Chill（蓄水放松）"
+                        "description": "事件分类：Focus（正事投入）/ Routine（日常维护）/ Chill（放松）"
                     },
                     "project_name": {
                         "type": "string",
-                        "description": "项目名称。category=Focus 时必填。优先匹配已有项目，无合适项目可新建，如 'Project-大模型探索'"
-                    },
-                    "energy_type": {
-                        "type": "string",
-                        "enum": ["chill", "drain"],
-                        "description": "仅 category=Chill 时使用。chill=有意识的主动放松（蓄水）；drain=无聊逃避的被动消耗（漏水）。可不填。"
+                        "description": "项目名称。category=Focus 时必填。**新建前先看【现有项目列表】**，严格优先复用；同义即复用，别因大小写/前后缀/空格/修饰词差异另起炉灶。确无匹配再以 'Project-xxx' 新建。"
                     },
                     "notes": {
                         "type": "string",
@@ -205,11 +199,6 @@ TOOLS = [
                     "project_name": {
                         "type": "string",
                         "description": "更新项目名称（category=Focus 时适用）"
-                    },
-                    "energy_type": {
-                        "type": "string",
-                        "enum": ["chill", "drain"],
-                        "description": "更新蓄水/漏水标记（仅 category=Chill 时适用）"
                     },
                     "notes": {
                         "type": "string",
@@ -384,11 +373,10 @@ TOOLS_ANTHROPIC = [
             "记录一条生活轨迹时间轴事件。当用户提到做了什么事、正在做什么、或者你从对话中推断出用户的活动时，调用此工具记录。\n\n"
             "**三分法分类规则（严格遵守）**：\n"
             "- Focus（正事/投入）：学习、写代码、做项目、工作等需要脑力投入的活动。必须同时填写 project_name。\n"
-            "  project_name 优先匹配用户已有的项目名，没有合适的就凭直觉新建（如 'Project-大模型探索'）。\n"
+            "  project_name 严格优先复用【现有项目列表】里已有的名字，只有确实无合适匹配才新建（新建用 'Project-xxx' 前缀，如 'Project-大模型探索'）。\n"
             "  为某个项目查资料、学语法等学习成本也算入该 project 的 Focus 时间。\n"
             "- Routine（日常维护）：维持生命体征的活动，如吃饭、洗澡、通勤、睡觉、家务。无需 project_name。\n"
-            "- Chill（蓄水放松）：看剧、打游戏、刷手机、听音乐等娱乐放松活动。无需 project_name。\n\n"
-            "category=Chill 时可通过 energy_type 区分：chill=有意识的主动放松（蓄水）；drain=无聊逃避的被动消耗（漏水）。不确定可留空。"
+            "- Chill（放松）：看剧、打游戏、刷手机、听音乐等娱乐放松活动。无需 project_name。"
         ),
         "input_schema": {
             "type": "object",
@@ -408,16 +396,11 @@ TOOLS_ANTHROPIC = [
                 "category": {
                     "type": "string",
                     "enum": ["Focus", "Routine", "Chill"],
-                    "description": "事件分类：Focus（正事投入）/ Routine（日常维护）/ Chill（蓄水放松）"
+                    "description": "事件分类：Focus（正事投入）/ Routine（日常维护）/ Chill（放松）"
                 },
                 "project_name": {
                     "type": "string",
-                    "description": "项目名称。category=Focus 时必填。优先匹配已有项目，无合适项目可新建，如 'Project-大模型探索'"
-                },
-                "energy_type": {
-                    "type": "string",
-                    "enum": ["chill", "drain"],
-                    "description": "仅 category=Chill 时使用。chill=有意识的主动放松（蓄水）；drain=无聊逃避的被动消耗（漏水）。可不填。"
+                    "description": "项目名称。category=Focus 时必填。**新建前先看【现有项目列表】**，严格优先复用；同义即复用，别因大小写/前后缀/空格/修饰词差异另起炉灶。确无匹配再以 'Project-xxx' 新建。"
                 },
                 "notes": {
                     "type": "string",
@@ -457,11 +440,6 @@ TOOLS_ANTHROPIC = [
                 "project_name": {
                     "type": "string",
                     "description": "更新项目名称（category=Focus 时适用）"
-                },
-                "energy_type": {
-                    "type": "string",
-                    "enum": ["chill", "drain"],
-                    "description": "更新蓄水/漏水标记（仅 category=Chill 时适用）"
                 },
                 "notes": {
                     "type": "string",

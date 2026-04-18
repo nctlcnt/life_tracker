@@ -98,6 +98,8 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
     db.expire_past_deadlines()
     deadlines = db.get_active_deadlines()
 
+    projects = db.get_all_project_names()
+
     return build_prompt(
         mode,
         provider=provider,
@@ -106,6 +108,7 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
         reminders=reminders or None,
         weather=weather,
         deadlines=deadlines or None,
+        projects=projects or None,
     )
 
 
@@ -145,7 +148,6 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
             session_id=args.get("session_id"),
             is_parallel=False,
             project_name=args.get("project_name"),
-            energy_type=args.get("energy_type"),
         )
         old_id = args.get("session_id")
         if old_id:
@@ -182,7 +184,7 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
         return {"success": True, "events": events, "count": len(events)}
 
     elif tool_name == "update_timeline_event":
-        fields = {k: args[k] for k in ("end_time", "content", "category", "project_name", "energy_type") if k in args}
+        fields = {k: args[k] for k in ("end_time", "content", "category", "project_name") if k in args}
         # notes 追加模式：新 notes 拼接到已有内容后面
         if "notes" in args and args["notes"]:
             existing = db.get_event_by_id(args["event_id"])

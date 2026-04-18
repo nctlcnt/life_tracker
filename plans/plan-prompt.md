@@ -29,6 +29,10 @@
 - 可以试 Sonnet 进一步降成本，但那属于模型选型，不在本 prompt 优化计划内。
 - 下一阶段的 prompt 优化重点转向 **精简行文、降低全量 prompt 的 token 量**（不改变结构），而不是重建分层决策框架。
 
+### 2026-04-18 已完成的瘦身：移除 chill/drain 子标签
+
+`refactor/drop-energy-type` 分支把 TIME_PERCEPTION 里的 "蓄水 vs 漏水" 段、TOOL_GUIDELINES 里的 `energy_type` 字段说明、PROACTIVE_PROMPT 里的蓄水/漏水分支，以及 tools.py 两套 schema 的 `energy_type` 参数全部删除（连带 DB 列、`ChillDrainChart` 组件、`MultiLaneTimeline` 的 drain 染色一并清理）。动机：用户自述无法精准自评状态，前端也一直不看这张图。Focus/Routine/Chill 三分法保留。
+
 ### 各 Step 当前状态
 
 | Step | 状态 | 说明 |
@@ -48,7 +52,7 @@
 | 段落 | Tokens | 备注 |
 |---|---|---|
 | `TOOL_GUIDELINES_CHAT` | 995 | 最大头；"记录规则 / 提醒策略 / 记忆管理 / DDL 管理"四块都长，合并重复说明收益最大 |
-| `TIME_PERCEPTION_CHAT` | 482 | 蓄水/漏水、过渡困难、情绪捕捉多段有交叠 |
+| `TIME_PERCEPTION_CHAT` | 482 | （2026-04-18 删除蓄水/漏水段后已下降，待下次分析重测）过渡困难、情绪捕捉段落仍可压 |
 | `RESPONSE_CORE` | 459 | 最重要的规则 + 中间轮/最后一轮 + 斜杠命令识别 + 消息节奏 + 时间戳 |
 
 **动态层**：`memories` 占比最高——条数上限（20）已经限了，但**单条长度无限制**，容易被 AI 写成长段描述。
@@ -59,7 +63,7 @@
 2. 如需针对 Gemini / Relay 做 provider-specific 分层决策，走 `prompts.py::build_prompt()` 里已经留的 `TODO(provider-prompt)` + `_PROVIDER_SECTIONS` 路线，而不是再在 Claude 版本上叠层。
 3. **静态层行文瘦身**（按 Top 3 顺序进攻，保持结构稳定不破 cache）：
    - `TOOL_GUIDELINES_CHAT`：合并重合 bullet、去掉冗余"比如/例如"、长条件句改短句+枚举。
-   - `TIME_PERCEPTION_CHAT`：蓄水/漏水、过渡困难、情绪捕捉的重复说明只讲一次。
+   - `TIME_PERCEPTION_CHAT`：过渡困难、情绪捕捉的重复说明只讲一次（蓄水/漏水段已于 2026-04-18 移除）。
    - `RESPONSE_CORE`：凝练中间轮/最后一轮的规则，系统输出识别段可以压缩。
 4. **动态层：限制单条 memory 长度**（候选方案）：
    - 在 `save_memory` / `update_memory` 的 tool description 里加一句"单条 ≤ N 字"（软约束）。
