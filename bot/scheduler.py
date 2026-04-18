@@ -20,17 +20,21 @@ logger = get_logger(__name__)
 
 
 class Scheduler:
-    def __init__(self, db: Database, send_callback, fetch_history_callback):
+    def __init__(self, db: Database, send_callback, fetch_history_callback,
+                 is_user_typing_callback=None):
         """
         send_callback: 一个 async 函数，用于发送消息到 Discord
             例如 bot.send_proactive_message
         fetch_history_callback: 一个 async 函数 (limit: int) -> list[dict]，
             从 Discord 拉对话历史交给 AI 引擎作上下文
             例如 bot.fetch_history_for_scheduler
+        is_user_typing_callback: 同步函数 () -> bool，
+            返回用户当前是否在输入；仅随机轮询会用来决定是否让路
         """
         self.db = db
         self.send = send_callback
         self.fetch_history = fetch_history_callback
+        self.is_user_typing = is_user_typing_callback or (lambda: False)
         self._running = False
         self._ai_lock = asyncio.Lock()  # 防止 timer 和 reminder 循环同时调用 AI
         self._reminder_event = asyncio.Event()  # 新增提醒时唤醒 reminder 循环
@@ -113,7 +117,13 @@ class Scheduler:
         return times
 
     async def _do_proactive_check(self, timestamp: str):
-        """执行随机轮询"""
+        """执行随机轮询。AI 忙或用户正在输入时直接跳过，进入下一轮倒计时。"""
+        if self._ai_lock.locked():
+            logger.info("⏭️ AI 正在思考，跳过本次轮询")
+            return
+        if self.is_user_typing():
+            logger.info("⏭️ 用户正在输入，跳过本次轮询")
+            return
         async with self._ai_lock:
             try:
                 prompt = PROACTIVE_PROMPT.format(timestamp=timestamp)

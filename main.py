@@ -44,6 +44,7 @@ async def main(test: bool = False):
             db,
             bot.send_proactive_message,
             bot.fetch_history_for_scheduler,
+            is_user_typing_callback=bot.is_user_typing,
         )
         db._on_reminder_added = scheduler.notify_new_reminder
 
