@@ -1,3 +1,28 @@
+### ✅ 归档（2026-04-18 | 实施分支 `refactor/prompt-sections`）
+
+**状态**：全部三个 phase 已完成 + 追加了 Option A（unify chat/poll）。
+
+**最终落地结构**（6 正交 section，不是原计划的 6+1）：
+- `IDENTITY` / `USER_MODEL` / `SYSTEM_MECHANICS` / `COMMUNICATION` / `PROTOCOLS` / `TOOLS_SECTION`
+- 原 INITIATION 设计被放弃：chat / poll 共享完全相同的 static prompt，模式差异改由 scheduler 模板（PROACTIVE/REMINDER/BEDTIME/MORNING）在 user message 里标识。动机：实测发现第一次 poll 后 `cache_read=0 cache_creation=10245`，确认 mode-specific section 是 cache miss 元凶。MEMORY.md 里的 Claude cache 优先级策略强约束要求 unify。
+
+**自检清单逐条结果**：
+- ✅ `IDENTITY` 无行为指令 / 对话模板（通过）
+- ⚠️ `USER_MODEL` 词汇检查：严格字面意义下 `综合征/症状/ADHD/执行功能障碍/障碍` 确实出现——**这是 Hybrid Approach（plan §60-72）刻意保留的概念挂载语料 + 负向约束词**。与 self-check 列表（plan §228）存在设计内冲突，Hybrid 优先（更具体、更新、配套了完整的 "⚠️ 绝对禁止约束" 语气护栏）。未来若实测仍引发"粉红大象"，按 plan §74-75 的 Fallback 预案退回纯净方案
+- ✅ `COMMUNICATION` 是风格规则唯一出处（"像发微信""自然随意""默认一条""就是闲聊"等风格词无泄漏）
+- ✅ `PROTOCOLS` 4 个信号中性命名（深度专注 / 迈不出第一步 / 高耗后的宕机 / 时间感偏移，无 hyperfocus/启动困难/断电/时间感知漂移）
+- ✅ `TOOLS_SECTION` 无风格词（自然随意/像发微信/闲聊/朋友 都未出现）
+- ✅ `INITIATION` 长度限制已被 Option A 超越：0 行 vs 原要求 ≤10 行
+- ✅ 5 条抽样规则 section 归属唯一（悉尼 → USER_MODEL；时间戳 → SYSTEM_MECHANICS；闲聊 → COMMUNICATION；深度专注 → PROTOCOLS；deadline 去重 → TOOLS）
+
+**额外优化**：`ai_engine_base._build_prompt` 改为 chat/poll 统一传 reminders，让动态层也跨模式共享（之前 poll 不传，会让 Block 3 failed cache）。
+
+**相关改动**：`bot/prompts.py` + `bot/ai_engine_base.py` + `.claude/CLAUDE.md` + memory `project_claude_prompt_cache_priority.md`。
+
+以下为历史计划内容，仅作参考。
+
+---
+
 # Prompt 重构 Plan
 
 ## 核心问题诊断
