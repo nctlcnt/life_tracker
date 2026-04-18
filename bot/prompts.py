@@ -5,15 +5,15 @@ Prompt 集中管理模块
 
 架构（6 个正交 section，chat / poll 完全共用）：
 - IDENTITY / USER_MODEL / SYSTEM_MECHANICS / COMMUNICATION / PROTOCOLS / TOOLS
-- PromptParts dataclass 按变化频率分三层（静态 / 半动态 / 动态），
-  build_prompt() 一步构建。
+- PromptParts dataclass 按变化频率分四层（静态 / 稳定上下文 / 记忆 / 高频动态），
+  对应 Anthropic cache_control 的 4 个上限，build_prompt() 一步构建。
 
 ⚠️ 静态 prompt **不随 mode 变化**——chat / poll 共享完全相同的 system prompt，
    最大化 1h ephemeral cache 命中率。模式差异通过 scheduler 模板
    （PROACTIVE / REMINDER / BEDTIME / MORNING）在 user message 里标识。
 
 各引擎消费 PromptParts 的方法：
-- Claude: prompt.to_claude_blocks() → 3 个 cached system block
+- Claude: prompt.to_claude_blocks() → 最多 4 个 cached system block
 - Gemini/Relay: prompt.flatten() → 单个字符串
 - 中间轮省 token: prompt.concise().flatten()（去掉 TOOLS 段）
 
@@ -319,15 +319,17 @@ def _join_nonempty(*parts: str) -> str:
 @dataclass
 class PromptParts:
     """
-    按变化频率分三层的结构化 prompt。
+    按变化频率分四层的结构化 prompt（对应 Anthropic 4 个 cache_control 上限）。
 
-    静态层：identity + user_model + system_mechanics + communication +
+    Block 1 (static)：identity + user_model + system_mechanics + communication +
            protocols + tools（几乎不变，chat / poll 完全相同）
-    半动态层：memories + deadlines（每次请求可能变，但频率低）
-    动态层：projects + ongoing + reminders + weather（高频变化）
+    Block 2 (stable context)：deadlines + projects（低频变化——项目几乎不增删，
+           deadline 仅在新增/完成时变）
+    Block 3 (memories)：memories（比 deadlines/projects 变化略频繁，独立成 block
+           避免因记忆更新连带 invalidate Block 2 的 cache）
+    Block 4 (volatile)：ongoing + reminders + weather（高频变化）
 
-    Claude 引擎按三层拆成 3 个 cached system block，前缀缓存命中率最高。
-    Gemini/Relay 用 flatten() 拍平成单个字符串。
+    Gemini/Relay 用 flatten() 拍平成单个字符串（不参与 prompt caching）。
     """
     mode: str  # "chat" | "poll"，仅用于调用方上游决策（如 DB 取数），不影响 prompt 内容
 
@@ -339,18 +341,18 @@ class PromptParts:
     protocols: str
     tools: str | None  # None = concise 模式（中间轮省 token）
 
-    # 半动态层
-    memories: str = ""
+    # 半动态层（拆成两个 block 以隔离 invalidate 影响面）
     deadlines: str = ""
+    projects: str = ""
+    memories: str = ""
 
     # 动态层
-    projects: str = ""
     ongoing: str = ""
     reminders: str = ""
     weather: str = ""
 
     def static_text(self) -> str:
-        """拼接所有静态段落。"""
+        """Block 1：所有静态段落。"""
         parts = [
             self.identity,
             self.user_model,
@@ -362,48 +364,50 @@ class PromptParts:
             parts.append(self.tools)
         return _join_nonempty(*parts)
 
-    def semi_dynamic_text(self) -> str:
-        """拼接半动态段落（memories + deadlines）。"""
-        return _join_nonempty(self.memories, self.deadlines)
+    def stable_context_text(self) -> str:
+        """Block 2：deadlines + projects（低频变化）。"""
+        return _join_nonempty(self.deadlines, self.projects)
+
+    def memories_text(self) -> str:
+        """Block 3：memories（单独成 block，避免牵连 Block 2）。"""
+        return self.memories
 
     def dynamic_text(self) -> str:
-        """拼接动态段落（projects + ongoing + reminders + weather）。"""
-        return _join_nonempty(self.projects, self.ongoing, self.reminders, self.weather)
+        """Block 4：ongoing + reminders + weather（高频变化）。"""
+        return _join_nonempty(self.ongoing, self.reminders, self.weather)
 
     def flatten(self) -> str:
         """拍平为单个字符串（Gemini / Relay 用）。"""
-        return _join_nonempty(self.static_text(), self.semi_dynamic_text(), self.dynamic_text())
+        return _join_nonempty(
+            self.static_text(),
+            self.stable_context_text(),
+            self.memories_text(),
+            self.dynamic_text(),
+        )
 
     def to_claude_blocks(self) -> list[dict]:
         """
-        构建 Anthropic system blocks（最多 3 个 cached block）。
+        构建 Anthropic system blocks（最多 4 个 cached block，上限即 cache_control 最大值）。
 
-        Block 1: 静态指令（永远命中缓存）
-        Block 2: 稳定动态 = memories + deadlines（变化频率低，TTL 内常命中）
-        Block 3: 易变动态 = projects + ongoing + reminders + weather（变化时只失效此 block）
+        顺序 = 稳定 → 易变，前缀匹配最大化命中：
+        - Block 1: 静态（identity/user_model/.../tools）
+        - Block 2: deadlines + projects（稳定上下文）
+        - Block 3: memories（单独块，记忆更新不影响 Block 2）
+        - Block 4: ongoing + reminders + weather（高频变化，失效只影响此块）
         """
         blocks = []
-        static = self.static_text()
-        if static:
-            blocks.append({
-                "type": "text",
-                "text": static,
-                "cache_control": {"type": "ephemeral"},
-            })
-        semi = self.semi_dynamic_text()
-        if semi:
-            blocks.append({
-                "type": "text",
-                "text": semi,
-                "cache_control": {"type": "ephemeral"},
-            })
-        dyn = self.dynamic_text()
-        if dyn:
-            blocks.append({
-                "type": "text",
-                "text": dyn,
-                "cache_control": {"type": "ephemeral"},
-            })
+        for text in (
+            self.static_text(),
+            self.stable_context_text(),
+            self.memories_text(),
+            self.dynamic_text(),
+        ):
+            if text:
+                blocks.append({
+                    "type": "text",
+                    "text": text,
+                    "cache_control": {"type": "ephemeral"},
+                })
         return blocks
 
     def concise(self) -> PromptParts:
@@ -506,7 +510,7 @@ def _format_weather(weather: str | None) -> str:
 def _format_projects(projects: list[dict] | None) -> str:
     if not projects:
         return ""
-    lines = [f"- {p['project_name']} ({p['cnt']})" for p in projects]
+    lines = [f"- {p['project_name']}" for p in projects]
     return f"{LABEL_PROJECTS}\n" + "\n".join(lines)
 
 

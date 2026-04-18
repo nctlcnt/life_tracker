@@ -114,14 +114,15 @@ helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用。
 
 **模式差异的唯一通道**：scheduler 模板（`PROACTIVE_PROMPT` / `REMINDER_PROMPT` / `BEDTIME_PROMPT` / `MORNING_PROMPT`）在 user message 里带 `[内部触发…]` / `[约定跟进触发…]` 等前缀，AI 据此识别当前是主动轮询还是被动回复。system prompt 不再带 mode-specific section。
 
-`PromptParts` dataclass 按变化频率分三层：
+`PromptParts` dataclass 按变化频率分四层，对应 Anthropic `cache_control` 的 4 个上限：
 
-- **静态层**（参与 prompt caching）：IDENTITY + USER_MODEL + SYSTEM_MECHANICS + COMMUNICATION + PROTOCOLS + TOOLS_SECTION
-- **半动态层**（参与 prompt caching）：memories + deadlines
-- **动态层**（不参与 caching）：projects + ongoing + reminders + weather
+- **Block 1（静态）**：IDENTITY + USER_MODEL + SYSTEM_MECHANICS + COMMUNICATION + PROTOCOLS + TOOLS_SECTION（几乎不变，~5444 字符）
+- **Block 2（稳定上下文）**：deadlines + projects（低频变化：projects 几乎不增删，deadline 仅在新增/完成时变）
+- **Block 3（记忆）**：memories（独立成 block，避免记忆更新连带 invalidate Block 2 的 cache）
+- **Block 4（高频动态）**：ongoing + reminders + weather
 
 各引擎消费方式：
-- Claude: `prompt.to_claude_blocks()` → 最多 3 个 cached system block（chat ↔ poll 切换 100% cache hit）
+- Claude: `prompt.to_claude_blocks()` → 最多 4 个 cached system block（chat ↔ poll 切换 100% cache hit）
 - Gemini / Relay: `prompt.flatten()` → 单个字符串
 - 中间轮省 token: `prompt.concise().flatten()`（去掉 `TOOLS_SECTION`）
 
