@@ -225,6 +225,17 @@ class Database:
         conn.close()
         return [row["category"] for row in rows]
 
+    def get_all_project_names(self) -> list[dict]:
+        """获取所有 Focus 项目名及事件数，按事件数降序。供 prompt 动态上下文复用已有项目名使用。"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT project_name, COUNT(*) as cnt FROM events "
+            "WHERE category = 'Focus' AND project_name IS NOT NULL AND project_name != '' "
+            "GROUP BY project_name ORDER BY cnt DESC"
+        ).fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
     def get_ongoing_events(self, limit: int = 5) -> list[dict]:
         """获取最近的未结束事件（end_time 为空），按 start_time 倒序"""
         conn = self._get_conn()

@@ -98,6 +98,8 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
     db.expire_past_deadlines()
     deadlines = db.get_active_deadlines()
 
+    projects = db.get_all_project_names()
+
     return build_prompt(
         mode,
         provider=provider,
@@ -106,6 +108,7 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
         reminders=reminders or None,
         weather=weather,
         deadlines=deadlines or None,
+        projects=projects or None,
     )
 
 

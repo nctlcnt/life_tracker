@@ -248,7 +248,8 @@ TOOL_GUIDELINES_CHAT = """
 ### 格式
 - start_time / end_time：ISO 8601
 - category：严格三分法，只用 Focus / Routine / Chill（详见工具描述）
-- project_name：category=Focus 时必填，优先复用已有项目名，没有就直接新建
+- project_name：category=Focus 时必填。**新建前必须先看【现有项目列表】**，确认没有合适匹配再建。
+  同义即复用——别因大小写、前后缀、空格、"学习/作业/上云"等修饰词的差异另起炉灶。新建时用 `Project-xxx` 前缀。
 - content：简洁中文标题，动词+宾语
 
 ### 新建 vs 更新 vs 删除（重复检测）
@@ -389,6 +390,7 @@ class PromptParts:
     deadlines: str = ""
 
     # 动态层
+    projects: str = ""
     ongoing: str = ""
     reminders: str = ""
     weather: str = ""
@@ -405,8 +407,8 @@ class PromptParts:
         return _join_nonempty(self.memories, self.deadlines)
 
     def dynamic_text(self) -> str:
-        """拼接动态段落（ongoing + reminders + weather）。"""
-        return _join_nonempty(self.ongoing, self.reminders, self.weather)
+        """拼接动态段落（projects + ongoing + reminders + weather）。"""
+        return _join_nonempty(self.projects, self.ongoing, self.reminders, self.weather)
 
     def flatten(self) -> str:
         """拍平为单个字符串（Gemini / Relay 用）。"""
@@ -418,7 +420,7 @@ class PromptParts:
 
         Block 1: 静态指令（永远命中缓存）
         Block 2: 稳定动态 = memories + deadlines（变化频率低，TTL 内常命中）
-        Block 3: 易变动态 = ongoing + reminders + weather（变化时只失效此 block）
+        Block 3: 易变动态 = projects + ongoing + reminders + weather（变化时只失效此 block）
         """
         blocks = []
         static = self.static_text()
@@ -458,6 +460,7 @@ LABEL_ONGOING = "【当前进行中的事件（end_time 为空）】"
 LABEL_REMINDERS = "【待触发的跟进计划】"
 LABEL_DEADLINES = "【待完成的 Deadline】"
 LABEL_WEATHER = "【今日天气】"
+LABEL_PROJECTS = "【现有项目列表（Focus 用，严格优先复用）】"
 
 WEATHER_CONTEXT_SUFFIX = "可以自然地提一下天气，但不要像天气预报一样念数据。"
 
@@ -540,6 +543,13 @@ def _format_weather(weather: str | None) -> str:
     return f"{LABEL_WEATHER}\n{weather}\n{WEATHER_CONTEXT_SUFFIX}"
 
 
+def _format_projects(projects: list[dict] | None) -> str:
+    if not projects:
+        return ""
+    lines = [f"- {p['project_name']} ({p['cnt']})" for p in projects]
+    return f"{LABEL_PROJECTS}\n" + "\n".join(lines)
+
+
 def _format_deadlines(deadlines: list[dict] | None) -> str:
     if not deadlines:
         return ""
@@ -576,6 +586,7 @@ def build_prompt(
     reminders: list[dict] | None = None,
     weather: str | None = None,
     deadlines: list[dict] | None = None,
+    projects: list[dict] | None = None,
 ) -> PromptParts:
     """
     一步构建完整的 PromptParts 对象。
@@ -600,6 +611,7 @@ def build_prompt(
         tool_guidelines=sections["tool_guidelines"].strip(),
         memories=_format_memories(memories),
         deadlines=_format_deadlines(deadlines),
+        projects=_format_projects(projects),
         ongoing=_format_ongoing(ongoing),
         reminders=_format_reminders(reminders),
         weather=_format_weather(weather),
