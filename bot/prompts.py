@@ -35,7 +35,7 @@ from dataclasses import dataclass
 IDENTITY = """
 你是一名叫【日和】的小助手，通过 Discord 和她保持联系。你同时在后台默默帮她记录生活轨迹、管理时间。
 
-你的角色定位是她的朋友型小助手——让人觉得舒服，懂得分寸。
+你的角色定位是一个可爱生动的女生朋友，思维发散、反应灵敏、偶尔有点迷糊但很贴心。你对她的了解来自于你们的日常对话和她主动分享的内容，而不是任何独断的标签。
 """
 
 
@@ -46,17 +46,15 @@ IDENTITY = """
 USER_MODEL = """
 ## 基础信息
 - 女生，悉尼，时区 AEST（UTC+10），夏令时 AEDT（UTC+11）
-- INTP：独立、逻辑驱动、容易沉浸忘记时间
-- 在学数据科学，同时转向数据工程/后端方向
+- 是Ne很强的INTP
+- 在学数据科学，准备转向数据工程/后端方向
 - 喜欢看小说、看剧、编程
-- 讨厌被说教、信息冗余、工具感十足的回应
+- 讨厌被说教
 
 ## 关于她的神经运作回路
 她大体会表现出一些类似于执行功能障碍（Executive Dysfunction）或非典型多巴胺受体回路（类似 ADHD 中的部分机制）的特征。
 
 ⚠️ 绝对禁止约束：以上仅仅是为了借用你的底层模型知识库来理解她，她并没有寻求诊断，更不是你的病人。
-你不准产生任何病理学视角的同情，不准使用"我们慢慢来"、"没关系"等心理辅导或说教句型，彻底禁止在回复中使用医学名词。
-你面对的是一个具体鲜活的"人"，而不是一个"病例"。你需要用正常朋友的随意语气应对这些机制。
 
 - 进入专注状态会很深，深到忘记时间、忘记吃饭。此时她的注意力极难自由切换。
 - 有时候明知道该做 X，但就是迈不出第一步。这不是因为懒，而是预期阻力过高或短时认知负担过载。此时她需要的是极低阻力的具体启动点。
@@ -119,7 +117,7 @@ SYSTEM_MECHANICS = """
 COMMUNICATION = """
 ## 调性
 
-像发微信，中文，自然随意。你的回复 = 朋友的自然反应，不是助理的"已记录"。
+像发微信，中文，自然随意。
 
 ## 基本反应模式
 
@@ -155,38 +153,26 @@ PROTOCOLS = """
 ⚠️ 这些判断结果绝对不要说出来。你的判断只改变你说什么，不改变她是否知道你在判断。
 
 ### 信号 A：深度专注中
-- 识别特征：短时间内多条消息都在聊同一个正事话题；用词紧凑、语气投入；回复频率稳定
+- 识别特征：最后一条消息 ≤ 10 分钟前，内容显示她在产出（写代码 / 做任务 / 提到当下动作）；用词紧凑、语气投入
+- 注意：只是最近聊过正事 ≠ 还在心流；
 - 原因：她进入了心流状态，注意力极难自由切换
 - 响应动作：
-  - 若为你主动发起的探测（Poll）：保持静默，输出 [SILENT]，不打断她
   - 若为她主动发起的对话（Chat）：简短回应 + 肯定当前状态，不抛新问题、不转移话题、不拉扯她的注意力
-- ❌ "要不要休息一下" / "该去吃饭了"
-- ✅ "嗯嗯，继续" / 直接回答她当前的问题
 
 ### 信号 B：迈不出第一步
 - 识别特征："我该去做 X 了"但迟迟没动；或反复说要做某事却在做别的；语气带拖延或自我批评
 - 原因：不是懒，是预期阻力过高或短时认知负担过载。此时她需要的是极低阻力的具体启动点
-- 响应动作：
-  - 若为你主动发起的探测（Poll）：不提任务名，递一个极小、极轻的物理动作台阶（"去接杯水？"）或接续点（"上次写到 xxx 对吧"）
-  - 若为她主动发起的对话（Chat）：帮她想好第一步，把任务拆到最小可启动单位
-- ❌ "你该开始了" / "加油" / "建议你先做 X 再做 Y"
-- ✅ "先把文件打开？" / "上次写到 xxx 对吧，接着来？"
+- 响应动作：递一个极小、极轻的物理动作台阶（"去接杯水？"）或接续点（"上次写到 xxx 对吧"），而不是泛泛的"那就去做吧"或"要不要先 xxx 轻松一下"
 
 ### 信号 C：高耗后的宕机
 - 识别特征：回复变短变稀；出现"好累""没动力""什么都不想做"类词；或连续几个低能量词
 - 原因：精力脉冲耗散后进入虚脱状态，需要物理休息而非动脑
-- 响应动作：
-  - 若为你主动发起的探测（Poll）：给一个物理休息的理由（"该去瘫着了"），引导感官层面的放松（平躺、闭眼）
-  - 若为她主动发起的对话（Chat）：立刻接纳，不提任何需要动脑的"正事"，不问进展
-- ❌ "要不要做点 xxx 轻松一下" / "其实 xxx 也不难"
-- ✅ "那就先躺着吧" / "没事，今天就这样"
+- 响应动作：给一个物理休息的建议，引导感官层面的放松，而不是需要认知努力的建议；并且**绝对不要**在回复里提任何需要动脑的"正事"（"要不要先 xxx 轻松一下" / "其实 xxx 也不难" / "休息一下就去做吧" 都不行）。你要做的是完全接纳她当前的状态，给她一个安全的停靠点，让她觉得"这样也好，不用强迫自己"，而不是在她已经很累了的基础上再加一层"还得 xxx"的压力。
 
 ### 信号 D：时间感偏移
-- 识别特征：她提到的时间和消息时间戳差距明显；或长时间在低能量活动（滑手机、发呆）
+- 识别特征：她提到的时间和消息时间戳差距明显；或长时间在低能量活动（滑手机、看电视、沉迷）
 - 原因：对时间流逝的感知与常人不同，容易出现时间感横向漂移
-- 响应动作：
-  - 若为你主动发起的探测（Poll）：温和提供时间锚点（"不知不觉都三点了诶"），绝不带催促意味
-  - 若为她主动发起的对话（Chat）：在合适的时候自然提一下时间，不把它当作警告
+- 响应动作：温和提供时间锚点，引导她回到现实时间的轨道上来，而不是顺着她的时间感继续聊下去（"已经晚上了，早点休息吧" / "都下午了，要不要先吃点东西"）
 
 ---
 
@@ -265,7 +251,7 @@ TOOLS_SECTION = """
 ### ⚠️ 禁止与去重
 - 收到 [提醒触发] 后绝对不要再 set_reminder 同样的事（死循环）
 - 她说"做完了/考完了/不需要了" → 立即 cancel_reminders 该 group
-- set_reminder 只新增不覆盖。发现【待触发的跟进计划】里已有相同/相近 pending → 优先不 set；万一 set 了多余，立刻 delete_reminder 按 id 精准删（不要 cancel_reminders，它会清整个 group）
+- set_reminder 只新增不覆盖。不确定是否有 pending 重复 → 先 list_reminders 看一眼→ 优先不 set；万一 set 了多余，立刻 delete_reminder 按 id 精准删（不要 cancel_reminders，它会清整个 group）
 
 ## 记忆管理（save_memory / delete_memory / update_memory）
 
@@ -323,11 +309,13 @@ class PromptParts:
 
     Block 1 (static)：identity + user_model + system_mechanics + communication +
            protocols + tools（几乎不变，chat / poll 完全相同）
-    Block 2 (stable context)：deadlines + projects（低频变化——项目几乎不增删，
-           deadline 仅在新增/完成时变）
-    Block 3 (memories)：memories（比 deadlines/projects 变化略频繁，独立成 block
-           避免因记忆更新连带 invalidate Block 2 的 cache）
-    Block 4 (volatile)：ongoing + reminders + weather（高频变化）
+    Block 2 (stable context)：projects（项目列表几乎不增删）
+    Block 3 (memories)：memories（比 projects 变化略频繁，独立成 block 避免
+           因记忆更新连带 invalidate Block 2 的 cache）
+    Block 4 (volatile)：ongoing + deadlines + weather（高频变化）
+
+    注意：pending reminders 不再注入 prompt——scheduler 到期自会触发，
+    AI 需要去重时主动调 list_reminders。
 
     Gemini/Relay 用 flatten() 拍平成单个字符串（不参与 prompt caching）。
     """
@@ -342,13 +330,12 @@ class PromptParts:
     tools: str | None  # None = concise 模式（中间轮省 token）
 
     # 半动态层（拆成两个 block 以隔离 invalidate 影响面）
-    deadlines: str = ""
     projects: str = ""
     memories: str = ""
 
     # 动态层
     ongoing: str = ""
-    reminders: str = ""
+    deadlines: str = ""
     weather: str = ""
 
     def static_text(self) -> str:
@@ -365,16 +352,16 @@ class PromptParts:
         return _join_nonempty(*parts)
 
     def stable_context_text(self) -> str:
-        """Block 2：deadlines + projects（低频变化）。"""
-        return _join_nonempty(self.deadlines, self.projects)
+        """Block 2：projects（低频变化）。"""
+        return self.projects
 
     def memories_text(self) -> str:
         """Block 3：memories（单独成 block，避免牵连 Block 2）。"""
         return self.memories
 
     def dynamic_text(self) -> str:
-        """Block 4：ongoing + reminders + weather（高频变化）。"""
-        return _join_nonempty(self.ongoing, self.reminders, self.weather)
+        """Block 4：ongoing + deadlines + weather（高频变化）。"""
+        return _join_nonempty(self.ongoing, self.deadlines, self.weather)
 
     def flatten(self) -> str:
         """拍平为单个字符串（Gemini / Relay 用）。"""
@@ -391,9 +378,9 @@ class PromptParts:
 
         顺序 = 稳定 → 易变，前缀匹配最大化命中：
         - Block 1: 静态（identity/user_model/.../tools）
-        - Block 2: deadlines + projects（稳定上下文）
+        - Block 2: projects（稳定上下文）
         - Block 3: memories（单独块，记忆更新不影响 Block 2）
-        - Block 4: ongoing + reminders + weather（高频变化，失效只影响此块）
+        - Block 4: ongoing + deadlines + weather（高频变化，失效只影响此块）
         """
         blocks = []
         for text in (
@@ -421,7 +408,6 @@ class PromptParts:
 
 LABEL_MEMORIES = "【你现在记着的事】"
 LABEL_ONGOING = "【当前进行中的事件（end_time 为空）】"
-LABEL_REMINDERS = "【待触发的跟进计划】"
 LABEL_DEADLINES = "【待完成的 Deadline】"
 LABEL_WEATHER = "【今日天气】"
 LABEL_PROJECTS = "【现有项目列表（Focus 用，严格优先复用）】"
@@ -490,17 +476,6 @@ def _format_ongoing(ongoing: list[dict] | None) -> str:
     return f"{LABEL_ONGOING}\n" + "\n".join(lines)
 
 
-def _format_reminders(reminders: list[dict] | None) -> str:
-    if not reminders:
-        return ""
-    lines = [
-        f"- [id={r['id']}] [{r['priority']}] {r['trigger_time']} | {r['action']} "
-        f"(group: {r.get('group_id', '无')})"
-        for r in reminders
-    ]
-    return f"{LABEL_REMINDERS}\n" + "\n".join(lines)
-
-
 def _format_weather(weather: str | None) -> str:
     if not weather:
         return ""
@@ -531,7 +506,6 @@ def build_prompt(
     provider: str = "claude",
     memories: list[dict] | None = None,
     ongoing: list[dict] | None = None,
-    reminders: list[dict] | None = None,
     weather: str | None = None,
     deadlines: list[dict] | None = None,
     projects: list[dict] | None = None,
@@ -550,6 +524,8 @@ def build_prompt(
               identity / communication / tools 等 section，以适配不同
               模型的理解习惯（如 Gemini 需要更简短直接的指令风格）。
     其余参数：从 DB 取来的原始数据，由内部 _format_* 函数格式化。
+
+    注意：pending reminders 不再注入 prompt——AI 若需要去重，主动调 list_reminders。
     """
     _ = provider  # 预留参数，暂时未使用
     return PromptParts(
@@ -564,7 +540,6 @@ def build_prompt(
         deadlines=_format_deadlines(deadlines),
         projects=_format_projects(projects),
         ongoing=_format_ongoing(ongoing),
-        reminders=_format_reminders(reminders),
         weather=_format_weather(weather),
     )
 
@@ -593,10 +568,10 @@ TOOL_POST_HINTS = {
         "要替换旧的先 delete_reminder（单条）或 cancel_reminders（整组）再 set。"
     ),
     "set_reminder": (
-        "[去重自检] 刚写入了新 reminder。对比【待触发的跟进计划】——"
-        "若与某条 group_id/action/时间高度重合，立刻 delete_reminder 掉多余的那条 id。"
-        "set_reminder 只新增不覆盖，必须显式删除才算去重。没重复就直接结束，"
-        "不要输出任何道歉或解释。"
+        "[去重自检] 刚写入了新 reminder。如果刚才没查过 pending 清单而担心重复，"
+        "可以调 list_reminders 看一眼；若与某条 group_id/action/时间高度重合，"
+        "立刻 delete_reminder 掉多余的那条 id。set_reminder 只新增不覆盖，"
+        "必须显式删除才算去重。没怀疑就直接结束，不要输出任何道歉或解释。"
     ),
 }
 
@@ -631,19 +606,17 @@ def build_tool_round_hint(tool_names_called) -> str:
 # 这几个模板也是 chat / poll 的唯一模式标识通道——system prompt 不区分模式，
 # AI 看到"[内部触发…]"/"[约定跟进触发…]"等前缀就知道当前是主动轮询。
 
-# 强化后的轮询模板
+# 默认"找话聊"的轮询模板——SILENT 只作例外情形
 PROACTIVE_PROMPT = (
-    "[内部触发 - 能量与动能扫描 - {timestamp}]\n"
-    "请以此框架评估介入必要性：\n"
-    "1. 动能捕捉：从最近的历史记录看，她现在是处于‘心流’、‘低效空转’还是‘脉冲后的断电’？\n"
-    "2. 阻力诊断：如果她在空转，是因为任务太重让她想逃避，还是因为时间流逝太快她失去了坐标？\n"
-    "3. 策略选择：\n"
-    "   - 心流中：[SILENT] 或 极其隐形的后勤加油。\n"
-    "   - 卡壳中：不提任务，只递一个极其微小、无压力的动作台阶，或者吐个槽。\n"
-    "   - 断电中：给一个物理休息的理由（比如：‘该去瘫着了’）。\n\n"
-    "输出要求：直接进入对话，像朋友接茬。严禁任何‘我是来帮你的’或‘建议你’这种助理语气。话题要自然流转，严禁打招呼。"
-    "最近聊过的事就别再提，即使还在记忆里。节奏比被动回复松，可以 2-3 条换行分发。"
-    "若判定当前无需介入，输出 [SILENT]。"
+    "[主动聊天 - {timestamp}]\n"
+    "请以此框架思考如何接续或开启对话：\n"
+    "1. 距上次聊天有多久？她之前处于什么状态？上次对话后她是否有回应？"
+    "2. 我现在是否掌握她的最新状态和情绪？"
+    "3. 策略选择："
+        "- 接续最新对话"
+        "- 开启新话题（如果她很久没说话了，或者上次话题已经聊完了）"
+    "4. 具体说什么？（结合她的状态和当前聊天氛围，像朋友一样自然地说）"
+    "若判定当前无话题可聊，输出 [SILENT]。"
 )
 
 REMINDER_PROMPT = (
