@@ -299,6 +299,8 @@ async def _send_chat_chunks(target, text: str) -> None:
     模拟打字节奏。第一条立刻发送，后续消息根据长度计算思考/打字时间。
     target: 任何支持 .send() 和 .typing() 的 Discord 通道对象
     """
+    if "[SILENT]" in text:
+        return
     chunks = _split_for_chat(text)
     for i, chunk in enumerate(chunks):
         if i > 0:
