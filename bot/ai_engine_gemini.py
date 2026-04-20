@@ -8,7 +8,7 @@ from bot.prompts import PromptParts
 from bot.database import Database
 from bot.ai_provider_error import AIProviderError
 from bot.ai_engine_base import (
-    _execute_tool, split_thinking,
+    _execute_tool,
     chat as _base_chat, scheduled_action as _base_scheduled_action,
     simple_completion as _base_simple_completion,
 )
@@ -152,21 +152,18 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
             # 最后一轮（没有 tool_call）
             if not tool_calls:
                 if round_text:
-                    user_text, thinking = split_thinking(round_text)
-                    if thinking:
-                        logger.info(f"🧠 最后一轮独白（已剥离）:\n{thinking.strip()}")
-                    if user_text:
-                        logger.info(f"💬 发送回复:\n{user_text}")
-                        if send_callback:
-                            await send_callback(user_text)
-                        all_texts.append(user_text)
+                    logger.info(f"💬 发送回复:\n{round_text}")
+                    if send_callback:
+                        await send_callback(round_text)
+                    all_texts.append(round_text)
                 return "\n".join(all_texts)
 
-            # 中间轮：文本视为内心独白，不发给用户、不计入最终回复
+            # 中间轮：文字也直接发给用户（每一轮文字 = 给她看的）
             if round_text:
-                _u, _t = split_thinking(round_text)
-                monologue = (_t or _u or round_text).strip()
-                logger.info(f"🧠 内心独白:\n{monologue}")
+                logger.info(f"💬 发送回复:\n{round_text}")
+                if send_callback:
+                    await send_callback(round_text)
+                all_texts.append(round_text)
 
             current_messages.append({
                 "role": "model",

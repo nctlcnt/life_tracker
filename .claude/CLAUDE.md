@@ -58,13 +58,13 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 
 ### 消息进程与数据流
 
-系统中的消息触发和流转路径主要分为以下几种场景。所有通过 AI 处理的路径最终都会经历多轮 Tool Calling 机制，由中间轮的"内心独白"流转到最终的纯文本回复。
+系统中的消息触发和流转路径主要分为以下几种场景。所有通过 AI 处理的路径都可能经历多轮 Tool Calling 机制，每一轮的文字都会发给用户、直到模型停止调用工具为止。
 
 #### 1. 用户主动发消息
 - **触发点**: 用户在 Discord 发送任意常规文字（或引用回复）。
 - **使用 Prompt**: 全量 `SYSTEM_PROMPT`（包括人设、各种响应规则、记忆调度指引等）。
 - **处理模型**: 配置的 `CHAT_MODEL`。
-- **流转路径**: Discord `on_message` → `fetch_history(limit=20)` 拉取历史 → `ai_engine.chat` 注入动态上下文（记忆、正在进行的事件、待触发提醒等） → 生成 AI 工具调用或思考 → 触发各类 tool (如 `log_timeline_event` 等) → 中间轮输出内部独白并在 DB 按需写入 → 最终纯文本结果推给用户。
+- **流转路径**: Discord `on_message` → `fetch_history(limit=20)` 拉取历史 → `ai_engine.chat` 注入动态上下文（记忆、正在进行的事件、待触发提醒等） → AI 按需调用 tool 并在任意轮次输出文字回复（每一轮文字都会实时 send 给用户）→ 模型停止调工具后结束。
 
 #### 2. 斜杠指令 (Slash Commands)
 - **触发点**: 用户发送 `/todo`、`/weather` 等指令消息。
@@ -80,14 +80,13 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 - **使用 Prompt**: `REMINDER_PROMPT` / `BEDTIME_PROMPT`。
 - **流转路径**: 循环唤醒 → 提取具体 Action / Context 调用 `scheduled_action()` → AI 根据业务可能自调工具做去重 → 生成纯文本结果发出提醒消息。
 
-### 多轮 Tool Calling 机制（中间轮 vs 最后一轮）
+### 多轮 Tool Calling 机制
 
 一次 chat/scheduled_action 可能跨多个 AI 轮次，直到模型停止 tool_use、只输出纯文本为止。
 
-- **中间轮**（本轮还有 tool_use）：模型输出的文字是**内心独白**，仅记在日志（`🧠 内心独白: ...`），不通过 send_callback 发给用户，不计入最终回复。模型可在独白里做推理、自检、去重决策。
-- **最后一轮**（本轮没有 tool_use）：输出的文字才真正发给用户。
+**每一轮的文字都会原样 send 给用户**——支持"边说边调工具"（例如先回一句"好，五分钟看着呢"，同一轮再 set_reminder）。不想说话时就只调工具、不输出文字。模型若要完全沉默由 scheduler 的 `[SILENT]` 机制处理，不依赖"中间轮独白"这种隐式约定。
 
-维护点：`bot/tools.py::TOOL_ROUND_REMINDER`、`PROMPT_RESPONSE_GUIDELINES` 的对应段、三个引擎的中间轮处理逻辑。
+维护点：`bot/prompts.py::TOOL_ROUND_REMINDER`、三个引擎的每轮文字发送逻辑。
 
 ### 工具后置提示（TOOL_POST_HINTS）
 
@@ -107,7 +106,7 @@ helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用。
 |---|---|
 | `IDENTITY` | 【日和】人设 + "关于她的现象"元指令（读用户观察时去标签化） |
 | `USER_MODEL` | 基础信息 + Hybrid 去标签化用户画像（概念挂载 + 负向语气约束） |
-| `SYSTEM_MECHANICS` | `<think>` 标签机制、时间戳格式、换行分条、斜杠命令输出识别 |
+| `SYSTEM_MECHANICS` | 多轮 tool calling 说明（每轮文字 = 给她看的）、时间戳格式、换行分条、斜杠命令输出识别 |
 | `COMMUNICATION` | 调性、基本反应模式、对话示范、节奏——所有"怎么说话"规则的唯一出处 |
 | `PROTOCOLS` | 4 个去临床化状态信号（深度专注/迈不出第一步/高耗宕机/时间感偏移），每个内部按主动/被动动作分叉 |
 | `TOOLS_SECTION` | 工具调用纪律 + Why/When 策略（格式细节如 ISO 8601、category 枚举、project_name 前缀在 `bot/tools.py` 的 JSON Schema 里） |
