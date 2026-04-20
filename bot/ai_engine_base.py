@@ -7,7 +7,7 @@ AI 引擎公共模块
 - chat / scheduled_action 高层流程
 """
 import re
-from bot.tools import POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, SCHEDULED_TOOL_NAMES, TOOLS
+from bot.tools import TOOLS
 from bot.prompts import build_prompt, PromptParts
 from bot.weather import is_morning, get_weather_brief
 from bot.database import Database
@@ -91,8 +91,6 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
     """
     memories = db.get_all_memories()
     ongoing = db.get_ongoing_events(limit=5)
-    # poll 模式不传 reminders：提醒到时间自会触发，AI 不需要看待触发清单
-    reminders = db.list_active_reminders() if mode == "chat" else None
 
     # Deadline：先自动过期，再取 active
     db.expire_past_deadlines()
@@ -100,12 +98,13 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
 
     projects = db.get_all_project_names()
 
+    # 注意：pending reminders 不再注入 prompt——scheduler 到期自会触发，
+    # AI 需要去重时主动调 list_reminders。
     return build_prompt(
         mode,
         provider=provider,
         memories=memories or None,
         ongoing=ongoing or None,
-        reminders=reminders or None,
         weather=weather,
         deadlines=deadlines or None,
         projects=projects or None,
@@ -329,11 +328,12 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     messages = _ensure_valid_messages(messages)
 
     # 允许 silent 时不传 send_callback，需要先检查 [SILENT]
+    # 注：tool_names 不再过滤，chat / poll 共用全量 tools，
+    # 避免 tools 字段差异导致 prompt cache 前缀 miss。
     reply = await call_with_tools_fn(
         db, prompt_parts, messages,
         send_callback=None if allow_silent else send_callback,
         model=config.POLL_MODEL,
-        tool_names=SCHEDULED_TOOL_NAMES,
     )
 
     if reply and "[SILENT]" not in reply:

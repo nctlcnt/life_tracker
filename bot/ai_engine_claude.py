@@ -2,6 +2,7 @@
 AI 引擎模块 (Claude 原生版)
 负责调用 Anthropic Claude API，处理 tool calling
 """
+import hashlib
 import json
 from anthropic import AsyncAnthropic
 from bot.tools import TOOLS_ANTHROPIC
@@ -19,13 +20,30 @@ import config
 
 logger = get_logger(__name__)
 
+
+def _block_fingerprints(blocks: list[dict]) -> list[dict]:
+    """为每个 system block 算 char_count + sha256[:8]，用于 cache 命中追踪。"""
+    prints = []
+    for i, b in enumerate(blocks):
+        text = b.get("text", "") if isinstance(b, dict) else ""
+        prints.append({
+            "i": i,
+            "chars": len(text),
+            "hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:8],
+        })
+    return prints
+
 # 懒加载客户端缓存：按 api_key 存储，避免重复创建
 _clients: dict[str, AsyncAnthropic] = {}
 
 
 def _get_client(api_key: str) -> AsyncAnthropic:
     if api_key not in _clients:
-        _clients[api_key] = AsyncAnthropic(api_key=api_key)
+        # 1h TTL 需要显式开启 extended-cache-ttl beta
+        _clients[api_key] = AsyncAnthropic(
+            api_key=api_key,
+            default_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"},
+        )
     return _clients[api_key]
 
 
@@ -65,11 +83,19 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
 
     # 构建 system blocks（3 个 cached block）
     system_blocks = prompt.to_claude_blocks() if prompt else []
+    block_prints = _block_fingerprints(system_blocks)
 
     # 按 tool_names 过滤工具子集
     tools = TOOLS_ANTHROPIC
     if tool_names is not None:
         tools = [t for t in TOOLS_ANTHROPIC if t["name"] in tool_names]
+
+    # tools 字段是 cache 前缀的最前段（顺序：tools → system → messages），
+    # 一旦变化下游全部 invalidate，所以打 fingerprint 帮助追踪 chat/poll 一致性
+    tools_hash = hashlib.sha256(
+        json.dumps(tools, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:8] if tools else "none"
+    logger.info(f"🧩 tools: count={len(tools)} hash={tools_hash}")
 
     all_texts = []  # 收集所有轮次的文本
 
@@ -89,7 +115,9 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
         if tools:
             kwargs["tools"] = tools
 
-        test_mode.log_prompt("claude", model, kwargs, round_num=round_idx + 1)
+        # 附带 system block 指纹供 log_viewer 做 cache 命中追踪
+        test_mode.log_prompt("claude", model, kwargs, round_num=round_idx + 1,
+                             extra={"system_block_fingerprints": block_prints})
 
         try:
             response = await client.messages.create(**kwargs)
@@ -107,6 +135,8 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
             logger.info(f"   cache_creation={cache_create}, cache_read={cache_read}")
             if total_input > 0:
                 logger.info(f"   cache_hit_rate={cache_read / total_input * 100:.1f}%")
+            fp_str = " · ".join(f"blk{p['i']}={p['chars']}c[{p['hash']}]" for p in block_prints)
+            logger.info(f"   system blocks: {fp_str if fp_str else '(none)'}")
             usage_log = {
                 "input_tokens": u.input_tokens,
                 "output_tokens": u.output_tokens,

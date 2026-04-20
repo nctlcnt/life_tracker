@@ -45,7 +45,7 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 | `bot/ai_engine_gemini.py` | Gemini 原生 REST API 调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
 | `bot/ai_provider_error.py` | 自定义异常类 `AIProviderError`，统一表示 AI 服务商调用失败 |
 | `bot/tools.py` | 工具定义 (OpenAI / Anthropic 两种 Schema，共 9 个工具) + `TOOL_POST_HINTS`；category 三分法枚举 Focus/Routine/Chill，log_timeline_event 含 project_name 字段 |
-| `bot/prompts.py` | Prompt 集中管理：所有 prompt 段落常量、`PromptParts` dataclass（三层缓存结构）、`build_prompt()`；各引擎通过 `to_claude_blocks()` / `flatten()` 消费；`PROACTIVE_PROMPT` / `REMINDER_PROMPT` / `BEDTIME_PROMPT` / `TOOL_POST_HINTS` 也在此定义 |
+| `bot/prompts.py` | Prompt 集中管理：6 个正交 section（IDENTITY / USER_MODEL / SYSTEM_MECHANICS / COMMUNICATION / PROTOCOLS / TOOLS_SECTION，chat/poll 完全共用）、`PromptParts` dataclass（三层缓存结构）、`build_prompt()`；各引擎通过 `to_claude_blocks()` / `flatten()` 消费；`PROACTIVE_PROMPT` / `REMINDER_PROMPT` / `BEDTIME_PROMPT` / `MORNING_PROMPT` / `TOOL_POST_HINTS` 也在此定义 |
 | `bot/scheduler.py` | 两个并发循环 + asyncio.Lock：Timer 循环（随机轮询+睡前）+ Reminder 循环（数据库提醒倒计时+Event 唤醒） |
 | `bot/database.py` | SQLite DB 操作 (events, messages, reminders, memories, todos, deadlines)；events 表含 project_name 字段 |
 | `bot/merge.py` | 事件合并模块，将相邻同 content+category 的事件合并为时间段 |
@@ -95,37 +95,45 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 
 当前命中的工具：
 - `list_reminders` → 决策辅助：查完清单后若要 set_reminder，先比对 group_id / 时间窗
-- `set_reminder` → 去重自检：set 后对比【待触发的跟进计划】，发现重复立即 `delete_reminder` 精准删
+- `set_reminder` → 去重自检：set 后如担心重复可调 `list_reminders` 看 pending，发现重复立即 `delete_reminder` 精准删
 
 helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用。
 
 ### Prompt 模块化
 
-所有 prompt 集中在 `bot/prompts.py`，`SYSTEM_PROMPT` 由四段拼成：
+所有 prompt 集中在 `bot/prompts.py`，静态系统指令由 6 个正交 section 拼成，**chat / poll 完全共用**（0 模式差异，最大化 cache 命中）：
 
 | 段名 | 内容 |
 |---|---|
-| `PROMPT_PERSONA` | 关于她（用户画像）+ 你是谁（AI 人设） |
-| `PROMPT_RESPONSE_GUIDELINES` | 回复风格、中间轮 vs 最后一轮机制、斜杠命令响应识别、消息节奏、主动聊天规则 |
-| `PROMPT_TIME_PERCEPTION` | 时间感知辅助、hyperfocus 保护 |
-| `PROMPT_TOOL_GUIDELINES` | 时间轴记录规则、平行事件、提醒策略（含 delete_reminder 去重）、记忆管理 |
+| `IDENTITY` | 【日和】人设 + "关于她的现象"元指令（读用户观察时去标签化） |
+| `USER_MODEL` | 基础信息 + Hybrid 去标签化用户画像（概念挂载 + 负向语气约束） |
+| `SYSTEM_MECHANICS` | `<think>` 标签机制、时间戳格式、换行分条、斜杠命令输出识别 |
+| `COMMUNICATION` | 调性、基本反应模式、对话示范、节奏——所有"怎么说话"规则的唯一出处 |
+| `PROTOCOLS` | 4 个去临床化状态信号（深度专注/迈不出第一步/高耗宕机/时间感偏移），每个内部按主动/被动动作分叉 |
+| `TOOLS_SECTION` | 工具调用纪律 + Why/When 策略（格式细节如 ISO 8601、category 枚举、project_name 前缀在 `bot/tools.py` 的 JSON Schema 里） |
 
-`PromptParts` dataclass 按变化频率分三层：
+**模式差异的唯一通道**：scheduler 模板（`PROACTIVE_PROMPT` / `REMINDER_PROMPT` / `BEDTIME_PROMPT` / `MORNING_PROMPT`）在 user message 里带 `[内部触发…]` / `[约定跟进触发…]` 等前缀，AI 据此识别当前是主动轮询还是被动回复。system prompt 不再带 mode-specific section。
 
-- **静态层**（参与 prompt caching）：`PROMPT_PERSONA` + `PROMPT_RESPONSE_GUIDELINES` + `PROMPT_TIME_PERCEPTION`
-- **半动态层**（参与 prompt caching）：`PROMPT_TOOL_GUIDELINES`（工具规则较稳定）
-- **动态层**（不参与 caching）：`_build_dynamic_context()` 每次调用注入
+`PromptParts` dataclass 按变化频率分四层，对应 Anthropic `cache_control` 的 4 个上限：
+
+- **Block 1（静态）**：IDENTITY + USER_MODEL + SYSTEM_MECHANICS + COMMUNICATION + PROTOCOLS + TOOLS_SECTION（几乎不变，~5444 字符）
+- **Block 2（稳定上下文）**：deadlines + projects（低频变化：projects 几乎不增删，deadline 仅在新增/完成时变）
+- **Block 3（记忆）**：memories（独立成 block，避免记忆更新连带 invalidate Block 2 的 cache）
+- **Block 4（高频动态）**：ongoing + reminders + weather
 
 各引擎消费方式：
-- Claude: `prompt.to_claude_blocks()` → 3 个 cached system block
+- Claude: `prompt.to_claude_blocks()` → 最多 4 个 cached system block（chat ↔ poll 切换 100% cache hit）
 - Gemini / Relay: `prompt.flatten()` → 单个字符串
-- 中间轮省 token: `prompt.concise().flatten()`（去掉 `PROMPT_TOOL_GUIDELINES`）
+- 中间轮省 token: `prompt.concise().flatten()`（去掉 `TOOLS_SECTION`）
 
-`_build_dynamic_context()` 动态注入内容：
-- 【你现在记着的事】— 从 `memories` 表取全部
-- 【当前进行中的事件】— `end_time IS NULL` 的活动，带重复检查规则
-- 【待触发的跟进计划】— 所有 pending reminder，**带 `id=` 前缀**
-- 【今日天气】— 早上时段调 `bot/weather.py::get_weather_brief()`
+`_build_prompt()` 动态注入内容（见 `ai_engine_base._build_prompt`）：
+- 【你现在记着的事】— 从 `memories` 表取全部（Block 3）
+- 【现有项目列表】— 从 events 表聚合 Focus 类 project_name（Block 2）
+- 【当前进行中的事件】— `end_time IS NULL` 的活动（Block 4）
+- 【待完成的 Deadline】— 过滤 active 状态，带倒计时（Block 4）
+- 【今日天气】— 早上时段调 `bot/weather.py::get_weather_brief()`（Block 4）
+
+**不注入**：pending reminders。scheduler 到时间自会触发，AI 若需要去重主动调 `list_reminders`。避免每次 reminder 增删都 invalidate cache。
 
 ### 调度 Prompt 模板
 

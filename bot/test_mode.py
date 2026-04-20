@@ -136,11 +136,14 @@ def log_response(provider: str, model: str, response: dict, round_num: int = 1) 
         pass
 
 
-def log_prompt(provider: str, model: str, payload: dict, round_num: int = 1) -> None:
+def log_prompt(provider: str, model: str, payload: dict, round_num: int = 1,
+               extra: dict | None = None) -> None:
     """将完整 AI prompt payload 追加到测试日志。
 
     payload 直接传入 kwargs / request body dict，用 default=str 兜底处理
     Anthropic SDK ContentBlock 等非可序列化对象。
+
+    extra: 顶层补充字段（如 system_block_fingerprints），供 log_viewer 做 cache 追踪。
     """
     if not is_active() or _active_log_path is None:
         return
@@ -152,6 +155,8 @@ def log_prompt(provider: str, model: str, payload: dict, round_num: int = 1) -> 
         "round": round_num,
         "payload": payload,
     }
+    if extra:
+        entry.update(extra)
     try:
         line = json.dumps(entry, ensure_ascii=False, default=str)
         with open(_active_log_path, "a", encoding="utf-8") as f:

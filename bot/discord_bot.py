@@ -6,7 +6,7 @@ import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timezone
 from bot.ai_engine import chat, simple_completion
 from bot.weather import get_weather_brief, get_weather_detailed
 from bot.prompts import WEATHER_REPORT_PROMPT
@@ -25,6 +25,7 @@ class LifeTrackerBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.db = db
         self.target_channel_id: int | None = None
+        self.last_typing_at: datetime | None = None  # 目标用户最近 typing 时刻（UTC aware）
 
     async def setup_hook(self):
         """注册斜杠命令并同步到 Discord"""
@@ -43,6 +44,21 @@ class LifeTrackerBot(commands.Bot):
                 logger.info(f"📍 恢复目标频道: {saved}")
             except ValueError:
                 logger.warning(f"⚠️ DB 里的 target_channel_id 不是数字: {saved!r}")
+
+    async def on_typing(self, channel, user, when):
+        """记录目标用户在目标频道的 typing 时刻，供随机轮询判断是否让路。"""
+        if config.ALLOWED_USER_ID and user.id != config.ALLOWED_USER_ID:
+            return
+        if self.target_channel_id and channel.id != self.target_channel_id:
+            return
+        self.last_typing_at = when
+
+    def is_user_typing(self, window_seconds: int = 10) -> bool:
+        """最近 window_seconds 内目标用户是否在输入。"""
+        if not self.last_typing_at:
+            return False
+        delta = (datetime.now(timezone.utc) - self.last_typing_at).total_seconds()
+        return 0 <= delta <= window_seconds
 
     async def on_message(self, message: discord.Message):
         # 忽略自己的消息

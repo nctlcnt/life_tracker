@@ -27,6 +27,17 @@
 - **Prompt 集中管理迁移（`bot/prompts.py` + `PromptParts`）**：将原先散布于 `bot/tools.py` 的所有 prompt 常量与 System Prompt 集中到 `bot/prompts.py`，引入 `PromptParts` dataclass 实现三层缓存结构（静态层 + 半动态层参与 prompt caching，动态层每次调用重建）。Claude 引擎通过 `to_claude_blocks()` 消费，Relay/Gemini 通过 `flatten()` 消费，中间轮省 token 时调用 `concise().flatten()`。`PROACTIVE_PROMPT` / `REMINDER_PROMPT` / `BEDTIME_PROMPT` 也统一移入此模块。
 - **工具调用 Discord Reaction 反馈**：AI 调用写入类工具（log/update/delete/save 等）时，Bot 自动在 AI 消息上追加 ✅ reaction；query 类查询工具不触发，避免 reaction 泛滥。写入工具白名单维护于 `bot/discord_bot.py`。
 - **Docker 容器化支持**：多阶段构建 Dockerfile（Node.js 前端编译 + Python 后端运行）、`docker-compose.yml`（开发）和 `docker-compose.prod.yml`（生产），支持 `config.json` 挂载和镜像发布流程。
+- **Prompt 结构性重构 + chat/poll 完全 unify**（2026-04-18，`refactor/prompt-sections`）：原先散布在 `PERSONA / RESPONSE_CORE / RESPONSE_CHAT / RESPONSE_POLL / TIME_PERCEPTION_* / TOOL_GUIDELINES_*` 共 8 个有交叉关系的常量，重排为 6 个正交 section（IDENTITY / USER_MODEL / SYSTEM_MECHANICS / COMMUNICATION / PROTOCOLS / TOOLS_SECTION），chat / poll **共享字节一致的 static prompt**。关键决策：
+  - **Hybrid 去标签化**：USER_MODEL 保留 `ADHD / 执行功能障碍` 作为概念挂载（借用模型底层知识），同时配套"⚠️ 绝对禁止约束"负向语气屏蔽医疗感；PROTOCOLS 的 4 个信号名去临床化（`Hyperfocus`→"深度专注中"、`启动困难`→"迈不出第一步"、`断电`→"高耗后的宕机"、`时间感知漂移`→"时间感偏移"），每个信号内部按主动/被动动作分叉。
+  - **Cache 优先级战略**：放弃原计划的 `INITIATION_CHAT/POLL`。根因实测观察到 chat→poll 切换时 `cache_read=0`；MEMORY 里的 Claude cache 优先级策略强约束要求 static prompt 不随 mode 变化。模式差异改由 scheduler 模板前缀（`[内部触发…]` / `[约定跟进触发…]`）在 user message 里标识。`ai_engine_base._build_prompt` 也改为 chat/poll 统一传 reminders，让 Block 3 也跨模式一致。
+  - **Tool 职责边界清晰化**：格式细节（ISO 8601、Focus/Routine/Chill 枚举、project_name 前缀规则）留在 `bot/tools.py` 的 JSON Schema description 里；Why/When 高层策略（何时该 log、去重判断、reminder 密集度与优先级、memory vs deadline 区分）留在 `TOOLS_SECTION` 里。
+  - 后续监控与建议：
+    1. **实测 cache hit rate**：观察跨模式切换时 `cache_read` 是否接近完全命中（预期 static 5444 字符 + semi 层全部命中）。
+    2. **Fallback 预案**：若大模型仍因 `ADHD` 关键词展现"临床感/爹味说教"，按 plan §74-75 退回纯净方案（删除概念挂载，仅保留现象描述）。
+    3. **Claude 路径未来优化方向**：行文瘦身降 token（保持结构稳定），**不再重建决策框架**；模型层面 Opus → Sonnet 评估作为独立工作项。
+    4. **Provider-specific prompt**：`build_prompt()` 已留 `TODO(provider-prompt)` / `_PROVIDER_SECTIONS` 扩展点，Gemini 等可能需要更简短直接的指令风格，不要覆盖 Claude 版本。
+    5. **PROTOCOLS 信号 D（时间感偏移）**：相比其他 3 个信号，该识别特征在实际对话中信号最弱，需实测验证是否能稳定触发；若无效可合并或删除。
+    6. **scheduler 前缀识别准确性**：INITIATION 消失后，AI 对当前是主动轮询还是被动回复的判断完全依赖 scheduler 模板前缀，需观察识别稳定性。
 - **`energy_type`（chill/drain 子标签）整体撤销**：用户自述无法精准自评蓄水/漏水状态，前端蓄水漏水图表几乎不查看，保留只会增加 AI 分类负担。通过 `refactor/drop-energy-type` 分支将 `energy_type` 字段从 DB（SQLite `DROP COLUMN` 热删，兼容 SQLite 3.35+）、`tools.py` 两套 schema（OpenAI + Anthropic）、`prompts.py` 各 prompt 段落（TIME_PERCEPTION / TOOL_GUIDELINES / PROACTIVE_PROMPT）、前端 `ChillDrainChart` 组件及 `MultiLaneTimeline` drain 染色全部移除。Focus/Routine/Chill 三分法（`category` 字段）保留不变。
 - **项目名复用强化（`LABEL_PROJECTS` 动态注入）**：AI 记录 Focus 事件时因大小写、修饰词差异频繁新建重复项目。新增 `【现有项目列表（Focus 用，严格优先复用）】` 动态段（`LABEL_PROJECTS`），由 `_build_dynamic_context()` 拉取已有项目名注入提示词动态层（`PromptParts.projects` 字段），并在 `TOOL_GUIDELINES_CHAT` 加强"新建前必须先看列表、同义即复用"规则。
 
