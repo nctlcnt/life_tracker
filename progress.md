@@ -2,12 +2,11 @@
 
 ## 近期计划更新
 
-以下计划文件在最近 7 天内有更新（截至 2026-04-17）：
+以下计划文件在最近 7 天内有更新（截至 2026-04-19）：
 
-- `Plan-energy.md` — 2026-04-14 创建，2026-04-15 更新；2026-04-18 精力调度三分法 chill/drain 子标签（`energy_type` 字段与 `ChillDrainChart`）已整体移除，Focus/Routine/Chill 三分法保留。后续第四、五阶段（情绪评分 / 数据洞察扩展）转入 Merlin 路线。
+- `Plan-energy.md` — 2026-04-14 创建，2026-04-15 更新；**2026-04-18 正式归档**：精力调度三分法 chill/drain 子标签（`energy_type` 字段与 `ChillDrainChart`）已通过 `refactor/drop-energy-type` 分支整体移除，Focus/Routine/Chill 三分法保留。后续第四、五阶段（情绪评分 / 数据洞察扩展）转入 Merlin 路线。
 - `plan-Merlin.md` — 2026-04-15 创建并更新，Merlin 精力调度引擎系统架构 v3（离线特征抽取管道、双轨运行机制、分阶段路线图 M1–M4+、LLM 抽取器 benchmark 方案 `bot/merlin/evals/`）
-- ~~`plan-prompt.md`~~ — **2026-04-18 已废弃并删除，不再继续**。原方向（分层决策框架 Step 1/2/3/4）早前已因 Claude prompt caching 命中率考量放弃，剩余瘦身思路被后续 `plan-prompt-new.md` 取代，历史进度存档在此条目中：2026-04-15 新增；2026-04-17 确认放弃分层决策框架（实测 cache ~85%，约 $0.1736/h）；2026-04-18 完成 chill/drain 子标签清理（计划外附带产出）。
-- ~~`plan-prompt-new.md`~~ — 2026-04-18 立项并当日 ✅ 完成归档（分支 `refactor/prompt-sections`）。落地结构从原计划的 6+1 简化为 **6 个正交 section 完全共用**（IDENTITY / USER_MODEL / SYSTEM_MECHANICS / COMMUNICATION / PROTOCOLS / TOOLS_SECTION）。原 INITIATION_CHAT/POLL 设计被放弃——实测发现第一次 poll 后 `cache_read=0 cache_creation=10245`，确认任何 mode-specific section 都会破坏前缀缓存；Option A 把 chat/poll 完全 unify，模式差异改由 scheduler 模板（PROACTIVE/REMINDER/BEDTIME/MORNING）在 user message 里标识。`ai_engine_base._build_prompt` 同步改为 chat/poll 统一传 reminders，让三层 cache block 跨模式字节一致。详情见计划文件头部"✅ 归档"说明。
+- `plan-prompt.md` — 2026-04-15 新增，**2026-04-18 更新进度与策略**；已决定放弃 Claude 路径上的「分层决策框架」（Step 1/2/3/4），优先保障 prompt caching 命中率（实测 ~85%，约 $0.1736/h）；2026-04-18 新增 chill/drain 移除记录；下一步重点转向静态层行文瘦身（`TOOL_GUIDELINES_CHAT` / `TIME_PERCEPTION_CHAT` / `RESPONSE_CORE` 按 token 占比压缩）和动态层单条 memory 长度限制（候选 40–60 字软约束或硬截断）。
 - `Plan-Obsidian-Claude-Code.md` — 2026-04-14 新增，Obsidian 课业笔记接入方案（`query_obsidian` 工具 + `obsidian_mcp_server.py`，日和 bot 与 Claude Code 共享同一 `bot/obsidian_search.py` 逻辑）
 
 ---
@@ -39,6 +38,8 @@
     4. **Provider-specific prompt**：`build_prompt()` 已留 `TODO(provider-prompt)` / `_PROVIDER_SECTIONS` 扩展点，Gemini 等可能需要更简短直接的指令风格，不要覆盖 Claude 版本。
     5. **PROTOCOLS 信号 D（时间感偏移）**：相比其他 3 个信号，该识别特征在实际对话中信号最弱，需实测验证是否能稳定触发；若无效可合并或删除。
     6. **scheduler 前缀识别准确性**：INITIATION 消失后，AI 对当前是主动轮询还是被动回复的判断完全依赖 scheduler 模板前缀，需观察识别稳定性。
+- **`energy_type`（chill/drain 子标签）整体撤销**：用户自述无法精准自评蓄水/漏水状态，前端蓄水漏水图表几乎不查看，保留只会增加 AI 分类负担。通过 `refactor/drop-energy-type` 分支将 `energy_type` 字段从 DB（SQLite `DROP COLUMN` 热删，兼容 SQLite 3.35+）、`tools.py` 两套 schema（OpenAI + Anthropic）、`prompts.py` 各 prompt 段落（TIME_PERCEPTION / TOOL_GUIDELINES / PROACTIVE_PROMPT）、前端 `ChillDrainChart` 组件及 `MultiLaneTimeline` drain 染色全部移除。Focus/Routine/Chill 三分法（`category` 字段）保留不变。
+- **项目名复用强化（`LABEL_PROJECTS` 动态注入）**：AI 记录 Focus 事件时因大小写、修饰词差异频繁新建重复项目。新增 `【现有项目列表（Focus 用，严格优先复用）】` 动态段（`LABEL_PROJECTS`），由 `_build_dynamic_context()` 拉取已有项目名注入提示词动态层（`PromptParts.projects` 字段），并在 `TOOL_GUIDELINES_CHAT` 加强"新建前必须先看列表、同义即复用"规则。
 
 ---
 
