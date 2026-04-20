@@ -2,7 +2,7 @@
 
 ## 近期计划更新
 
-以下计划文件在最近 7 天内有更新（截至 2026-04-19）：
+以下计划文件在最近 7 天内有更新（截至 2026-04-20）：
 
 - `Plan-energy.md` — 2026-04-14 创建，2026-04-15 更新；**2026-04-18 正式归档**：精力调度三分法 chill/drain 子标签（`energy_type` 字段与 `ChillDrainChart`）已通过 `refactor/drop-energy-type` 分支整体移除，Focus/Routine/Chill 三分法保留。后续第四、五阶段（情绪评分 / 数据洞察扩展）转入 Merlin 路线。
 - `plan-Merlin.md` — 2026-04-15 创建并更新，Merlin 精力调度引擎系统架构 v3（离线特征抽取管道、双轨运行机制、分阶段路线图 M1–M4+、LLM 抽取器 benchmark 方案 `bot/merlin/evals/`）
