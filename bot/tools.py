@@ -131,7 +131,7 @@ TOOLS = [
                 "properties": {
                     "reminder_id": {
                         "type": "integer",
-                        "description": "要删除的 reminder id（从【待触发的跟进计划】或 list_reminders 结果中取）"
+                        "description": "要删除的 reminder id（从 list_reminders 结果中取）"
                     }
                 },
                 "required": ["reminder_id"]
@@ -527,7 +527,7 @@ TOOLS_ANTHROPIC = [
             "properties": {
                 "reminder_id": {
                     "type": "integer",
-                    "description": "要删除的 reminder id（从【待触发的跟进计划】或 list_reminders 结果中取）"
+                    "description": "要删除的 reminder id（从 list_reminders 结果中取）"
                 }
             },
             "required": ["reminder_id"]

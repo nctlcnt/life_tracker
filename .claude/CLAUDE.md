@@ -95,7 +95,7 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 
 当前命中的工具：
 - `list_reminders` → 决策辅助：查完清单后若要 set_reminder，先比对 group_id / 时间窗
-- `set_reminder` → 去重自检：set 后对比【待触发的跟进计划】，发现重复立即 `delete_reminder` 精准删
+- `set_reminder` → 去重自检：set 后如担心重复可调 `list_reminders` 看 pending，发现重复立即 `delete_reminder` 精准删
 
 helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用。
 
@@ -126,11 +126,14 @@ helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用。
 - Gemini / Relay: `prompt.flatten()` → 单个字符串
 - 中间轮省 token: `prompt.concise().flatten()`（去掉 `TOOLS_SECTION`）
 
-`_build_dynamic_context()` 动态注入内容：
-- 【你现在记着的事】— 从 `memories` 表取全部
-- 【当前进行中的事件】— `end_time IS NULL` 的活动，带重复检查规则
-- 【待触发的跟进计划】— 所有 pending reminder，**带 `id=` 前缀**
-- 【今日天气】— 早上时段调 `bot/weather.py::get_weather_brief()`
+`_build_prompt()` 动态注入内容（见 `ai_engine_base._build_prompt`）：
+- 【你现在记着的事】— 从 `memories` 表取全部（Block 3）
+- 【现有项目列表】— 从 events 表聚合 Focus 类 project_name（Block 2）
+- 【当前进行中的事件】— `end_time IS NULL` 的活动（Block 4）
+- 【待完成的 Deadline】— 过滤 active 状态，带倒计时（Block 4）
+- 【今日天气】— 早上时段调 `bot/weather.py::get_weather_brief()`（Block 4）
+
+**不注入**：pending reminders。scheduler 到时间自会触发，AI 若需要去重主动调 `list_reminders`。避免每次 reminder 增删都 invalidate cache。
 
 ### 调度 Prompt 模板
 

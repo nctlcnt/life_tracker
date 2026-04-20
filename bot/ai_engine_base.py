@@ -91,8 +91,6 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
     """
     memories = db.get_all_memories()
     ongoing = db.get_ongoing_events(limit=5)
-    # chat / poll 统一传 reminders，让动态层也跨模式共享（最大化 cache 命中）
-    reminders = db.list_active_reminders()
 
     # Deadline：先自动过期，再取 active
     db.expire_past_deadlines()
@@ -100,12 +98,13 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
 
     projects = db.get_all_project_names()
 
+    # 注意：pending reminders 不再注入 prompt——scheduler 到期自会触发，
+    # AI 需要去重时主动调 list_reminders。
     return build_prompt(
         mode,
         provider=provider,
         memories=memories or None,
         ongoing=ongoing or None,
-        reminders=reminders or None,
         weather=weather,
         deadlines=deadlines or None,
         projects=projects or None,
