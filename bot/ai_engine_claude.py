@@ -39,7 +39,11 @@ _clients: dict[str, AsyncAnthropic] = {}
 
 def _get_client(api_key: str) -> AsyncAnthropic:
     if api_key not in _clients:
-        _clients[api_key] = AsyncAnthropic(api_key=api_key)
+        # 1h TTL 需要显式开启 extended-cache-ttl beta
+        _clients[api_key] = AsyncAnthropic(
+            api_key=api_key,
+            default_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"},
+        )
     return _clients[api_key]
 
 
@@ -85,6 +89,13 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
     tools = TOOLS_ANTHROPIC
     if tool_names is not None:
         tools = [t for t in TOOLS_ANTHROPIC if t["name"] in tool_names]
+
+    # tools 字段是 cache 前缀的最前段（顺序：tools → system → messages），
+    # 一旦变化下游全部 invalidate，所以打 fingerprint 帮助追踪 chat/poll 一致性
+    tools_hash = hashlib.sha256(
+        json.dumps(tools, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:8] if tools else "none"
+    logger.info(f"🧩 tools: count={len(tools)} hash={tools_hash}")
 
     all_texts = []  # 收集所有轮次的文本
 

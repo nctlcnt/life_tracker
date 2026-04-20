@@ -7,7 +7,7 @@ AI 引擎公共模块
 - chat / scheduled_action 高层流程
 """
 import re
-from bot.tools import POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, SCHEDULED_TOOL_NAMES, TOOLS
+from bot.tools import TOOLS
 from bot.prompts import build_prompt, PromptParts
 from bot.weather import is_morning, get_weather_brief
 from bot.database import Database
@@ -328,11 +328,12 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     messages = _ensure_valid_messages(messages)
 
     # 允许 silent 时不传 send_callback，需要先检查 [SILENT]
+    # 注：tool_names 不再过滤，chat / poll 共用全量 tools，
+    # 避免 tools 字段差异导致 prompt cache 前缀 miss。
     reply = await call_with_tools_fn(
         db, prompt_parts, messages,
         send_callback=None if allow_silent else send_callback,
         model=config.POLL_MODEL,
-        tool_names=SCHEDULED_TOOL_NAMES,
     )
 
     if reply and "[SILENT]" not in reply:
