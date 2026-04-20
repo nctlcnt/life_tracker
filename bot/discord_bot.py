@@ -3,6 +3,7 @@ Discord 机器人模块
 负责接收和发送 Discord 消息，注册斜杠命令
 """
 import asyncio
+import re
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -293,6 +294,9 @@ def _split_for_chat(text: str, limit: int = 2000) -> list[str]:
     return chunks
 
 
+_RE_TS_PREFIX = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]\s*")
+
+
 async def _send_chat_chunks(target, text: str) -> None:
     """
     按 _split_for_chat 拆分后依次发送，并在消息之间用 typing 指示器 + 小延迟
@@ -301,6 +305,7 @@ async def _send_chat_chunks(target, text: str) -> None:
     """
     if "[SILENT]" in text:
         return
+    text = _RE_TS_PREFIX.sub("", text)
     chunks = _split_for_chat(text)
     for i, chunk in enumerate(chunks):
         if i > 0:
