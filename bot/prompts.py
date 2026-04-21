@@ -523,12 +523,8 @@ TOOL_POST_HINTS = {
         "清单里已有 action 相近且 trigger_time 在 ±30 分钟内的条目就不要再 set；"
         "要替换旧的先 delete_reminder（单条）或 cancel_reminders（整组）再 set。"
     ),
-    "set_reminder": (
-        "[去重自检] 刚写入了新 reminder。如果刚才没查过 pending 清单而担心重复，"
-        "可以调 list_reminders 看一眼；若与某条 group_id/action/时间高度重合，"
-        "立刻 delete_reminder 掉多余的那条 id。set_reminder 只新增不覆盖，"
-        "必须显式删除才算去重。没怀疑就直接结束，不要输出任何道歉或解释。"
-    ),
+    # set_reminder 后不再做去重自检：每天单独跑一次清理任务统一去重，
+    # 比每次 set 都让模型自查更省 token。
 }
 
 
