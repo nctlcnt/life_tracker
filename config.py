@@ -156,11 +156,6 @@ API_PORT: int = int(_cfg.get("server", {}).get("port", 8080))
 # ── 数据库 ─────────────────────────────────────────────────────────────
 DB_PATH: str = os.path.join(os.path.dirname(__file__), "data", "life_tracker.db")
 
-# ── 随机轮询间隔范围（秒）──────────────────────────────────────────────
-_poll = _cfg.get("poll", {})
-POLL_MIN_SECONDS: int = int(_poll.get("min_seconds", 60))
-POLL_MAX_SECONDS: int = int(_poll.get("max_seconds", 3600))
-
 # ── 日志 ───────────────────────────────────────────────────────────────
 _log = _cfg.get("log", {})
 LOG_LEVEL: str = _log.get("level", "INFO")

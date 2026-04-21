@@ -47,6 +47,8 @@ async def main(test: bool = False):
             is_user_typing_callback=bot.is_user_typing,
         )
         db._on_reminder_added = scheduler.notify_new_reminder
+        # chat 完成后通知 scheduler 重置 poll 基准（避免 45-55min 内再轮询）
+        bot.on_ai_call_done = scheduler.notify_ai_call_done
 
         # 5. 启动 FastAPI（在后台线程中运行，不阻塞事件循环）
         api_config = uvicorn.Config(
@@ -59,7 +61,7 @@ async def main(test: bool = False):
 
         logger.info("🚀 正在启动所有服务...")
         logger.info("   - Discord Bot")
-        logger.info(f"   - 定时调度器 (轮询间隔: {config.POLL_MIN_SECONDS}-{config.POLL_MAX_SECONDS}s)")
+        logger.info("   - 定时调度器 (轮询间隔: 45-55min, 基于上次 AI 调用时刻)")
         logger.info(f"   - FastAPI 接口 (端口: {config.API_PORT})")
 
         # 三个任务并发运行

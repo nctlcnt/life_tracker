@@ -27,6 +27,8 @@ class LifeTrackerBot(commands.Bot):
         self.db = db
         self.target_channel_id: int | None = None
         self.last_typing_at: datetime | None = None  # 目标用户最近 typing 时刻（UTC aware）
+        # 由 main.py 注入：chat 完成时调用，用于重置 scheduler 的 poll 基准时间
+        self.on_ai_call_done = None
 
     async def setup_hook(self):
         """注册斜杠命令并同步到 Discord"""
@@ -132,6 +134,10 @@ class LifeTrackerBot(commands.Bot):
             error_msg = f"❌ {type(e).__name__}: {e}"
             logger.exception(error_msg)
             await message.channel.send(error_msg[:2000])
+        finally:
+            # cache 钱已付，通知 scheduler 重置 poll 基准（45-55min 内不再轮询）
+            if self.on_ai_call_done:
+                self.on_ai_call_done()
 
     async def send_proactive_message(self, text: str):
         """主动发送消息（由定时器触发）"""

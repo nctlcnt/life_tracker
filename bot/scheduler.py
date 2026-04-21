@@ -2,8 +2,13 @@
 定时调度模块
 两个并发循环 + 一个 asyncio.Lock 防止并发 AI 调用：
 
-1. Timer 循环：随机轮询 + 睡前提醒，纯内存倒计时
+1. Timer 循环：随机轮询（基于"上次 AI 调用 + 45-55min"）+ 睡前提醒
 2. Reminder 循环：数据库提醒，倒计时到下一条 + asyncio.Event 响应新增
+
+轮询策略（省钱核心）：
+不再固定每 1-60min 随机倒计时，而是以"上一次 AI 调用完成时刻"为基准，
+等 45-55min 再触发。任何 chat / poll / reminder / bedtime 都会重置基准——
+因为 prompt 都进了 Anthropic，cache 已经付过钱。
 """
 import asyncio
 import random
@@ -15,6 +20,10 @@ from bot.prompts import PROACTIVE_PROMPT, REMINDER_PROMPT, BEDTIME_PROMPT
 import config
 
 logger = get_logger(__name__)
+
+# 随机轮询间隔（秒）：上次 AI 调用后 45-55min 再发起下一次 poll
+POLL_INTERVAL_MIN = 45 * 60
+POLL_INTERVAL_MAX = 55 * 60
 
 # Prompt 模板统一在 bot/prompts.py 里定义，避免多处重复维护同一条规则
 
@@ -38,10 +47,20 @@ class Scheduler:
         self._running = False
         self._ai_lock = asyncio.Lock()  # 防止 timer 和 reminder 循环同时调用 AI
         self._reminder_event = asyncio.Event()  # 新增提醒时唤醒 reminder 循环
+        # 上次 AI 调用完成的时刻（用于计算下次 poll）；启动时设为 now
+        self._last_ai_call_ts: datetime = datetime.now()
+        # 唤醒 timer 循环重新计算下次 poll（chat 调用完成时使用）
+        self._timer_event = asyncio.Event()
 
     def notify_new_reminder(self):
         """外部调用：通知 reminder 循环有新提醒插入，重新计算倒计时"""
         self._reminder_event.set()
+
+    def notify_ai_call_done(self):
+        """外部调用：任何 AI 调用完成（chat / poll / reminder / bedtime）后调用，
+        重置 poll 基准时间。chat 路径需要 Discord Bot 显式调用。"""
+        self._last_ai_call_ts = datetime.now()
+        self._timer_event.set()
 
     async def start(self):
         """启动所有定时任务"""
@@ -61,32 +80,39 @@ class Scheduler:
     async def _timer_loop(self):
         """
         内存倒计时循环，负责：
-        - 随机轮询（1-60 分钟随机间隔）
+        - 随机轮询：以"上次 AI 调用 + 45-55min 随机"为基准
         - 睡前提醒（每晚 22:30-23:30 和 23:30-00:00 各一次）
+
+        notify_ai_call_done() 触发的 _timer_event 会唤醒 sleep，
+        让循环根据新的基准时间重算下次 poll。
         """
         while self._running:
-            now = datetime.now()
-
-            # 计算下一个随机轮询时间
-            poll_seconds = random.randint(config.POLL_MIN_SECONDS, config.POLL_MAX_SECONDS)
-            next_poll = now + timedelta(seconds=poll_seconds)
+            # 下次 poll = 上次 AI 调用时刻 + 45-55min 随机
+            poll_seconds = random.randint(POLL_INTERVAL_MIN, POLL_INTERVAL_MAX)
+            next_poll = self._last_ai_call_ts + timedelta(seconds=poll_seconds)
 
             # 计算今晚的睡前提醒时间
-            bedtimes = self._calc_bedtimes(now)
+            bedtimes = self._calc_bedtimes(datetime.now())
 
             # 合并所有待触发时间，取最早的
             all_times = [(next_poll, "poll")] + [(t, "bedtime") for t in bedtimes]
             all_times.sort(key=lambda x: x[0])
 
             next_time, action_type = all_times[0]
-            wait = (next_time - datetime.now()).total_seconds()
-
-            if wait <= 0:
-                wait = 1  # 避免负数
+            wait = max((next_time - datetime.now()).total_seconds(), 1)
 
             label = "轮询" if action_type == "poll" else "睡前提醒"
             logger.info(f"🔄 下次{label}在 {next_time.strftime('%H:%M:%S')} ({int(wait)}s 后)")
-            await asyncio.sleep(wait)
+
+            # sleep 到时机；期间若有 AI 调用完成会通过 _timer_event 提前唤醒重算
+            self._timer_event.clear()
+            try:
+                await asyncio.wait_for(self._timer_event.wait(), timeout=wait)
+                # 被唤醒：上次 AI 调用刚刚完成，基准更新了 → 重算下次 poll
+                logger.info("🔄 收到 AI 调用完成通知，重算下次轮询时间")
+                continue
+            except asyncio.TimeoutError:
+                pass  # sleep 到期，正常触发
 
             if not self._running:
                 break
@@ -127,7 +153,8 @@ class Scheduler:
         async with self._ai_lock:
             try:
                 prompt = PROACTIVE_PROMPT.format(timestamp=timestamp)
-                history = await self.fetch_history(limit=20)
+                # poll 路径只判断"要不要说话"，历史拉短一点省 token
+                history = await self.fetch_history(limit=8)
                 reply = await scheduled_action(
                     self.db, prompt, timestamp, history,
                     send_callback=self.send, allow_silent=True,
@@ -137,6 +164,9 @@ class Scheduler:
                     logger.info(f"📤 主动发送: {reply[:50]}...")
             except Exception as e:
                 logger.exception(f"❌ 轮询出错: {e}")
+            finally:
+                # 不管 AI 说没说话，cache 钱已付，重置基准
+                self.notify_ai_call_done()
 
     async def _do_bedtime_reminder(self, timestamp: str):
         """执行睡前提醒"""
@@ -153,6 +183,8 @@ class Scheduler:
                     logger.info(f"😴 睡前提醒: {reply[:50]}...")
             except Exception as e:
                 logger.exception(f"❌ 睡前提醒出错: {e}")
+            finally:
+                self.notify_ai_call_done()
 
     # ── Reminder 循环：数据库提醒，倒计时 + Event 唤醒 ────────
 
@@ -233,3 +265,5 @@ class Scheduler:
                         logger.info(f"🔔 提醒发送: {reply[:50]}...")
                 except Exception as e:
                     logger.exception(f"❌ 提醒处理出错: {e}")
+                finally:
+                    self.notify_ai_call_done()
