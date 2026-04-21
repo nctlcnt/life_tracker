@@ -4,6 +4,7 @@ AI 引擎模块 (Claude 原生版)
 """
 import hashlib
 import json
+import re
 from anthropic import AsyncAnthropic
 from bot.tools import TOOLS_ANTHROPIC
 from bot.prompts import build_tool_round_hint, PromptParts
@@ -97,7 +98,8 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
     ).hexdigest()[:8] if tools else "none"
     logger.info(f"🧩 tools: count={len(tools)} hash={tools_hash}")
 
-    all_texts = []  # 收集所有轮次的文本
+    all_texts = []  # 收集发送过的文本（拼接最终返回结果）
+    sent_display_texts = set()  # 去重集合
 
     if not model:
         model = getattr(config, 'CHAT_MODEL', 'claude-3-opus-20240229')
@@ -168,23 +170,34 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                 tool_uses.append(block)
 
         round_text = "\n".join(text_parts).strip()
+        
+        # 提取并记录 <think> / <thinking> 块（Claude 4.x 有时会自发用 <thinking>）
+        think_blocks = re.findall(r'<think(?:ing)?>(.*?)</think(?:ing)?>', round_text, flags=re.DOTALL)
+        if think_blocks:
+            think_content = "\n".join(b.strip() for b in think_blocks if b.strip())
+            if think_content:
+                logger.info(f"🤔 思考:\n{think_content}")
+
+        display_text = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', round_text, flags=re.DOTALL).strip()
 
         # 最后一轮
         if response.stop_reason == "end_turn":
-            if round_text:
-                logger.info(f"💬 发送回复:\n{round_text}")
+            if display_text and display_text not in sent_display_texts:
+                logger.info(f"💬 发送回复:\n{display_text}")
                 if send_callback:
-                    await send_callback(round_text)
-                all_texts.append(round_text)
+                    await send_callback(display_text)
+                sent_display_texts.add(display_text)
+                all_texts.append(display_text)
             return "\n".join(all_texts)
 
         # 中间轮：文字也直接发给用户（每一轮文字 = 给她看的）
         if response.stop_reason == "tool_use" and tool_uses:
-            if round_text:
-                logger.info(f"💬 发送回复:\n{round_text}")
+            if display_text and display_text not in sent_display_texts:
+                logger.info(f"💬 发送回复:\n{display_text}")
                 if send_callback:
-                    await send_callback(round_text)
-                all_texts.append(round_text)
+                    await send_callback(display_text)
+                sent_display_texts.add(display_text)
+                all_texts.append(display_text)
 
             # 把 assistant 的完整回复加入消息（包含 text + tool_use）
             messages.append({"role": "assistant", "content": response.content})

@@ -307,18 +307,40 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     ]
     messages = _ensure_valid_messages(messages)
 
-    # 允许 silent 时不传 send_callback，需要先检查 [SILENT]
     # 注：tool_names 不再过滤，chat / poll 共用全量 tools，
     # 避免 tools 字段差异导致 prompt cache 前缀 miss。
+
+    if allow_silent:
+        # 逐轮过滤 [SILENT]：中间轮的真实文字立即发送，[SILENT] 静默吞掉。
+        # 修复：旧逻辑把 send_callback=None 传入 _call_with_tools，导致工具轮
+        # 的文字全部攒到最后；而最终拼接结果一旦包含 [SILENT] 就整体丢弃。
+        sent_texts: list[str] = []
+
+        async def _silent_filter(text: str):
+            if "[SILENT]" not in text:
+                sent_texts.append(text)
+                if send_callback:
+                    await send_callback(text)
+
+        await call_with_tools_fn(
+            db, prompt_parts, messages,
+            send_callback=_silent_filter,
+            model=config.POLL_MODEL,
+        )
+
+        if sent_texts:
+            real_reply = "\n".join(sent_texts)
+            db.add_message("assistant", real_reply)
+            return real_reply
+        return None
+
     reply = await call_with_tools_fn(
         db, prompt_parts, messages,
-        send_callback=None if allow_silent else send_callback,
+        send_callback=send_callback,
         model=config.POLL_MODEL,
     )
 
     if reply and "[SILENT]" not in reply:
-        if allow_silent and send_callback:
-            await send_callback(reply)
-        db.add_message("assistant", reply)  # 备份
+        db.add_message("assistant", reply)
         return reply
     return None

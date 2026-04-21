@@ -3,6 +3,7 @@ AI 引擎模块 (Gemini 版本)
 负责调用 Google Gemini API，处理 tool calling
 """
 import httpx
+import re
 from bot.tools import TOOLS
 from bot.prompts import PromptParts
 from bot.database import Database
@@ -101,7 +102,8 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
             })
         gemini_tools = [{"functionDeclarations": decls}]
 
-    all_texts = []  # 收集所有轮次的文本
+    all_texts = []  # 收集发送过的文本
+    sent_display_texts = set()
 
     test_mode.ensure_handler_state()
 
@@ -148,22 +150,33 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                     tool_calls.append(part["functionCall"])
 
             round_text = "\n".join(text_parts).strip()
+            
+            # 提取并记录 <think> / <thinking> 块
+            think_blocks = re.findall(r'<think(?:ing)?>(.*?)</think(?:ing)?>', round_text, flags=re.DOTALL)
+            if think_blocks:
+                think_content = "\n".join(b.strip() for b in think_blocks if b.strip())
+                if think_content:
+                    logger.info(f"🤔 思考:\n{think_content}")
+
+            display_text = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', round_text, flags=re.DOTALL).strip()
 
             # 最后一轮（没有 tool_call）
             if not tool_calls:
-                if round_text:
-                    logger.info(f"💬 发送回复:\n{round_text}")
+                if display_text and display_text not in sent_display_texts:
+                    logger.info(f"💬 发送回复:\n{display_text}")
                     if send_callback:
-                        await send_callback(round_text)
-                    all_texts.append(round_text)
+                        await send_callback(display_text)
+                    sent_display_texts.add(display_text)
+                    all_texts.append(display_text)
                 return "\n".join(all_texts)
 
             # 中间轮：文字也直接发给用户（每一轮文字 = 给她看的）
-            if round_text:
-                logger.info(f"💬 发送回复:\n{round_text}")
+            if display_text and display_text not in sent_display_texts:
+                logger.info(f"💬 发送回复:\n{display_text}")
                 if send_callback:
-                    await send_callback(round_text)
-                all_texts.append(round_text)
+                    await send_callback(display_text)
+                sent_display_texts.add(display_text)
+                all_texts.append(display_text)
 
             current_messages.append({
                 "role": "model",
