@@ -15,28 +15,29 @@ from bot.ai_engine_base import (
 )
 from bot.logger import get_logger
 from bot import test_mode
-import config
+from config import Preset
 
 logger = get_logger(__name__)
 
 
-async def chat(db: Database, messages: list[dict],
+async def chat(db: Database, messages: list[dict], preset: Preset,
                send_callback=None, tool_callback=None) -> str:
-    return await _base_chat(db, messages, _call_with_tools, send_callback, tool_callback,
-                            provider="gemini")
+    return await _base_chat(db, messages, _call_with_tools, preset,
+                            send_callback=send_callback, tool_callback=tool_callback)
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
-                           history: list[dict],
+                           history: list[dict], preset: Preset,
                            send_callback=None, allow_silent: bool = False,
                            trigger: str | None = None) -> str | None:
     return await _base_scheduled_action(db, prompt, timestamp, history, _call_with_tools,
-                                        send_callback, allow_silent, trigger,
-                                        provider="gemini")
+                                        preset,
+                                        send_callback=send_callback,
+                                        allow_silent=allow_silent, trigger=trigger)
 
 
-async def simple_completion(prompt: str) -> str:
-    return await _base_simple_completion(prompt, _call_with_tools)
+async def simple_completion(prompt: str, preset: Preset) -> str:
+    return await _base_simple_completion(prompt, _call_with_tools, preset)
 
 
 def _convert_to_gemini_format(messages: list[dict]) -> list[dict]:
@@ -52,17 +53,15 @@ def _convert_to_gemini_format(messages: list[dict]) -> list[dict]:
 
 
 async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: list[dict],
+                           preset: Preset,
                            send_callback=None, tool_callback=None,
-                           model: str | None = None, tool_names: set | None = None,
-                           api_key: str | None = None) -> str:
-    """使用 httpx 直接调用 Gemini REST API"
+                           tool_names: set | None = None) -> str:
+    """使用 httpx 直接调用 Gemini REST API。
 
-    api_key: 覆盖 config.AI_API_KEY（供 fallback 机制使用）。
+    preset: 当前激活的 AI preset，提供 api_key 与 model。
     """
-    api_key = api_key or config.AI_API_KEY
-    if not model:
-        model = getattr(config, 'CHAT_MODEL', 'gemini-2.0-flash')
-
+    api_key = preset.api_key
+    model = preset.model
     model_name = model if "gemini" in model.lower() else "gemini-2.0-flash"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
 

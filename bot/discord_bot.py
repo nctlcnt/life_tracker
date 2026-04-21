@@ -32,6 +32,8 @@ class LifeTrackerBot(commands.Bot):
         """注册斜杠命令并同步到 Discord"""
         self.tree.add_command(_todo_group(self))
         self.tree.add_command(_weather_command(self))
+        self.tree.add_command(_model_command(self))
+        self.tree.add_command(_fallback_command(self))
         await self.tree.sync()
         logger.info("✅ 斜杠命令已同步")
 
@@ -252,6 +254,101 @@ def _todo_group(bot: LifeTrackerBot) -> app_commands.Group:
             await interaction.response.send_message(f"⚠️ 找不到 #{id}")
 
     return group
+
+
+async def _preset_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    names = config.list_presets()
+    filtered = [n for n in names if current.lower() in n.lower()] or names
+    return [app_commands.Choice(name=n, value=n) for n in filtered[:25]]
+
+
+def _format_preset_status() -> str:
+    active = config.get_active()
+    fb = config.get_fallback()
+    lines = ["🧠 **AI Preset 当前状态**"]
+    lines.append(f"  主: `{active.name}` — {active.provider} / {active.model}")
+    if fb:
+        lines.append(f"  备: `{fb.name}` — {fb.provider} / {fb.model}")
+    else:
+        lines.append("  备: (未配置)")
+    lines.append("")
+    lines.append("📋 **可用 presets**")
+    for name in config.list_presets():
+        p = config.PRESETS[name]
+        tag = ""
+        if name == active.name:
+            tag = " ← 主"
+        elif fb and name == fb.name:
+            tag = " ← 备"
+        lines.append(f"  • `{name}` ({p.provider} / {p.model}){tag}")
+    return "\n".join(lines)
+
+
+def _model_command(bot: LifeTrackerBot) -> app_commands.Command:
+    """/model [name] — 无参列出状态；带 name 切换主 preset。"""
+
+    @app_commands.command(name="model", description="查看或切换主 preset（不传参数即列出所有可用）")
+    @app_commands.describe(name="preset 名称（留空则列出当前状态和所有可用）")
+    @app_commands.autocomplete(name=_preset_autocomplete)
+    async def model(interaction: discord.Interaction, name: str | None = None):
+        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
+            return
+        if name is None:
+            await interaction.response.send_message(_format_preset_status())
+            return
+        try:
+            config.set_active(name)
+        except ValueError:
+            await interaction.response.send_message(
+                f"⚠️ 未知 preset：`{name}`\n可用: {', '.join(config.list_presets())}"
+            )
+            return
+        p = config.get_active()
+        logger.info(f"🔀 切换主 preset → {p.name} ({p.provider}/{p.model})")
+        await interaction.response.send_message(
+            f"✅ 已切换主 preset → `{p.name}` ({p.provider} / {p.model})"
+        )
+
+    return model
+
+
+def _fallback_command(bot: LifeTrackerBot) -> app_commands.Command:
+    """/fallback <name|off> — 切换/关闭 fallback preset。"""
+
+    async def _fallback_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        names = ["off"] + config.list_presets()
+        filtered = [n for n in names if current.lower() in n.lower()] or names
+        return [app_commands.Choice(name=n, value=n) for n in filtered[:25]]
+
+    @app_commands.command(name="fallback", description="切换 fallback preset；传 off 关闭")
+    @app_commands.describe(name="preset 名称，或 'off' 关闭 fallback")
+    @app_commands.autocomplete(name=_fallback_autocomplete)
+    async def fallback(interaction: discord.Interaction, name: str):
+        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
+            return
+        if name.lower() == "off":
+            config.set_fallback(None)
+            logger.info("🔀 已关闭 fallback preset")
+            await interaction.response.send_message("✅ 已关闭 fallback")
+            return
+        try:
+            config.set_fallback(name)
+        except ValueError:
+            await interaction.response.send_message(
+                f"⚠️ 未知 preset：`{name}`\n可用: {', '.join(config.list_presets())}（或 'off'）"
+            )
+            return
+        p = config.get_fallback()
+        logger.info(f"🔀 切换 fallback preset → {p.name} ({p.provider}/{p.model})")
+        await interaction.response.send_message(
+            f"✅ 已切换 fallback preset → `{p.name}` ({p.provider} / {p.model})"
+        )
+
+    return fallback
 
 
 def _weather_command(bot: LifeTrackerBot) -> app_commands.Command:

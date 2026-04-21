@@ -11,6 +11,7 @@ from bot.prompts import build_prompt, PromptParts
 from bot.weather import is_morning, get_weather_brief
 from bot.database import Database
 from bot.logger import get_logger
+from config import Preset
 import config
 
 logger = get_logger(__name__)
@@ -220,7 +221,7 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
 # ── 高层流程：chat / scheduled_action / simple_completion ──────────────
 
 
-async def simple_completion(prompt: str, call_with_tools_fn) -> str:
+async def simple_completion(prompt: str, call_with_tools_fn, preset: Preset) -> str:
     """
     轻量 AI 调用：无工具、无历史消息、无动态上下文。
     用于天气报告等独立的一次性生成任务。
@@ -228,15 +229,15 @@ async def simple_completion(prompt: str, call_with_tools_fn) -> str:
     messages = [{"role": "user", "content": prompt}]
     reply = await call_with_tools_fn(
         None, None, messages,
-        model=config.POLL_MODEL,
+        preset=preset,
         tool_names=set(),  # 空集 → 不传工具
     )
     return reply
 
 
 async def chat(db: Database, messages: list[dict],
-               call_with_tools_fn, send_callback=None, tool_callback=None,
-               provider: str = "claude") -> str:
+               call_with_tools_fn, preset: Preset,
+               send_callback=None, tool_callback=None) -> str:
     """
     处理用户消息的完整流程。
     messages: 调用方（discord_bot）已经从 Discord 历史构造好的消息列表，
@@ -255,14 +256,14 @@ async def chat(db: Database, messages: list[dict],
     weather = await get_weather_brief() if is_morning() else None
 
     # 构建 PromptParts（静态 + 动态上下文一步到位）
-    prompt = _build_prompt(db, "chat", provider=provider, weather=weather)
+    prompt = _build_prompt(db, "chat", provider=preset.provider, weather=weather)
 
     # 调用大模型（可能需要多轮 tool calling）
     reply = await call_with_tools_fn(
         db, prompt, messages,
         send_callback=send_callback,
         tool_callback=tool_callback,
-        model=config.CHAT_MODEL
+        preset=preset,
     )
 
     # 备份 AI 回复到 DB
@@ -273,10 +274,10 @@ async def chat(db: Database, messages: list[dict],
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            history: list[dict], call_with_tools_fn,
+                           preset: Preset,
                            send_callback=None,
                            allow_silent: bool = False,
-                           trigger: str | None = None,
-                           provider: str = "claude") -> str | None:
+                           trigger: str | None = None) -> str | None:
     """
     统一的调度入口：处理主动聊天、提醒触发、睡前提醒等所有非用户消息的 AI 调用。
 
@@ -299,7 +300,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     # 早上时段查天气
     weather = await get_weather_brief() if is_morning() else None
 
-    prompt_parts = _build_prompt(db, "poll", provider=provider, weather=weather)
+    prompt_parts = _build_prompt(db, "poll", provider=preset.provider, weather=weather)
 
     messages = [
         *history,
@@ -325,7 +326,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
         await call_with_tools_fn(
             db, prompt_parts, messages,
             send_callback=_silent_filter,
-            model=config.POLL_MODEL,
+            preset=preset,
         )
 
         if sent_texts:
@@ -337,7 +338,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     reply = await call_with_tools_fn(
         db, prompt_parts, messages,
         send_callback=send_callback,
-        model=config.POLL_MODEL,
+        preset=preset,
     )
 
     if reply and "[SILENT]" not in reply:

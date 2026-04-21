@@ -16,43 +16,43 @@ from bot.ai_engine_base import (
 )
 from bot.logger import get_logger
 from bot import test_mode
-import config
+from config import Preset
 
 logger = get_logger(__name__)
 
 
-async def chat(db: Database, messages: list[dict],
+async def chat(db: Database, messages: list[dict], preset: Preset,
                send_callback=None, tool_callback=None) -> str:
-    return await _base_chat(db, messages, _call_with_tools, send_callback, tool_callback,
-                            provider="relay")
+    return await _base_chat(db, messages, _call_with_tools, preset,
+                            send_callback=send_callback, tool_callback=tool_callback)
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
-                           history: list[dict],
+                           history: list[dict], preset: Preset,
                            send_callback=None, allow_silent: bool = False,
                            trigger: str | None = None) -> str | None:
     return await _base_scheduled_action(db, prompt, timestamp, history, _call_with_tools,
-                                        send_callback, allow_silent, trigger,
-                                        provider="relay")
+                                        preset,
+                                        send_callback=send_callback,
+                                        allow_silent=allow_silent, trigger=trigger)
 
 
-async def simple_completion(prompt: str) -> str:
-    return await _base_simple_completion(prompt, _call_with_tools)
+async def simple_completion(prompt: str, preset: Preset) -> str:
+    return await _base_simple_completion(prompt, _call_with_tools, preset)
 
 
 async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: list[dict],
+                           preset: Preset,
                            send_callback=None, tool_callback=None,
-                           model: str | None = None, tool_names: set | None = None) -> str:
+                           tool_names: set | None = None) -> str:
     """用 httpx 直接调用 OpenAI 兼容的中转站 API。"""
-    if not model:
-        model = config.CHAT_MODEL
-
-    base_url = config.AI_BASE_URL.rstrip("/")
+    model = preset.model
+    base_url = preset.base_url.rstrip("/")
     if not base_url.endswith("/v1"):
         base_url = base_url + "/v1"
     url = f"{base_url}/chat/completions"
     headers = {
-        "Authorization": f"Bearer {config.AI_API_KEY}",
+        "Authorization": f"Bearer {preset.api_key}",
         "Content-Type": "application/json"
     }
 

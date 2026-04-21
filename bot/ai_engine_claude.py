@@ -17,7 +17,7 @@ from bot.ai_engine_base import (
 )
 from bot.logger import get_logger
 from bot import test_mode
-import config
+from config import Preset
 
 logger = get_logger(__name__)
 
@@ -48,39 +48,40 @@ def _get_client(api_key: str) -> AsyncAnthropic:
     return _clients[api_key]
 
 
-async def chat(db: Database, messages: list[dict],
+async def chat(db: Database, messages: list[dict], preset: Preset,
                send_callback=None, tool_callback=None) -> str:
-    return await _base_chat(db, messages, _call_with_tools, send_callback, tool_callback,
-                            provider="claude")
+    return await _base_chat(db, messages, _call_with_tools, preset,
+                            send_callback=send_callback, tool_callback=tool_callback)
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
-                           history: list[dict],
+                           history: list[dict], preset: Preset,
                            send_callback=None, allow_silent: bool = False,
                            trigger: str | None = None) -> str | None:
     return await _base_scheduled_action(db, prompt, timestamp, history, _call_with_tools,
-                                        send_callback, allow_silent, trigger,
-                                        provider="claude")
+                                        preset,
+                                        send_callback=send_callback,
+                                        allow_silent=allow_silent, trigger=trigger)
 
 
-async def simple_completion(prompt: str) -> str:
-    return await _base_simple_completion(prompt, _call_with_tools)
+async def simple_completion(prompt: str, preset: Preset) -> str:
+    return await _base_simple_completion(prompt, _call_with_tools, preset)
 
 
 async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: list[dict],
+                           preset: Preset,
                            send_callback=None, tool_callback=None,
-                           model: str | None = None, tool_names: set | None = None,
-                           api_key: str | None = None) -> str:
+                           tool_names: set | None = None) -> str:
     """
     调用 Anthropic Claude，处理可能的多轮 tool calling。
     中间轮的文本通过 send_callback 发送。
 
     使用 Anthropic prompt caching：PromptParts 的三层直接映射到 3 个 cached system block。
 
-    api_key: 覆盖 config.AI_API_KEY（供 fallback 机制使用）。
+    preset: 当前激活的 AI preset，提供 api_key 与 model。
     """
-    resolved_key = api_key or config.AI_API_KEY
-    client = _get_client(resolved_key)
+    client = _get_client(preset.api_key)
+    model = preset.model
 
     # 构建 system blocks（3 个 cached block）
     system_blocks = prompt.to_claude_blocks() if prompt else []
@@ -100,9 +101,6 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
 
     all_texts = []  # 收集发送过的文本（拼接最终返回结果）
     sent_display_texts = set()  # 去重集合
-
-    if not model:
-        model = getattr(config, 'CHAT_MODEL', 'claude-3-opus-20240229')
 
     test_mode.ensure_handler_state()
 
