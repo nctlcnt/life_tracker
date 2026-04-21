@@ -2,12 +2,13 @@
 
 ## 近期计划更新
 
-以下计划文件在最近 7 天内有更新（截至 2026-04-20）：
+以下计划文件在最近 7 天内有更新（截至 2026-04-21）：
 
 - `Plan-energy.md` — 2026-04-14 创建，2026-04-15 更新；**2026-04-18 正式归档**：精力调度三分法 chill/drain 子标签（`energy_type` 字段与 `ChillDrainChart`）已通过 `refactor/drop-energy-type` 分支整体移除，Focus/Routine/Chill 三分法保留。后续第四、五阶段（情绪评分 / 数据洞察扩展）转入 Merlin 路线。
 - `plan-Merlin.md` — 2026-04-15 创建并更新，Merlin 精力调度引擎系统架构 v3（离线特征抽取管道、双轨运行机制、分阶段路线图 M1–M4+、LLM 抽取器 benchmark 方案 `bot/merlin/evals/`）
-- `plan-prompt.md` — 2026-04-15 新增，**2026-04-18 更新进度与策略**；已决定放弃 Claude 路径上的「分层决策框架」（Step 1/2/3/4），优先保障 prompt caching 命中率（实测 ~85%，约 $0.1736/h）；2026-04-18 新增 chill/drain 移除记录；下一步重点转向静态层行文瘦身（`TOOL_GUIDELINES_CHAT` / `TIME_PERCEPTION_CHAT` / `RESPONSE_CORE` 按 token 占比压缩）和动态层单条 memory 长度限制（候选 40–60 字软约束或硬截断）。
+- `plan-prompt.md` — 2026-04-15 新增，**2026-04-18 更新进度与策略**；已决定放弃 Claude 路径上的「分层决策框架」（Step 1/2/3/4），优先保障 prompt caching 命中率；**2026-04-18 正式归档并由 `plan-prompt-new.md` 替代**：6 个正交 section（IDENTITY / USER_MODEL / SYSTEM_MECHANICS / COMMUNICATION / PROTOCOLS / TOOLS_SECTION）已完整落地，chat/poll 完全 unify，prompt 重构计划全部完成。
 - `Plan-Obsidian-Claude-Code.md` — 2026-04-14 新增，Obsidian 课业笔记接入方案（`query_obsidian` 工具 + `obsidian_mcp_server.py`，日和 bot 与 Claude Code 共享同一 `bot/obsidian_search.py` 逻辑）
+- `ai-ai-token-eventual-kahn.md` — 2026-04-21 新增，Classifier 分流架构设计方案：轻量 Gemini Flash classifier → 专用处理器（`diet` / `assistant` / `general` 三路径），单标签路由 + `escalate_to_assistant` escalation 机制；新增 `bot/classifier.py`、`bot/processor_diet.py`、`bot/processor_assistant.py`、`bot/processor_general.py`、`bot/router.py` 文件规划；**尚未实施**。
 
 ---
 
@@ -40,6 +41,12 @@
     6. **scheduler 前缀识别准确性**：INITIATION 消失后，AI 对当前是主动轮询还是被动回复的判断完全依赖 scheduler 模板前缀，需观察识别稳定性。
 - **`energy_type`（chill/drain 子标签）整体撤销**：用户自述无法精准自评蓄水/漏水状态，前端蓄水漏水图表几乎不查看，保留只会增加 AI 分类负担。通过 `refactor/drop-energy-type` 分支将 `energy_type` 字段从 DB（SQLite `DROP COLUMN` 热删，兼容 SQLite 3.35+）、`tools.py` 两套 schema（OpenAI + Anthropic）、`prompts.py` 各 prompt 段落（TIME_PERCEPTION / TOOL_GUIDELINES / PROACTIVE_PROMPT）、前端 `ChillDrainChart` 组件及 `MultiLaneTimeline` drain 染色全部移除。Focus/Routine/Chill 三分法（`category` 字段）保留不变。
 - **项目名复用强化（`LABEL_PROJECTS` 动态注入）**：AI 记录 Focus 事件时因大小写、修饰词差异频繁新建重复项目。新增 `【现有项目列表（Focus 用，严格优先复用）】` 动态段（`LABEL_PROJECTS`），由 `_build_dynamic_context()` 拉取已有项目名注入提示词动态层（`PromptParts.projects` 字段），并在 `TOOL_GUIDELINES_CHAT` 加强"新建前必须先看列表、同义即复用"规则。
+- **消息时间戳正则过滤**（2026-04-21）：`bot/discord_bot.py` 在拼接历史消息时通过正则移除时间戳前缀，避免 AI 读取历史时看到双重时间戳（Discord 消息本身带一个、`fetch_history` 格式化又加一个），降低上下文噪音。
+- **工具描述大幅瘦身**（2026-04-21，commit `0d3863f`）：对 `bot/tools.py` 和 `bot/prompts.py` 进行大幅精简（共减少约 96 行 / 192 行改 96 行），去除重复和冗余措辞，将格式细节内联到 JSON Schema、Why/When 策略保留在 `TOOLS_SECTION`，解决 Phase 3 "替代优化：精简工具描述" 工作项。
+- **AI 引擎 SILENT 消息处理优化**（2026-04-21，commit `6e925e3`）：三引擎（Claude / Gemini / Relay）统一改进 `[SILENT]` 标记检测逻辑，`ai_engine_base.py` 增强 text chunk 处理管道（含时间戳剥离），确保 `[SILENT]` 信号不会泄漏给用户消息流；proactive prompt 结构同步精简。
+- **AI Preset 管理系统**（2026-04-21，commit `f15ffb4`）：`config.py` 引入 `Preset` dataclass + `PRESETS` 字典，`config.json` 从单组 `{provider, api_key, model}` 升级为命名 presets 表，支持多套配置按名切换；`bot/discord_bot.py` 新增 `/model [name]`（查看 / 切换主 preset）和 `/fallback <name|off>`（切换 / 关闭 fallback）两个 slash 命令，带 autocomplete；活跃 preset 状态持久化到 `data/active_preset.json`，进程重启后保持。
+- **调度器轮询策略重构**（2026-04-21，commit `03a10e8`）：用"以上次 AI 调用时间戳为基准 + 45–55 分钟随机区间"替换原先的随机 1–60 分钟全局间隔；任何 chat / poll / reminder / bedtime 调用均重置基准，避免近时间段反复轮询浪费 token；轮询时历史拉取从 20 条缩减到 8 条（poll 只需判断是否开口，不需深上下文）。
+- **移除 `set_reminder` TOOL_POST_HINT**（2026-04-21，commit `1ed0ce9`）：从 `TOOL_POST_HINTS` 中删除 `set_reminder` 的去重自检提示，节省每轮 tool_result 后的 token 消耗；提醒去重职责改由计划中的夜间清理任务（而非每次 set 后立即触发 `list_reminders` 自检）承担。
 
 ---
 
@@ -111,6 +118,10 @@
   - 调用 wttr.in 获取天气数据，通过 `simple_completion`（POLL_MODEL，无工具）生成穿衣建议
   - 复用 `bot/weather.py` 的数据获取，AI 根据温度/体感/降雨推荐具体衣物
   - （2026-04-15 增强）新增逐时预报展示与防晒建议（紫外线指数 + 防晒推荐）
+- [x] **/model 与 /fallback — AI Preset 动态切换**（2026-04-21）
+  - `/model [name]`：列出状态或按名切换主 preset（带 autocomplete）
+  - `/fallback <name|off>`：切换或关闭 fallback preset
+  - 活跃状态持久化到 `data/active_preset.json`
 - [x] **测试模式（`--test` 启动参数）**
   - `python main.py --test` 激活，进程退出时自动结束
   - 记录范围：全量应用日志 + 每次 AI API 调用的完整 payload（system / messages / tools）及 AI 响应内容
@@ -130,8 +141,8 @@
 - [ ] **饮食记录分析**
 - [ ] **替代优化：轮询/提醒路径工具子集**
   - proactive_check / reminder_action 不需要全部工具，硬编码子集可提升准确率
-- [ ] **替代优化：精简工具描述**
-  - 当前 9 个工具描述共 ~4,800 tokens，部分描述冗余可压缩
+- [x] **替代优化：精简工具描述**（2026-04-21，commit `0d3863f`）
+  - `bot/tools.py` + `bot/prompts.py` 大幅精简，去除冗余措辞，格式细节内联 JSON Schema
 
 ### Phase 4 — 前端 Dashboard
 
