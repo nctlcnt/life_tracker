@@ -3,7 +3,7 @@ FastAPI 接口模块
 给前端提供数据
 """
 import os
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -61,6 +61,25 @@ async def get_events(
     """查询时间范围内的所有原始事件（调试用）"""
     events = db.get_events(start, end)
     return {"events": events, "count": len(events)}
+
+
+@app.delete("/api/events/{event_id}")
+async def delete_event(event_id: int):
+    """硬删一条 event。出于安全考虑，仅允许删除 status 非空的事件
+    （planned / cancelled），真实已发生的事件（status IS NULL）拒绝删除——
+    AI 侧需要删真实事件时走 delete_timeline_event 工具。"""
+    event = db.get_event_by_id(event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail=f"event_id={event_id} not found")
+    if event.get("status") is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Refusing to delete actual event via UI. Only planned/cancelled events can be deleted here."
+        )
+    ok = db.delete_event(event_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Delete failed unexpectedly")
+    return {"success": True, "event_id": event_id}
 
 
 @app.get("/api/categories")

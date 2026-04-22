@@ -67,12 +67,13 @@ export default function App() {
         setTimelineEvents(events);
 
         // Planned / cancelled 是未合并的原始 event，可能无 end_time（时间点型）
+        // id 保留真实数字形式，供删除按钮回传后端
         const toPseudoEvent = (e: any): TimelineEvent => {
           const rawStart = new Date(e.start_time);
           // 时间点型（无 end_time）：给一个短时长占位，视觉上还能看到块
           const rawEnd = e.end_time ? new Date(e.end_time) : new Date(rawStart.getTime() + 30 * 60 * 1000);
           return {
-            id: `p-${e.id}`,
+            id: String(e.id),
             content: e.content,
             category: e.category,
             startDate: rawStart < dayStart ? dayStart : rawStart,
@@ -144,6 +145,25 @@ export default function App() {
       .catch(err => console.error('Failed to load deadlines:', err));
 
   }, [currentDate, viewMode]);
+
+  const handleDeletePlannedEvent = (id: string) => {
+    // 前置乐观更新：planned / cancelled 都可能命中，两个 state 都尝试过滤
+    const prevPlanned = plannedEvents;
+    const prevCancelled = cancelledEvents;
+    setPlannedEvents(list => list.filter(e => e.id !== id));
+    setCancelledEvents(list => list.filter(e => e.id !== id));
+
+    fetch(`/api/events/${id}`, { method: 'DELETE' })
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      })
+      .catch(err => {
+        console.error('Failed to delete event:', err);
+        // 回滚
+        setPlannedEvents(prevPlanned);
+        setCancelledEvents(prevCancelled);
+      });
+  };
 
   const handleTodoToggle = (id: string) => {
     const prev = todos.find((t) => t.id === id);
@@ -277,6 +297,7 @@ export default function App() {
               plannedEvents={plannedEvents}
               cancelledEvents={cancelledEvents}
               date={currentDate}
+              onDeletePlanned={handleDeletePlannedEvent}
             />
           </div>
 

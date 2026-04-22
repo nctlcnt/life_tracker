@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, type CSSProperties } from 'react';
+import { useRef, useEffect, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   Tooltip,
   TooltipContent,
@@ -22,6 +22,7 @@ interface MultiLaneTimelineProps {
   plannedEvents?: TimelineEvent[];
   cancelledEvents?: TimelineEvent[];
   date: string; // YYYY-MM-DD
+  onDeletePlanned?: (eventId: string) => void;
 }
 
 type EventStatus = 'actual' | 'planned' | 'cancelled';
@@ -74,6 +75,7 @@ export function MultiLaneTimeline({
   plannedEvents = [],
   cancelledEvents = [],
   date,
+  onDeletePlanned,
 }: MultiLaneTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(0);
@@ -233,11 +235,20 @@ export function MultiLaneTimeline({
                     status === 'actual' ? 'rgba(40,40,40,0.7)' : 'rgba(80,80,80,0.65)';
                   const labelDecoration = status === 'cancelled' ? 'line-through' : 'none';
 
+                  const deletable = status !== 'actual' && !!onDeletePlanned;
+                  const handleDeleteClick = (e: ReactMouseEvent) => {
+                    e.stopPropagation();
+                    const label = status === 'planned' ? '这个计划' : '这条取消记录';
+                    if (window.confirm(`删除${label}？此操作不可撤销。`)) {
+                      onDeletePlanned?.(ev.id);
+                    }
+                  };
+
                   return (
                     <Tooltip key={`${status}-${ev.id}`}>
                       <TooltipTrigger asChild>
                         <div
-                          className="absolute left-0.5 right-0.5 rounded-[2px] cursor-pointer hover:brightness-95 transition-all overflow-hidden"
+                          className="group absolute left-0.5 right-0.5 rounded-[2px] cursor-pointer hover:brightness-95 transition-all overflow-hidden"
                           style={blockStyle}
                         >
                           {h > 18 && (
@@ -247,6 +258,16 @@ export function MultiLaneTimeline({
                             >
                               {ev.project_name || ev.content}
                             </div>
+                          )}
+                          {deletable && (
+                            <button
+                              type="button"
+                              onClick={handleDeleteClick}
+                              className="absolute top-0 right-0 w-3.5 h-3.5 flex items-center justify-center text-[10px] leading-none rounded-bl-[2px] bg-white/80 text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-white hover:text-red-600"
+                              title="删除"
+                            >
+                              ×
+                            </button>
                           )}
                         </div>
                       </TooltipTrigger>
