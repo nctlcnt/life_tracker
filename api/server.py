@@ -34,11 +34,21 @@ async def get_timeline(
     start: str = Query(..., description="起始时间 ISO 8601，如 2026-04-01T00:00:00"),
     end: str = Query(..., description="结束时间 ISO 8601，如 2026-04-07T23:59:59"),
 ):
-    """查询时间范围内的合并后时间段（前端主要用这个）"""
+    """查询时间范围内的数据：
+    - segments: 真实事件（status IS NULL）的合并时间段
+    - planned_events: 该范围内 status='planned' 的原始 event（不合并）
+    - cancelled_events: 该范围内 status='cancelled' 的原始 event（不合并）
+    前端对三组分别用不同视觉样式叠加渲染。
+    """
     raw_events = db.get_events(start, end)
-    segments = merge_events(raw_events)
+    actual = [e for e in raw_events if e.get("status") is None]
+    planned = [e for e in raw_events if e.get("status") == "planned"]
+    cancelled = [e for e in raw_events if e.get("status") == "cancelled"]
+    segments = merge_events(actual)
     return {
         "segments": segments,
+        "planned_events": planned,
+        "cancelled_events": cancelled,
         "count": len(segments),
     }
 
@@ -149,6 +159,9 @@ async def get_projects_heatmap(days: int = Query(90, description="统计天数�
 
     for ev in events:
         if ev.get("category") != "Focus" or not ev.get("project_name"):
+            continue
+        # 只统计真实事件——planned / cancelled 是 dummy，不算已投入时间
+        if ev.get("status") is not None:
             continue
         proj = ev["project_name"]
         day = ev["start_time"][:10]  # YYYY-MM-DD

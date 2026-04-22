@@ -44,10 +44,10 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 | `bot/ai_engine_relay.py` | OpenAI 格式中转站调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
 | `bot/ai_engine_gemini.py` | Gemini 原生 REST API 调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
 | `bot/ai_provider_error.py` | 自定义异常类 `AIProviderError`，统一表示 AI 服务商调用失败 |
-| `bot/tools.py` | 工具定义 (OpenAI / Anthropic 两种 Schema，共 9 个工具) + `TOOL_POST_HINTS`；category 三分法枚举 Focus/Routine/Chill，log_timeline_event 含 project_name 字段 |
+| `bot/tools.py` | 工具定义 (OpenAI / Anthropic 两种 Schema，共 10 个工具) + `TOOL_POST_HINTS`；category 三分法枚举 Focus/Routine/Chill，log_timeline_event 含 project_name 字段，可选 `status='planned'` 标记未来 dummy event；`cancel_planned_event` 把 planned 标为 cancelled |
 | `bot/prompts.py` | Prompt 集中管理：6 个正交 section（IDENTITY / USER_MODEL / SYSTEM_MECHANICS / COMMUNICATION / PROTOCOLS / TOOLS_SECTION，chat/poll 完全共用）、`PromptParts` dataclass（三层缓存结构）、`build_prompt()`；各引擎通过 `to_claude_blocks()` / `flatten()` 消费；`PROACTIVE_PROMPT` / `REMINDER_PROMPT` / `BEDTIME_PROMPT` / `MORNING_PROMPT` / `TOOL_POST_HINTS` 也在此定义 |
 | `bot/scheduler.py` | 两个并发循环 + asyncio.Lock：Timer 循环（随机轮询+睡前）+ Reminder 循环（数据库提醒倒计时+Event 唤醒） |
-| `bot/database.py` | SQLite DB 操作 (events, messages, reminders, memories, todos, deadlines)；events 表含 project_name 字段 |
+| `bot/database.py` | SQLite DB 操作 (events, messages, reminders, memories, todos, deadlines)；events 表含 project_name 字段，可空 `status` 列：NULL=已发生，`planned`=未来 dummy，`cancelled`=已取消的 planned |
 | `bot/merge.py` | 事件合并模块，将相邻同 content+category 的事件合并为时间段 |
 | `bot/weather.py` | 天气查询模块，使用 wttr.in 免费 API（无需 key），早上时段（6-10点）注入天气数据 |
 | `bot/test_mode.py` | 测试模式：`/start-test` 开启后捕获所有日志和 AI prompt payload 写入 JSONL；`/stop-test` 结束并命名文件 |
@@ -118,7 +118,7 @@ helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用。
 - **Block 1（静态）**：IDENTITY + USER_MODEL + SYSTEM_MECHANICS + COMMUNICATION + PROTOCOLS + TOOLS_SECTION（几乎不变，~5444 字符）
 - **Block 2（稳定上下文）**：deadlines + projects（低频变化：projects 几乎不增删，deadline 仅在新增/完成时变）
 - **Block 3（记忆）**：memories（独立成 block，避免记忆更新连带 invalidate Block 2 的 cache）
-- **Block 4（高频动态）**：ongoing + reminders + weather
+- **Block 4（高频动态）**：ongoing + deadlines + planned_events + weather
 
 各引擎消费方式：
 - Claude: `prompt.to_claude_blocks()` → 最多 4 个 cached system block（chat ↔ poll 切换 100% cache hit）
@@ -128,11 +128,12 @@ helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用。
 `_build_prompt()` 动态注入内容（见 `ai_engine_base._build_prompt`）：
 - 【你现在记着的事】— 从 `memories` 表取全部（Block 3）
 - 【现有项目列表】— 从 events 表聚合 Focus 类 project_name（Block 2）
-- 【当前进行中的事件】— `end_time IS NULL` 的活动（Block 4）
+- 【当前进行中的事件】— `end_time IS NULL` 且 `status IS NULL` 的真实活动（Block 4）
 - 【待完成的 Deadline】— 过滤 active 状态，带倒计时（Block 4）
+- 【未来安排（planned events）】— events 表 `status='planned'` 过滤，按 start_time 升序，带倒计时（Block 4）
 - 【今日天气】— 早上时段调 `bot/weather.py::get_weather_brief()`（Block 4）
 
-**不注入**：pending reminders。scheduler 到时间自会触发，AI 若需要去重主动调 `list_reminders`。避免每次 reminder 增删都 invalidate cache。
+**不注入**：pending reminders、cancelled planned events。scheduler 到时间自会触发 reminder，AI 若需要去重主动调 `list_reminders`；cancelled 的只给前端看，AI 不需要反复感知，避免 Block 4 膨胀和 cache invalidate。
 
 ### 调度 Prompt 模板
 
