@@ -22,11 +22,12 @@ export default function App() {
   const [currentDate, setCurrentDate] = useState(() => fmtDateStr(new Date()));
 
   const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
+  const [plannedEvents, setPlannedEvents] = useState<TimelineEvent[]>([]);
+  const [cancelledEvents, setCancelledEvents] = useState<TimelineEvent[]>([]);
   const [memories, setMemories] = useState<ListItem[]>([]);
   const [reminders, setReminders] = useState<ListItem[]>([]);
   const [todos, setTodos] = useState<ListItem[]>([]);
   const [deadlines, setDeadlines] = useState<ListItem[]>([]);
-  const [appointments, setAppointments] = useState<ListItem[]>([]);
 
   // ── Week View State ──────────────────────────────────────────
   const [weekStart, setWeekStart] = useState(() => getMonday(new Date()));
@@ -45,7 +46,7 @@ export default function App() {
     const dayStart = new Date(startIso);
     const dayEnd = new Date(endIso);
 
-    // Fetch timeline (segments)
+    // Fetch timeline (segments + planned + cancelled)
     fetch(`/api/timeline?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`)
       .then(res => res.json())
       .then(data => {
@@ -64,6 +65,24 @@ export default function App() {
           };
         });
         setTimelineEvents(events);
+
+        // Planned / cancelled 是未合并的原始 event，可能无 end_time（时间点型）
+        const toPseudoEvent = (e: any): TimelineEvent => {
+          const rawStart = new Date(e.start_time);
+          // 时间点型（无 end_time）：给一个短时长占位，视觉上还能看到块
+          const rawEnd = e.end_time ? new Date(e.end_time) : new Date(rawStart.getTime() + 30 * 60 * 1000);
+          return {
+            id: `p-${e.id}`,
+            content: e.content,
+            category: e.category,
+            startDate: rawStart < dayStart ? dayStart : rawStart,
+            endDate: rawEnd > dayEnd ? dayEnd : rawEnd,
+            notes: e.notes ?? null,
+            project_name: e.project_name ?? null,
+          };
+        };
+        setPlannedEvents((data.planned_events || []).map(toPseudoEvent));
+        setCancelledEvents((data.cancelled_events || []).map(toPseudoEvent));
       })
       .catch(err => console.error('Failed to load timeline:', err));
 
@@ -124,19 +143,6 @@ export default function App() {
       })
       .catch(err => console.error('Failed to load deadlines:', err));
 
-    // Fetch Appointments
-    fetch('/api/appointments')
-      .then(res => res.json())
-      .then(data => {
-        setAppointments((data.appointments || []).map((a: any) => ({
-          id: String(a.id),
-          title: a.title,
-          description: a.note || undefined,
-          dueDate: new Date(a.scheduled_time),
-          countdown: a.countdown,
-        })));
-      })
-      .catch(err => console.error('Failed to load appointments:', err));
   }, [currentDate, viewMode]);
 
   const handleTodoToggle = (id: string) => {
@@ -266,13 +272,17 @@ export default function App() {
         <div className="flex-1 flex min-h-0 overflow-hidden">
           {/* 左 1/4：多泳道时间轴 */}
           <div className="w-1/4 flex-shrink-0 border-r border-border flex flex-col min-h-0">
-            <MultiLaneTimeline events={timelineEvents} date={currentDate} />
+            <MultiLaneTimeline
+              events={timelineEvents}
+              plannedEvents={plannedEvents}
+              cancelledEvents={cancelledEvents}
+              date={currentDate}
+            />
           </div>
 
-          {/* 右 3/4：2×2 四方块 */}
+          {/* 右 3/4：2×2 grid，目前三块（第四格留白，后续可用） */}
           <div className="flex-1 min-w-0 overflow-auto px-6 py-6">
             <div className="grid grid-cols-2 gap-4 h-full">
-              <ItemList title="已安排" items={appointments} type="appointment" />
               <ItemList title="提醒" items={reminders} type="reminder" />
               <ItemList title="待办" items={todos} type="todo" onToggle={handleTodoToggle} />
               <ItemList title="Deadline" items={deadlines} type="deadline" />
