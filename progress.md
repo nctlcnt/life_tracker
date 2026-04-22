@@ -2,13 +2,17 @@
 
 ## 近期计划更新
 
-以下计划文件在最近 7 天内有更新（截至 2026-04-21）：
+以下计划文件在最近 7 天内有更新（截至 2026-04-22）：
 
 - `Plan-energy.md` — 2026-04-14 创建，2026-04-15 更新；**2026-04-18 正式归档**：精力调度三分法 chill/drain 子标签（`energy_type` 字段与 `ChillDrainChart`）已通过 `refactor/drop-energy-type` 分支整体移除，Focus/Routine/Chill 三分法保留。后续第四、五阶段（情绪评分 / 数据洞察扩展）转入 Merlin 路线。
 - `plan-Merlin.md` — 2026-04-15 创建并更新，Merlin 精力调度引擎系统架构 v3（离线特征抽取管道、双轨运行机制、分阶段路线图 M1–M4+、LLM 抽取器 benchmark 方案 `bot/merlin/evals/`）
 - `plan-prompt.md` — 2026-04-15 新增，**2026-04-18 更新进度与策略**；已决定放弃 Claude 路径上的「分层决策框架」（Step 1/2/3/4），优先保障 prompt caching 命中率；**2026-04-18 正式归档并由 `plan-prompt-new.md` 替代**：6 个正交 section（IDENTITY / USER_MODEL / SYSTEM_MECHANICS / COMMUNICATION / PROTOCOLS / TOOLS_SECTION）已完整落地，chat/poll 完全 unify，prompt 重构计划全部完成。
 - `Plan-Obsidian-Claude-Code.md` — 2026-04-14 新增，Obsidian 课业笔记接入方案（`query_obsidian` 工具 + `obsidian_mcp_server.py`，日和 bot 与 Claude Code 共享同一 `bot/obsidian_search.py` 逻辑）
 - `ai-ai-token-eventual-kahn.md` — 2026-04-21 新增，Classifier 分流架构设计方案：轻量 Gemini Flash classifier → 专用处理器（`diet` / `assistant` / `general` 三路径），单标签路由 + `escalate_to_assistant` escalation 机制；新增 `bot/classifier.py`、`bot/processor_diet.py`、`bot/processor_assistant.py`、`bot/processor_general.py`、`bot/router.py` 文件规划；**尚未实施**。
+- `plan-event-notes-split.md` — 2026-04-22 新增：Event / Notes 拆分方案。将 `events.notes` 字符串字段拆为独立 `event_notes` 表（流水心智模型），新增 `add_event_note` 工具，`update_timeline_event` 限制为 ongoing-only，`delete_timeline_event` 从 AI 工具列表完全移除；含 DB 迁移脚本、API join 策略、前端渲染改动及与 role-split 的衔接说明。**尚未实施**。
+- `plan-future-timeline.md` — 2026-04-22 新增：AI 规划助手 / Future Timeline 讨论稿（状态：讨论中）；**已被 `timeline-schedule-timeline-event-schedu-steady-snail.md` 取代**。
+- `plan-role-split.md` — 2026-04-22 新增：三角色拆分方案（Role A 时间管理助手 / Role B 拖延助力人格 / Role C 夜间清理任务），含路由器设计、三阶段实施路线、Prompt 拆分草稿；阶段 1（Role C 夜间清理）优先级最高，不动现有 chat 路径。**尚未实施**。
+- `timeline-schedule-timeline-event-schedu-steady-snail.md` — 2026-04-22 新增：废弃 `appointments` 表，将"到场型安排"改为 `events.status='planned'` dummy event，与真实 event 共用同一时间轴；新增 `cancel_planned_event` 工具；前端三状态视觉区分（实心 / 虚线半透明 / 灰色空心）；**取代 `plan-future-timeline.md`**，尚未实施。
 
 ---
 
@@ -47,6 +51,8 @@
 - **AI Preset 管理系统**（2026-04-21，commit `f15ffb4`）：`config.py` 引入 `Preset` dataclass + `PRESETS` 字典，`config.json` 从单组 `{provider, api_key, model}` 升级为命名 presets 表，支持多套配置按名切换；`bot/discord_bot.py` 新增 `/model [name]`（查看 / 切换主 preset）和 `/fallback <name|off>`（切换 / 关闭 fallback）两个 slash 命令，带 autocomplete；活跃 preset 状态持久化到 `data/active_preset.json`，进程重启后保持。
 - **调度器轮询策略重构**（2026-04-21，commit `03a10e8`）：用"以上次 AI 调用时间戳为基准 + 45–55 分钟随机区间"替换原先的随机 1–60 分钟全局间隔；任何 chat / poll / reminder / bedtime 调用均重置基准，避免近时间段反复轮询浪费 token；轮询时历史拉取从 20 条缩减到 8 条（poll 只需判断是否开口，不需深上下文）。
 - **移除 `set_reminder` TOOL_POST_HINT**（2026-04-21，commit `1ed0ce9`）：从 `TOOL_POST_HINTS` 中删除 `set_reminder` 的去重自检提示，节省每轮 tool_result 后的 token 消耗；提醒去重职责改由计划中的夜间清理任务（而非每次 set 后立即触发 `list_reminders` 自检）承担。
+- **PROTOCOLS section 临时下线**（2026-04-22，commit `265a431`）：`bot/prompts.py` 中将 PROTOCOLS section 整块注释掉，同步清理残留行内注释。动机：观察到 4 个协议信号在实际对话中触发效果不稳定，暂时移除以隔离影响，后续实测后决定是精简重写还是恢复。system prompt 其余 5 个 section（IDENTITY / USER_MODEL / SYSTEM_MECHANICS / COMMUNICATION / TOOLS_SECTION）不受影响。
+- **RhythmView 新前端视图 + 五 Tab 导航**（2026-04-22，commit `f388040`）：新增 `frontend/src/app/components/RhythmView.tsx`（625 行）+ `rhythm.css`（506 行），实现 Rhythm 时间管理日视图——三泳道（Chill / Focus / Routine）竖向时间轴 + 精力成本 + 意图块（intent）可视化，Morandi 配色系统。`App.tsx` 同步扩展导航为五 Tab：日 | 周 | Project Overview | 记忆 | Rhythm，其中记忆 Tab 从日视图方块内提升为独立页面，`appointments` state 同步接入但 API 端点待补齐。RhythmView 当前使用 seed 演示数据，尚未对接 `/api/` 真实数据。
 
 ---
 
@@ -155,7 +161,7 @@
   - 待办列表（查看未完成、已完成的待办事项）
 - [x] **事件合并 API** (`bot/merge.py` + `/api/timeline`)
   - 相邻同 content+category 事件合并为时间段
-- [x] **导航 Tab（三 Tab）**：日 | 周 | Project Overview
+- [x] **导航 Tab（五 Tab）**：日 | 周 | Project Overview | 记忆 | Rhythm
 - [~] **日视图重构（`feature/phase1-tricat-schema` 分支，骨架已完成）**
   - [x] 日视图新布局：左 1/4 时间轴 + 右 3/4 的 2×2 四方块
   - [x] 移除 GanttChart 和 TimeDistribution，以占位符替换
@@ -165,6 +171,10 @@
   - [x] Project Overview Tab 入口已在导航中
   - [x] GitHub 式项目热力图：Y 轴 = Project，X 轴 = 近 90 天，格子深浅 = 当天投入分钟数
   - [ ] 后续可扩展 Streak、趋势、精力雷达图等
+- [~] **Rhythm 视图（`RhythmView.tsx`，2026-04-22，演示阶段）**
+  - [x] `RhythmView.tsx` + `rhythm.css` 新增：三泳道竖向日视图（Chill / Focus / Routine）+ 精力成本 + intent block 可视化
+  - [x] 记忆 Tab 从日视图方块升级为独立页面
+  - [ ] 对接真实 `/api/` 数据（当前为 seed 演示数据）
 - [ ] **部署到 Vercel / Netlify**
 
 ### Phase 5 — 数据科学 + 分析 (Portfolio)
