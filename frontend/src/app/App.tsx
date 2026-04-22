@@ -3,6 +3,7 @@ import { ItemList, ListItem } from './components/ItemList';
 import { WeekView, getMonday } from './components/WeekView';
 import { MultiLaneTimeline, TimelineEvent } from './components/MultiLaneTimeline';
 import { ProjectOverview } from './components/ProjectOverview';
+import { RhythmView } from './components/RhythmView';
 
 // ── 日期格式化 ─────────────────────────────────────────────────
 const DAY_NAMES_FULL = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
@@ -12,7 +13,7 @@ function fmtDateStr(d: Date) {
 }
 
 // ── Tab 类型 ────────────────────────────────────────────────────
-type ViewMode = 'day' | 'week' | 'project';
+type ViewMode = 'day' | 'week' | 'project' | 'memory' | 'rhythm';
 
 export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('day');
@@ -25,6 +26,7 @@ export default function App() {
   const [reminders, setReminders] = useState<ListItem[]>([]);
   const [todos, setTodos] = useState<ListItem[]>([]);
   const [deadlines, setDeadlines] = useState<ListItem[]>([]);
+  const [appointments, setAppointments] = useState<ListItem[]>([]);
 
   // ── Week View State ──────────────────────────────────────────
   const [weekStart, setWeekStart] = useState(() => getMonday(new Date()));
@@ -36,7 +38,7 @@ export default function App() {
   const todayDayName = DAY_NAMES_FULL[today.getDay()];
 
   useEffect(() => {
-    if (viewMode !== 'day') return;
+    if (viewMode !== 'day' && viewMode !== 'memory') return;
 
     const startIso = `${currentDate}T00:00:00`;
     const endIso = `${currentDate}T23:59:59`;
@@ -121,6 +123,20 @@ export default function App() {
         })));
       })
       .catch(err => console.error('Failed to load deadlines:', err));
+
+    // Fetch Appointments
+    fetch('/api/appointments')
+      .then(res => res.json())
+      .then(data => {
+        setAppointments((data.appointments || []).map((a: any) => ({
+          id: String(a.id),
+          title: a.title,
+          description: a.note || undefined,
+          dueDate: new Date(a.scheduled_time),
+          countdown: a.countdown,
+        })));
+      })
+      .catch(err => console.error('Failed to load appointments:', err));
   }, [currentDate, viewMode]);
 
   const handleTodoToggle = (id: string) => {
@@ -169,9 +185,9 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-3">
-          {/* 三 Tab 切换：日 | 周 | Project Overview */}
+          {/* Tab 切换：日 | 周 | Project Overview | 记忆 */}
           <div className="flex rounded-md border border-border overflow-hidden">
-            {(['day', 'week', 'project'] as ViewMode[]).map((mode) => (
+            {(['day', 'week', 'project', 'memory', 'rhythm'] as ViewMode[]).map((mode) => (
               <button
                 key={mode}
                 onClick={() => setViewMode(mode)}
@@ -181,7 +197,15 @@ export default function App() {
                     : 'bg-transparent text-muted-foreground hover:bg-muted'
                 }`}
               >
-                {mode === 'day' ? '日' : mode === 'week' ? '周' : 'Project Overview'}
+                {mode === 'day'
+                  ? '日'
+                  : mode === 'week'
+                  ? '周'
+                  : mode === 'project'
+                  ? 'Project Overview'
+                  : mode === 'memory'
+                  ? '记忆'
+                  : 'Rhythm'}
               </button>
             ))}
           </div>
@@ -227,6 +251,16 @@ export default function App() {
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <ProjectOverview />
         </div>
+      ) : viewMode === 'memory' ? (
+        <div className="flex-1 min-h-0 overflow-auto px-6 py-6">
+          <div className="max-w-3xl mx-auto">
+            <ItemList title="记忆" items={memories} type="memory" maxHeight="none" />
+          </div>
+        </div>
+      ) : viewMode === 'rhythm' ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <RhythmView />
+        </div>
       ) : (
         /* ── 日视图：左 1/4 泳道图 + 右 3/4 ─────────────────── */
         <div className="flex-1 flex min-h-0 overflow-hidden">
@@ -238,7 +272,7 @@ export default function App() {
           {/* 右 3/4：2×2 四方块 */}
           <div className="flex-1 min-w-0 overflow-auto px-6 py-6">
             <div className="grid grid-cols-2 gap-4 h-full">
-              <ItemList title="记忆" items={memories} type="memory" />
+              <ItemList title="已安排" items={appointments} type="appointment" />
               <ItemList title="提醒" items={reminders} type="reminder" />
               <ItemList title="待办" items={todos} type="todo" onToggle={handleTodoToggle} />
               <ItemList title="Deadline" items={deadlines} type="deadline" />
