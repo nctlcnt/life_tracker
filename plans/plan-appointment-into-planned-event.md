@@ -85,10 +85,12 @@ main 上 tools.py **没有** appointment 工具，不用删。
 - `bot/tools.py`:
   - OpenAI schema（line 12 起 `TOOLS`）：`log_timeline_event` 加 `status` 字段；加 `cancel_planned_event` 一段
   - Anthropic schema（对应位置）：同步相同改动
-  - `SET_TOOL_NAMES` / `POLL_TOOL_NAMES`：加 `cancel_planned_event`（`log_timeline_event` 已在）
+  - **不改** `SET_TOOL_NAMES` / `POLL_TOOL_NAMES` / `REMINDER_TOOL_NAMES`：
+    - `SET_TOOL_NAMES` 仅供 discord_bot.py 判断"是否加 ✅ 反应"——语义是"新建型工具"。`cancel_planned_event` 是取消不是新建，不加。
+    - 另两个集合 `ai_engine_base.py:311` 注释明确说"tool_names 不再过滤，chat/poll 共用全量 tools"，实际已无约束效果。`log_timeline_event` 本就不在这些集合里，`cancel_planned_event` 同样不加。
 - `bot/ai_engine_base.py::_execute_tool`：
   - `log_timeline_event` 分支透传新 `status` 参数给 `db.add_event`
-  - 新增 `cancel_planned_event` 分支调用 `db.cancel_planned_event`
+  - 新增 `cancel_planned_event` 分支调用 `db.cancel_planned_event(event_id)`，按 bool 返回 `{"success": True/False, "message": ...}`（对 non-planned / 不存在的 id 返回 False + 提示，参照现有 `complete_deadline` / `delete_reminder` 模式）
 
 ---
 
@@ -120,7 +122,20 @@ main 上 tools.py **没有** appointment 工具，不用删。
 
 ---
 
-## 4. API 层变化
+## 4. API 层变化（关键）
+
+`/api/timeline` 响应从 `{segments, count}` 扩展成：
+
+```json
+{
+  "segments": [...],         // 只含 status IS NULL 的 merge 后段
+  "planned_events": [...],   // status='planned'，原始 event 结构，不合并
+  "cancelled_events": [...], // status='cancelled'，原始 event 结构，不合并
+  "count": <segments count>
+}
+```
+
+这样前端一个 fetch 拿到三组，各自渲染不同样式。
 
 `api/server.py`：
 
@@ -139,11 +154,11 @@ main 上 tools.py **没有** appointment 工具，不用删。
 
 - `_init_tables` 末尾追加幂等 `ALTER TABLE events ADD COLUMN status TEXT`（沿用现有 try/except OperationalError 模式）
 - `add_event(...)` 加可选 `status=None` 参数，INSERT 时写入
-- `update_event(...)` 的 `allowed` 集合加 `"status"`，支持 AI 后续修正
 - 新增：
   - `cancel_planned_event(event_id) -> bool`：仅当 `status='planned'` 时更新为 `cancelled`
   - `get_planned_events() -> list[dict]`：`WHERE status='planned' ORDER BY start_time ASC`
 - `get_events(...)`、`get_event_by_id(...)`：SELECT * 已自动带出 status，无需改
+- **不改** `update_event` 的 allowed 集合——目前没有工具需要改 status，等真有需求再加
 
 ---
 
@@ -174,8 +189,9 @@ main 上 tools.py **没有** appointment 工具，不用删。
 
 ## 7. 其他模块影响
 
-- `bot/scheduler.py`：不引用 appointment，无改动。planned event 不触发推送——AI 需要到点提醒就自己 `set_reminder`。
-- `bot/merge.py`：**需要改**（见 §4 末段，只对 status IS NULL 做合并）
+- `bot/scheduler.py`：无改动。planned event 不触发推送——AI 需要到点提醒就自己 `set_reminder`。
+- `bot/merge.py`：**不改**。`merge_events` 本就只保留固定字段、不关心 status。过滤发生在 `api/server.py` 的 `/api/timeline` handler——只把 `status IS NULL` 的 raw event 送进 merge，planned / cancelled 原样直通返回。
+- `api/server.py::get_projects_heatmap`：过滤掉 `status is not None` 的行——planned Focus 不应计入真实时长
 - `.claude/CLAUDE.md`（main 版本——无 appointment 行）：
   - 术语表 `event` 行加一句："`status` 可空：NULL=已发生；`planned`=未来虚 event（timeline 上的 dummy，到场型安排走这个）；`cancelled`=取消的 planned（仍展示）"
   - 原则段/模块表如有 "有时间点的安排必须入 deadline" 之类表述，补 "或带 planned 状态的 timeline event"
@@ -189,12 +205,11 @@ main 上 tools.py **没有** appointment 工具，不用删。
 分 3 个 commit，每个都保证 app 可启动：
 
 1. **`feat(events): add planned status for dummy future events`**
-   - `bot/database.py`：events 表 ALTER + add_event 加 status + update_event allowed 加 status + 新 CRUD（cancel_planned_event / get_planned_events）
-   - `bot/tools.py`：log_timeline_event 加 status 参数 + 新 cancel_planned_event + 白名单
+   - `bot/database.py`：events 表 ALTER + add_event 加 status + 新 CRUD（cancel_planned_event / get_planned_events）
+   - `bot/tools.py`：log_timeline_event 加 status 参数 + 新 cancel_planned_event（白名单不改）
    - `bot/ai_engine_base.py`：`_execute_tool` 新分支 + `_build_prompt` 注入 planned_events
    - `bot/prompts.py`：新 LABEL_PLANNED + _format_planned_events + PromptParts.planned_events + build_prompt + TOOLS_SECTION 补 Planned event 子段
-   - `bot/merge.py`：只合并 status IS NULL 的行
-   - `api/server.py`：timeline/events 响应自然带 status（SELECT * 即可，无改动或仅确认字段未被过滤）
+   - `api/server.py`：/api/timeline 过滤 status IS NULL 走 merge，planned/cancelled 直通；/api/projects/heatmap 过滤 status is not None
    - `.claude/CLAUDE.md`：术语表 / 动态注入段
 
 2. **`feat(frontend): render planned and cancelled events on timeline`**
@@ -228,8 +243,7 @@ bot/database.py                              # events 加 status + add_event 加
 bot/tools.py                                 # log_timeline_event 加 status + cancel_planned_event
 bot/ai_engine_base.py                        # _execute_tool + _build_prompt
 bot/prompts.py                               # LABEL_PLANNED / _format_planned_events / PromptParts / TOOLS_SECTION
-bot/merge.py                                 # 只合并 status IS NULL
-api/server.py                                # 确认 timeline/events 带 status
+api/server.py                                # /api/timeline 过滤 + heatmap 过滤
 frontend/src/app/App.tsx                     # 清理 /api/appointments 残迹
 frontend/src/app/components/ItemList.tsx     # 删 appointment type 分支
 frontend/src/app/components/MultiLaneTimeline.tsx   # 核心新视觉：三状态区分
