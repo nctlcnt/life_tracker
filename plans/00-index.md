@@ -4,13 +4,20 @@
 > 规则: 此文件是唯一入口,任何 plan 变动都要同步这里
 > 技术难题沉淀见 [devlog.md](devlog.md)
 
+## 近期计划更新
+
+> 最近 7 天有改动的 plan 文件：
+> - `plan-appointment-into-planned-event.md` — 2026-04-22 多次修订（分支核查 + plan 最终化），PR #8 已合入 main，功能收尾
+> - `plan-2026Q2-consolidation.md` — 2026-04-23 新建（Q2 整合重构总纲 + Phase 2 dispatch 成本估算完成）
+> - `plan-prompt-new.md` — 归档（落地完成），proactive prompt 已按 provider 分离
+> - `Plan-energy.md` — 归档（energy_type 撤销）
+
 ## 🎯 本周焦点 (最多 3 个)
 
 当前正在投入精力的,超过 3 个说明注意力分散了。
 
-- [2026 Q2 整合重构](plan-2026Q2-consolidation.md) — 四阶段总纲(Notes+Memory / Flash+Smart 分发 / 主动询问重写 / 精力槽),起 Phase 1
-- [planned-event 支持](plan-appointment-into-planned-event.md) — 后端 + 三态视觉已合入 main (PR #8),前端删除按钮刚补,收尾中
-- [Prompt 重构](plan-prompt-new.md) — 6 段正交 section + chat/poll unify 已落地,仍在观察 cache 命中与前缀识别稳定性
+- [2026 Q2 整合重构](plan-2026Q2-consolidation.md) — 四阶段总纲；Phase 2 离线成本估算已跑出(见 dispatch-cost-estimate.md，人工标注 23.3% 需工具，always_smart+Sonnet ≈$12.6/月)，Phase 1 准备起步
+- [Prompt 重构](plan-prompt-new.md) — 6 段正交 section + chat/poll unify 已落地；proactive prompt 已按 provider 分离，仍在观察 cache 命中与前缀识别稳定性
 
 ## 🟢 进行中 (active)
 
@@ -38,6 +45,8 @@
 
 只保留最近的,老的直接删,**有 git log 作证就够了**。
 
+- 2026-04-23 ✅ dispatch 成本离线估算脚本 + 人工标注工具 (`c8b7126`)
+- 2026-04-23 ✅ proactive prompt 按 provider 分离 + `get_proactive_prompt()` (`18b7da6`)
 - 2026-04-23 ✅ planned-event 前端删除按钮 (`d2eccc9`)
 - 2026-04-22 ✅ planned-event 后端 + 前端三态视觉 (PR #8 合入 main)
 - 2026-04-22 ✅ RhythmView 新视图 + 五 Tab 导航 (`f388040`)
@@ -46,8 +55,6 @@
 - 2026-04-21 ✅ AI Preset 管理 `/model` `/fallback` + autocomplete (`f15ffb4`)
 - 2026-04-21 ✅ 工具描述大幅瘦身 (`0d3863f`)
 - 2026-04-21 ✅ SILENT 消息处理 + text chunk pipeline 优化 (`6e925e3`)
-- 2026-04-18 ✅ Prompt 结构性重构:6 段正交 section + chat/poll unify
-- 2026-04-18 ✅ `energy_type` chill/drain 子标签整体撤销
 
 ## 🪦 已归档 (archive 链接,不展开)
 
