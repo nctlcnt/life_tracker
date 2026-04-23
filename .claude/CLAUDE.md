@@ -9,6 +9,30 @@ When working with this codebase, please keep the following in mind:
 ## ui style
 Clean, gentle aesthetic with Morandi-inspired muted tones — soft grays, dusty pinks, sage greens, and warm beiges. Use generous whitespace to let content breathe. Avoid harsh contrasts or saturated colors. Reference `frontend/src/styles/theme.css` for defined colors and fonts.
 
+plan文件夹整理方案：
+三类文件的生命周期规则
+类型 什么时候 建什么时候动 什么时候死
+idea 灵感来了 2分钟写完几乎不改,想补充就直接在下面加段落 升级成 spec 时整体删掉
+spec 决定要做这个功能了 只增量修改,绝不另存为v2 被整体推翻时 → 挪去 archive
+todo 开工前 每天划掉已完成的功能 做完直接删
+
+```
+plans/
+├── 00-index.md          # 总览,项目大脑缓存
+├── ideas/               # 想法池:随便扔,允许混乱
+│   ├── energy-slot.md
+│   ├── gamification.md
+│   └── ...
+├── specs/               # 方案:每个功能当前的"权威版本",只有一份
+│   ├── energy-slot.md
+│   └── ...
+├── todos/               # 执行清单:短命,做完就删
+│   └── energy-slot-layer1.md
+└── archive/             # 坟墓:被推翻的旧版本
+    └── energy-slot-2026-03-15.md
+```
+
+已做的功能放在`./devlog.md`里，按照日期倒序记录，方便回顾和总结。
 ---
 
 ## 项目简介
