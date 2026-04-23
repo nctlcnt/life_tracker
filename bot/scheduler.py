@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from bot.ai_engine import scheduled_action
 from bot.database import Database
 from bot.logger import get_logger
-from bot.prompts import PROACTIVE_PROMPT, REMINDER_PROMPT, BEDTIME_PROMPT
+from bot.prompts import get_proactive_prompt, REMINDER_PROMPT, BEDTIME_PROMPT
 import config
 
 logger = get_logger(__name__)
@@ -152,7 +152,7 @@ class Scheduler:
             return
         async with self._ai_lock:
             try:
-                prompt = PROACTIVE_PROMPT.format(timestamp=timestamp)
+                prompt = get_proactive_prompt(config.get_active().provider).format(timestamp=timestamp)
                 # poll 路径只判断"要不要说话"，历史拉短一点省 token
                 history = await self.fetch_history(limit=8)
                 reply = await scheduled_action(

@@ -215,6 +215,15 @@ project_name 严格优先复用【现有项目列表】，同义即复用。确�
 - 发现历史重复 → delete_timeline_event 删多余的
 - 一句话多活动 → 拆成多条，时间按逻辑排
 
+**Planned event（未来虚 event）**：
+- 她说了一个未来的到场型安排（"明天下午 3 点看牙"、"周五泡澡"、"周六约朋友喝咖啡"）→ log_timeline_event 带 `status="planned"`
+- category 照常按活动性质必填：看牙=Routine，约朋友喝咖啡=Chill，预约学习小组=Focus+project_name
+- **严格区分**：已发生的事件绝对不加 status；未来安排必须加 `status="planned"`
+- 过了时间怎么办：什么都不做。planned 不会自动转真实事件，也别去补 log 真实版，除非她主动汇报"去了"/"没去"
+- 她说"不去了/取消"→ cancel_planned_event（不是 delete——痕迹保留供她回看）
+- 到点要推送提醒？按需单独 set_reminder，planned event 本身不触发推送
+- 读 query_timeline 结果时注意 `status` 字段：`null`=已发生的真实事件，`"planned"`=未发生的虚 event，`"cancelled"`=已取消的虚 event
+
 ## Reminder（set / list / cancel / delete）
 
 set_reminder 是你给自己安排的 follow-up，不是给她的闹钟。到时间 scheduler 唤醒你，你决定说什么。
@@ -277,7 +286,7 @@ class PromptParts:
     Block 2 (stable context)：projects（项目列表几乎不增删）
     Block 3 (memories)：memories（比 projects 变化略频繁，独立成 block 避免
            因记忆更新连带 invalidate Block 2 的 cache）
-    Block 4 (volatile)：ongoing + deadlines + weather（高频变化）
+    Block 4 (volatile)：ongoing + deadlines + planned_events + weather（高频变化）
 
     注意：pending reminders 不再注入 prompt——scheduler 到期自会触发，
     AI 需要去重时主动调 list_reminders。
@@ -301,6 +310,7 @@ class PromptParts:
     # 动态层
     ongoing: str = ""
     deadlines: str = ""
+    planned_events: str = ""
     weather: str = ""
 
     def static_text(self) -> str:
@@ -325,8 +335,8 @@ class PromptParts:
         return self.memories
 
     def dynamic_text(self) -> str:
-        """Block 4：ongoing + deadlines + weather（高频变化）。"""
-        return _join_nonempty(self.ongoing, self.deadlines, self.weather)
+        """Block 4：ongoing + deadlines + planned_events + weather（高频变化）。"""
+        return _join_nonempty(self.ongoing, self.deadlines, self.planned_events, self.weather)
 
     def flatten(self) -> str:
         """拍平为单个字符串（Gemini / Relay 用）。"""
@@ -345,7 +355,7 @@ class PromptParts:
         - Block 1: 静态（identity/user_model/.../tools）
         - Block 2: projects（稳定上下文）
         - Block 3: memories（单独块，记忆更新不影响 Block 2）
-        - Block 4: ongoing + deadlines + weather（高频变化，失效只影响此块）
+        - Block 4: ongoing + deadlines + planned_events + weather（高频变化，失效只影响此块）
         """
         blocks = []
         for text in (
@@ -376,6 +386,7 @@ LABEL_ONGOING = "【当前进行中的事件（end_time 为空）】"
 LABEL_DEADLINES = "【待完成的 Deadline】"
 LABEL_WEATHER = "【今日天气】"
 LABEL_PROJECTS = "【现有项目列表（Focus 用，严格优先复用）】"
+LABEL_PLANNED = "【未来安排（planned events）】"
 
 WEATHER_CONTEXT_SUFFIX = "可以自然地提一下天气，但不要像天气预报一样念数据。"
 
@@ -465,6 +476,25 @@ def _format_deadlines(deadlines: list[dict] | None) -> str:
     return f"{LABEL_DEADLINES}\n" + "\n".join(lines)
 
 
+def _format_planned_events(planned: list[dict] | None) -> str:
+    if not planned:
+        return ""
+    lines = []
+    for e in planned:
+        cat_part = e["category"]
+        if e.get("project_name"):
+            cat_part += f" [{e['project_name']}]"
+        time_part = e["start_time"]
+        if e.get("end_time"):
+            time_part += f" → {e['end_time']}"
+        countdown = format_countdown(e["start_time"])
+        line = f"- [id={e['id']}] {time_part} | {cat_part} | {e['content']} | {countdown}"
+        if e.get("notes"):
+            line += f" | 备注: {e['notes']}"
+        lines.append(line)
+    return f"{LABEL_PLANNED}\n" + "\n".join(lines)
+
+
 def build_prompt(
     mode: str,
     *,
@@ -474,6 +504,7 @@ def build_prompt(
     weather: str | None = None,
     deadlines: list[dict] | None = None,
     projects: list[dict] | None = None,
+    planned_events: list[dict] | None = None,
 ) -> PromptParts:
     """
     一步构建完整的 PromptParts 对象。
@@ -487,6 +518,7 @@ def build_prompt(
     其余参数：从 DB 取来的原始数据，由内部 _format_* 函数格式化。
 
     注意：pending reminders 不再注入 prompt——AI 若需要去重，主动调 list_reminders。
+    cancelled planned events 也不注入——只给前端看，AI 不需要反复感知。
     """
     _ = provider  # 预留参数，暂时未使用
     return PromptParts(
@@ -501,6 +533,7 @@ def build_prompt(
         deadlines=_format_deadlines(deadlines),
         projects=_format_projects(projects),
         ongoing=_format_ongoing(ongoing),
+        planned_events=_format_planned_events(planned_events),
         weather=_format_weather(weather),
     )
 
@@ -559,9 +592,26 @@ def build_tool_round_hint(tool_names_called) -> str:
 # AI 看到"[内部触发…]"/"[约定跟进触发…]"等前缀就知道当前是主动轮询。
 
 # 默认"找话聊"的轮询模板——SILENT 只作例外情形
-PROACTIVE_PROMPT = (
+#
+# 按 provider 分两版：Gemini 走显式 <think> 框架推理，Claude / Relay 直接选项式。
+# 选择逻辑通过 get_proactive_prompt(provider) 暴露给 scheduler。
+
+_PROACTIVE_PROMPT_GEMINI = (
     "[主动聊天 - {timestamp}]\n"
     "请以此框架思考如何接续或开启对话：\n"
+    "1. 距上次聊天有多久？她之前处于什么状态？上次对话后她是否有回应？我现在是否掌握她的最新状态和情绪？"
+    "2. 她的状态是否是进入心流？或者进入睡眠？如果是，优先考虑[SILENT]。"
+    "3. 她是否有需要跟进的待办或 deadline？如果有，优先跟进。跟进时要自然地把它融入对话，不要生硬地像闹钟一样提醒。"
+    "4. 策略选择："
+        "- 接续最新对话"
+        "- 开启新话题（如果上次话题已经聊完了）"
+    "5. 最后输出和她聊什么（结合她的状态和当前聊天氛围）"
+    "ps：若判定当前无话题可聊，请在 <think> 结束后单独输出 [SILENT]。"
+)
+
+_PROACTIVE_PROMPT_CLAUDE = (
+    "[主动聊天 - {timestamp}]\n"
+    "请从以下选择中开启对话：\n"
     "1. 距上次聊天有多久？她之前处于什么状态？上次对话后她是否有回应？我现在是否掌握她的最新状态和情绪？"
     "2. 她是否有需要跟进的待办或 deadline？如果有，优先跟进。跟进时要自然地把它融入对话，不要生硬地像闹钟一样提醒。"
     "3. 策略选择："
@@ -570,6 +620,13 @@ PROACTIVE_PROMPT = (
     "4. 最后输出和她聊什么（结合她的状态和当前聊天氛围）"
     "ps：若判定当前无话题可聊，请在 <think> 结束后单独输出 [SILENT]。"
 )
+
+
+def get_proactive_prompt(provider: str) -> str:
+    """按 provider 返回对应的轮询模板。gemini 走 <think> 框架版，其他走选项式版。"""
+    if provider.lower().strip() == "gemini":
+        return _PROACTIVE_PROMPT_GEMINI
+    return _PROACTIVE_PROMPT_CLAUDE
 
 REMINDER_PROMPT = (
     "[约定跟进触发 - {timestamp}]\n"

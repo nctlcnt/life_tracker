@@ -1,5 +1,5 @@
 import { motion } from 'motion/react';
-import { Check, Circle, Clock, Brain, CalendarClock, CalendarCheck } from 'lucide-react';
+import { Check, Circle, Clock, Brain, CalendarClock } from 'lucide-react';
 
 export interface ListItem {
   id: string;
@@ -14,7 +14,7 @@ export interface ListItem {
 interface ItemListProps {
   title: string;
   items: ListItem[];
-  type: 'memory' | 'reminder' | 'todo' | 'deadline' | 'appointment';
+  type: 'memory' | 'reminder' | 'todo' | 'deadline';
   onToggle?: (id: string) => void;
   maxHeight?: string;
 }
@@ -30,8 +30,6 @@ export function ItemList({ title, items, type, onToggle, maxHeight = '400px' }: 
         return <Circle className="w-4 h-4" />;
       case 'deadline':
         return <CalendarClock className="w-4 h-4" />;
-      case 'appointment':
-        return <CalendarCheck className="w-4 h-4" />;
     }
   };
 
