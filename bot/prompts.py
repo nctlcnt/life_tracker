@@ -592,9 +592,26 @@ def build_tool_round_hint(tool_names_called) -> str:
 # AI 看到"[内部触发…]"/"[约定跟进触发…]"等前缀就知道当前是主动轮询。
 
 # 默认"找话聊"的轮询模板——SILENT 只作例外情形
-PROACTIVE_PROMPT = (
+#
+# 按 provider 分两版：Gemini 走显式 <think> 框架推理，Claude / Relay 直接选项式。
+# 选择逻辑通过 get_proactive_prompt(provider) 暴露给 scheduler。
+
+_PROACTIVE_PROMPT_GEMINI = (
     "[主动聊天 - {timestamp}]\n"
     "请以此框架思考如何接续或开启对话：\n"
+    "1. 距上次聊天有多久？她之前处于什么状态？上次对话后她是否有回应？我现在是否掌握她的最新状态和情绪？"
+    "2. 她的状态是否是进入心流？或者进入睡眠？如果是，优先考虑[SILENT]。"
+    "3. 她是否有需要跟进的待办或 deadline？如果有，优先跟进。跟进时要自然地把它融入对话，不要生硬地像闹钟一样提醒。"
+    "4. 策略选择："
+        "- 接续最新对话"
+        "- 开启新话题（如果上次话题已经聊完了）"
+    "5. 最后输出和她聊什么（结合她的状态和当前聊天氛围）"
+    "ps：若判定当前无话题可聊，请在 <think> 结束后单独输出 [SILENT]。"
+)
+
+_PROACTIVE_PROMPT_CLAUDE = (
+    "[主动聊天 - {timestamp}]\n"
+    "请从以下选择中开启对话：\n"
     "1. 距上次聊天有多久？她之前处于什么状态？上次对话后她是否有回应？我现在是否掌握她的最新状态和情绪？"
     "2. 她是否有需要跟进的待办或 deadline？如果有，优先跟进。跟进时要自然地把它融入对话，不要生硬地像闹钟一样提醒。"
     "3. 策略选择："
@@ -603,6 +620,13 @@ PROACTIVE_PROMPT = (
     "4. 最后输出和她聊什么（结合她的状态和当前聊天氛围）"
     "ps：若判定当前无话题可聊，请在 <think> 结束后单独输出 [SILENT]。"
 )
+
+
+def get_proactive_prompt(provider: str) -> str:
+    """按 provider 返回对应的轮询模板。gemini 走 <think> 框架版，其他走选项式版。"""
+    if provider.lower().strip() == "gemini":
+        return _PROACTIVE_PROMPT_GEMINI
+    return _PROACTIVE_PROMPT_CLAUDE
 
 REMINDER_PROMPT = (
     "[约定跟进触发 - {timestamp}]\n"
