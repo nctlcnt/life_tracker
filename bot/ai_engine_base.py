@@ -133,6 +133,7 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
             end_time=args.get("end_time"),
             content=args["content"],
             category=args.get("category", "uncategorized"),
+            notes=args.get("notes"),
             session_id=args.get("session_id"),
             is_parallel=False,
             project_name=args.get("project_name"),
@@ -175,6 +176,13 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
 
     elif tool_name == "update_timeline_event":
         fields = {k: args[k] for k in ("end_time", "content", "category", "project_name") if k in args}
+        # notes 追加模式：新 notes 拼接到已有内容后面
+        if "notes" in args and args["notes"]:
+            existing = db.get_event_by_id(args["event_id"])
+            if existing and existing.get("notes"):
+                fields["notes"] = existing["notes"] + "\n" + args["notes"]
+            else:
+                fields["notes"] = args["notes"]
         ok = db.update_event(args["event_id"], **fields)
         if ok:
             return {"success": True, "message": "事件已更新"}
@@ -205,26 +213,6 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
     elif tool_name == "update_memory":
         db.update_memory(args["memory_id"], args["content"])
         return {"status": "ok"}
-
-    elif tool_name == "add_note":
-        from datetime import datetime, timezone, timedelta
-        # 默认挂今天的 AEST 本地日期
-        aest_today = datetime.now(timezone(timedelta(hours=10))).date().isoformat()
-        date = args.get("date") or aest_today
-        note_id = db.add_note(date=date, content=args["content"])
-        return {"success": True, "note_id": note_id, "date": date}
-
-    elif tool_name == "update_note":
-        ok = db.update_note(args["note_id"], args["content"])
-        if ok:
-            return {"success": True, "message": "note 已更新"}
-        return {"success": False, "message": f"未找到 note_id={args['note_id']}"}
-
-    elif tool_name == "delete_note":
-        ok = db.delete_note(args["note_id"])
-        if ok:
-            return {"success": True, "message": "note 已删除"}
-        return {"success": False, "message": f"未找到 note_id={args['note_id']}"}
 
     elif tool_name == "add_deadline":
         deadline_id = db.add_deadline(

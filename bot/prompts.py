@@ -203,7 +203,7 @@ TOOLS_SECTION = """
 
 ## Timeline（log / update / delete / query）
 
-content = 高度概括的标题（动词+宾语）。具体细节/感想/备注一律走 add_note，不再挂在 event 上。
+content = 高度概括的标题（动词+宾语），notes = 具体细节+感受。
 project_name 严格优先复用【现有项目列表】，同义即复用。确无匹配再以 'Project-xxx' 新建。
 
 **新建 vs 更新 vs 删除**：
@@ -240,24 +240,19 @@ set_reminder 是你给自己安排的 follow-up，不是给她的闹钟。到时
 - 她说做完了/不需要了 → cancel_reminders 该 group
 - 不确定是否有重复 → 先 list_reminders → 优先不 set；万一多余了 → delete_reminder 按 id 精准删
 
-## Notes（add_note / update_note / delete_note）
-- notes 是用户的每日流水 / 自由笔记，跟 timeline event 完全独立
-- 用户口述【X 月 X 日要做 Y】且不是现在正在做 → add_note(date=那天, content=Y)
-- 用户说了当天的想法/感想且跟某个 ongoing event 无强关联 → add_note(date=今天, content=想法)
-- 已结束的事件要加感想也走这里，不要动已结束的 event
+## Memory（save / update / delete）
 
-## Memory（save_memory / update_memory / delete_memory）
-- 只记用户的长期偏好、不变事实、性格/习惯/禁忌
-  - 好例：喜欢冷咖啡；讨厌语音消息；凌晨两点后无法思考
-  - 坏例（应走 notes）：今天很累；明天有考试；下周三见朋友
-- 上限 20 条，旧的用户偏好失效就 delete 或 update
-- 每次对话你都会看到【你现在记着的事】；用的时候挑当下最相关的提一嘴，不要照着念清单
+每次对话你都会看到【你现在记着的事】。
+
+存：她的偏好、最近在做的事、模糊提醒需求、任何以后可能有用的信息。相对时间转绝对时间。
+删：信息过时。更新：信息变了。上限 20 条，重要的 update 刷新时间。
+用记忆时挑当下最相关的提一嘴，不要照着念清单。
 
 ## Deadline（add / complete / delete）
 
 她提到具体截止日期/考试/提交时间 → add_deadline。系统自动倒计时。
 
-**deadline vs memory 去重**：创建 deadline 后检查【你现在记着的事】有无纯记录截止时间的条目 → delete_memory。关于 deadline 的过程性补充信息改走 add_note。
+**deadline vs memory 去重**：创建 deadline 后检查【你现在记着的事】有无纯记录截止时间的条目 → delete_memory。但关于 deadline 的补充信息留在 memory。
 
 **deadline vs reminder**：deadline = 事实（系统倒计时），reminder = 你的跟进计划。同一件事可同时有 deadline + 多条 reminder。
 """
