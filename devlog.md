@@ -2,6 +2,12 @@
 
 > 从 `00-index.md` 搬出,按时间倒序累积;新条目加在顶部。
 
+## 2026-04-23
+
+- **Proactive Prompt 按 Provider 分版本**（commit `18b7da6`）：`bot/prompts.py` 将原单一 `PROACTIVE_PROMPT` 拆为两个私有变量 `_PROACTIVE_PROMPT_GEMINI`（新增心流/睡眠状态判断分支，显式 `<think>` 推理框架五步结构）和 `_PROACTIVE_PROMPT_CLAUDE`（保留原选项式四步结构），通过 `get_proactive_prompt(provider)` 统一暴露给 `bot/scheduler.py`。动机：Gemini 对显式思考框架指令遵从更稳定，Claude / Relay 走选项式更简洁；两版模板行为差异通过函数封装，调用方无感切换。
+
+- **Dispatch 成本离线估算 + Plans 目录重组**（commit `c8b7126`）：新增 `scripts/estimate_dispatch_cost.py`（384 行），从 `messages` 表拉近 7-14 天用户消息，支持三种打标策略（regex 关键词 / Flash Lite 模型判断 / 人工 spot check），计算 3×3 策略-模型月成本矩阵并输出 Markdown 报告；新增 `scripts/parse_labels.py`（59 行）辅助解析人工标注 JSON。首次成本报告结果（`plans/dispatch-cost-estimate.md`）：7 天 445 条样本，人工标注 23.3% 需要工具调用，`always_smart + Sonnet ≈ $12.6/月`，`conditional_flash` 因 Flash 漏判断率过高风险较大。同步完成 plans 目录重组：删除根目录 `progress.md`，引入 `devlog.md`（技术难题按时间倒序累积）、`plans/00-index.md`（项目大脑缓存 + 当前焦点追踪）、`plans/plan-2026Q2-consolidation.md`（Q2 四阶段整合重构总纲）、`plans/ideas/plan-inspiration.md`（灵感池原始素材）。
+
 ## 2026-04-22
 
 - **RhythmView 新前端视图 + 五 Tab 导航**(commit `f388040`):新增 `frontend/src/app/components/RhythmView.tsx`(625 行)+ `rhythm.css`(506 行),实现 Rhythm 时间管理日视图——三泳道(Chill / Focus / Routine)竖向时间轴 + 精力成本 + 意图块(intent)可视化,Morandi 配色系统。`App.tsx` 同步扩展导航为五 Tab:日 | 周 | Project Overview | 记忆 | Rhythm,其中记忆 Tab 从日视图方块内提升为独立页面,`appointments` state 同步接入但 API 端点待补齐。RhythmView 当前使用 seed 演示数据,尚未对接 `/api/` 真实数据。
