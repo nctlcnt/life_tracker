@@ -48,10 +48,6 @@ TOOLS = [
                         "type": "string",
                         "description": "项目名称，category=Focus 时必填。"
                     },
-                    "notes": {
-                        "type": "string",
-                        "description": "事件的详细信息、感想、心情或备注。包括具体内容（如剧名、菜名）和用户原话感受。"
-                    },
                     "status": {
                         "type": "string",
                         "enum": ["planned"],
@@ -163,7 +159,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "update_timeline_event",
-            "description": "更新一条已有的时间轴事件。notes 会追加到已有内容后面，不会覆盖。",
+            "description": "更新一条已有的时间轴事件。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -187,10 +183,6 @@ TOOLS = [
                     "project_name": {
                         "type": "string",
                         "description": "更新项目名称（category=Focus 时适用）"
-                    },
-                    "notes": {
-                        "type": "string",
-                        "description": "要追加的新信息/感想/备注（会追加到已有 notes 后面，不会覆盖）"
                     }
                 },
                 "required": ["event_id"]
@@ -293,6 +285,69 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "add_note",
+            "description": (
+                "往自由笔记本里加一条。跟 timeline event 完全独立。"
+                "用于：她的感想 / 想法 / 当天的流水备忘 / 已结束事件事后追加的感受。"
+                "默认挂今天（AEST），也可指定过去/未来任意日期。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "笔记内容。"
+                    },
+                    "date": {
+                        "type": "string",
+                        "description": "归属日期 YYYY-MM-DD（悉尼本地）。留空默认今天。"
+                    }
+                },
+                "required": ["content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_note",
+            "description": "覆盖指定 note 的内容。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "note_id": {
+                        "type": "integer",
+                        "description": "要更新的 note id"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "新内容（覆盖，不是追加）"
+                    }
+                },
+                "required": ["note_id", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_note",
+            "description": "删除一条 note。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "note_id": {
+                        "type": "integer",
+                        "description": "要删除的 note id"
+                    }
+                },
+                "required": ["note_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "add_deadline",
             "description": "记录一个 deadline。系统自动计算倒计时并在动态上下文中展示。",
             "parameters": {
@@ -354,13 +409,15 @@ SET_TOOL_NAMES = {
     "log_timeline_event",
     "set_reminder",
     "save_memory",
+    "add_note",
     "add_deadline",
 }
 
-# 随机轮询：主要是聊天、设提醒、管记忆
+# 随机轮询：主要是聊天、设提醒、管记忆、管 notes
 POLL_TOOL_NAMES = {
     "set_reminder", "delete_reminder", "list_reminders",
     "save_memory", "delete_memory", "update_memory",
+    "add_note", "update_note", "delete_note",
     "add_deadline", "complete_deadline", "delete_deadline",
 }
 
@@ -368,6 +425,7 @@ POLL_TOOL_NAMES = {
 REMINDER_TOOL_NAMES = {
     "list_reminders", "cancel_reminders", "delete_reminder",
     "save_memory", "delete_memory", "update_memory",
+    "add_note", "update_note", "delete_note",
 }
 
 # 统一调度入口：合并轮询和提醒的工具集
@@ -412,10 +470,6 @@ TOOLS_ANTHROPIC = [
                     "type": "string",
                     "description": "项目名称，category=Focus 时必填。"
                 },
-                "notes": {
-                    "type": "string",
-                    "description": "事件的详细信息、感想、心情或备注。包括具体内容（如剧名、菜名）和用户原话感受。"
-                },
                 "session_id": {
                     "type": "integer",
                     "description": "如果这是在恢复或继续之前的某个被打断的活动，填入之前那条活动记录的 event_id。如果是全新活动，可以放空。"
@@ -431,7 +485,7 @@ TOOLS_ANTHROPIC = [
     },
     {
         "name": "update_timeline_event",
-        "description": "更新一条已有的时间轴事件。notes 会追加到已有内容后面，不会覆盖。",
+        "description": "更新一条已有的时间轴事件。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -455,10 +509,6 @@ TOOLS_ANTHROPIC = [
                 "project_name": {
                     "type": "string",
                     "description": "更新项目名称（category=Focus 时适用）"
-                },
-                "notes": {
-                    "type": "string",
-                    "description": "要追加的新信息/感想/备注（会追加到已有 notes 后面，不会覆盖）"
                 }
             },
             "required": ["event_id"]
@@ -622,6 +672,60 @@ TOOLS_ANTHROPIC = [
                 }
             },
             "required": ["memory_id", "content"]
+        }
+    },
+    {
+        "name": "add_note",
+        "description": (
+            "往自由笔记本里加一条。跟 timeline event 完全独立。"
+            "用于：她的感想 / 想法 / 当天的流水备忘 / 已结束事件事后追加的感受。"
+            "默认挂今天（AEST），也可指定过去/未来任意日期。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "笔记内容。"
+                },
+                "date": {
+                    "type": "string",
+                    "description": "归属日期 YYYY-MM-DD（悉尼本地）。留空默认今天。"
+                }
+            },
+            "required": ["content"]
+        }
+    },
+    {
+        "name": "update_note",
+        "description": "覆盖指定 note 的内容。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "note_id": {
+                    "type": "integer",
+                    "description": "要更新的 note id"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "新内容（覆盖，不是追加）"
+                }
+            },
+            "required": ["note_id", "content"]
+        }
+    },
+    {
+        "name": "delete_note",
+        "description": "删除一条 note。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "note_id": {
+                    "type": "integer",
+                    "description": "要删除的 note id"
+                }
+            },
+            "required": ["note_id"]
         }
     },
     {

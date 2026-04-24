@@ -87,6 +87,16 @@ class Database:
                 status TEXT DEFAULT 'active',
                 created_at TEXT DEFAULT (datetime('now'))
             );
+
+            -- Notes 表（跟 timeline 解耦的自由笔记 / 每日流水）
+            CREATE TABLE IF NOT EXISTS notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,                  -- YYYY-MM-DD，归属哪一天
+                content TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);
         """)
         conn.commit()
         # 兼容已有数据库：尝试加列，已存在则忽略
@@ -130,9 +140,60 @@ class Database:
         except sqlite3.OperationalError:
             pass
 
+        # notes.source 已废弃：早期 schema 带了 source 列，现统一移除
+        try:
+            conn.execute("DROP INDEX IF EXISTS idx_notes_source")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE notes DROP COLUMN source")
+        except sqlite3.OperationalError:
+            pass
 
         conn.commit()
         conn.close()
+
+        # 一次性迁移：events.notes → notes 表（由 app_state 标志位守卫）
+        self._migrate_event_notes_to_notes_table()
+
+    def _migrate_event_notes_to_notes_table(self):
+        """把 events.notes 里所有非空备注导出到独立的 notes 表。
+        用 app_state 'migrated_event_notes_v1' 守卫，只跑一次。
+        date = start_time 前 10 位（AEST 本地日期），
+        created_at/updated_at 沿用原 event 的 start_time 做粗略时间戳。"""
+        if self.get_state("migrated_event_notes_v1"):
+            return
+        conn = self._get_conn()
+        try:
+            with conn:
+                rows = conn.execute(
+                    "SELECT start_time, notes FROM events "
+                    "WHERE notes IS NOT NULL AND notes != '' "
+                    "ORDER BY id ASC"
+                ).fetchall()
+                inserted = 0
+                for row in rows:
+                    start_time = row["start_time"]
+                    note_content = row["notes"]
+                    if not start_time or not note_content:
+                        continue
+                    date = start_time[:10]
+                    if len(date) != 10:
+                        continue
+                    conn.execute(
+                        "INSERT INTO notes (date, content, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (date, note_content, start_time, start_time)
+                    )
+                    inserted += 1
+                conn.execute(
+                    "INSERT INTO app_state (key, value, updated_at) "
+                    "VALUES ('migrated_event_notes_v1', ?, datetime('now')) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+                    (str(inserted),)
+                )
+        finally:
+            conn.close()
 
     # ============ 时间轴事件 ============
 
@@ -606,3 +667,48 @@ class Database:
         affected = cursor.rowcount
         conn.close()
         return affected
+
+    # ============ Notes（自由笔记 / 每日流水 / AI 摘要）============
+
+    def add_note(self, date: str, content: str) -> int:
+        """添加一条 note。"""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "INSERT INTO notes (date, content) VALUES (?, ?)",
+            (date, content)
+        )
+        conn.commit()
+        note_id = cursor.lastrowid
+        conn.close()
+        return note_id
+
+    def update_note(self, note_id: int, content: str) -> bool:
+        """覆盖式更新 note 内容，同时刷新 updated_at。"""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE notes SET content = ?, updated_at = datetime('now') WHERE id = ?",
+            (content, note_id)
+        )
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
+    def delete_note(self, note_id: int) -> bool:
+        """删除一条 note。"""
+        conn = self._get_conn()
+        cursor = conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
+    def get_notes_by_date(self, date: str) -> list[dict]:
+        """获取某一天的所有 notes，按 created_at 升序。"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM notes WHERE date = ? ORDER BY created_at ASC",
+            (date,)
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
