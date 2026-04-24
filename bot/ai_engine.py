@@ -2,6 +2,7 @@
 AI 引擎路由模块
 每次请求按当前 active preset 动态选后端：
 - claude: Anthropic 原生 API
+- openai: OpenAI 官方 API（用 openai 官方 SDK）
 - relay:  OpenAI 兼容中转站（用 preset.base_url）
 - gemini: Google Gemini 原生 API
 
@@ -26,6 +27,8 @@ def _load_engine(provider: str) -> types.ModuleType:
         import bot.ai_engine_gemini as m
     elif p == "relay":
         import bot.ai_engine_relay as m
+    elif p == "openai":
+        import bot.ai_engine_openai as m
     else:
         import bot.ai_engine_claude as m
     return m
