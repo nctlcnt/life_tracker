@@ -156,6 +156,12 @@ API_PORT: int = int(_cfg.get("server", {}).get("port", 8080))
 # ── 数据库 ─────────────────────────────────────────────────────────────
 DB_PATH: str = os.path.join(os.path.dirname(__file__), "data", "life_tracker.db")
 
+# ── 天气 ───────────────────────────────────────────────────────────────
+# tomorrow.io API；api_key 空时天气模块会静默降级（返回 None，不影响主流程）
+_weather = _cfg.get("weather", {})
+WEATHER_API_KEY: str = _weather.get("api_key", "")
+WEATHER_LOCATION: str = _weather.get("location", "-33.8688,151.2093")  # 默认悉尼
+
 # ── 日志 ───────────────────────────────────────────────────────────────
 _log = _cfg.get("log", {})
 LOG_LEVEL: str = _log.get("level", "INFO")
