@@ -7,17 +7,16 @@
 ## 近期计划更新
 
 > 最近 7 天有改动的 plan 文件：
-> - `plan-appointment-into-planned-event.md` — 2026-04-22 多次修订（分支核查 + plan 最终化），PR #8 已合入 main，功能收尾
-> - `plan-2026Q2-consolidation.md` — 2026-04-23 新建（Q2 整合重构总纲 + Phase 2 dispatch 成本估算完成）
-> - `plan-prompt-new.md` — 归档（落地完成），proactive prompt 已按 provider 分离
-> - `Plan-energy.md` — 归档（energy_type 撤销）
+> - `2-specs/planned-event.md` — 2026-04-22 多次修订（分支核查 + plan 最终化），PR #8 已合入 main，功能收尾
+> - `2-specs/2026Q2-consolidation.md` — 2026-04-23 新建（Q2 整合重构总纲 + Phase 2 dispatch 成本估算完成）；2026-04-25 抽掉原 Phase 1（已推翻）
+> - `4-archive/notes-memory-split-2026-04-25.md` — 2026-04-25 新归档（Q2 原 Phase 1 整体推翻）
 
 ## 🎯 本周焦点 (最多 3 个)
 
 当前正在投入精力的,超过 3 个说明注意力分散了。
 
-- [2026 Q2 整合重构](specs/2026Q2-consolidation.md) — 四阶段总纲(Notes+Memory / Flash+Smart 分发 / 主动询问重写 / 精力槽);Phase 2 离线成本估算已完成(见 ideas/dispatch-cost-estimate.md,人工标注 23.3% 需工具,always_smart+Sonnet ≈$12.6/月),起 Phase 1
-- [planned-event 支持](specs/planned-event.md) — 后端 + 三态视觉已合入 main (PR #8),前端删除按钮刚补,收尾中
+- [2026 Q2 整合重构](2-specs/2026Q2-consolidation.md) — 原四阶段总纲;Phase 1 (Notes+Memory) 已推翻归档;剩余 Phase 2 (Flash+Smart 分发) / Phase 3 (主动询问重写) / Phase 4 (精力槽);Phase 2 离线成本估算已完成(见 1-ideas/dispatch-cost-estimate.md,人工标注 23.3% 需工具,always_smart+Sonnet ≈$12.6/月);下一步先做 Phase 3
+- [planned-event 支持](2-specs/planned-event.md) — 后端 + 三态视觉已合入 main (PR #8),前端删除按钮刚补,收尾中
 
 ## 🟢 进行中 (active)
 
@@ -43,9 +42,10 @@
 
 - [prompt-sections-2026-04-18](archive/prompt-sections-2026-04-18.md) — 6 段正交 section + chat/poll unify,2026-04-18 已落地,文件首行自标 ✅ 归档
 - [energy-2026-04-18](archive/energy-2026-04-18.md) — 精力调度 `energy_type` chill/drain 子标签整体撤销,后续情绪/洞察转 Merlin 路线
-- [event-notes-split-2026-04-23](archive/event-notes-split-2026-04-23.md) — **废止**:原方案把 `events.notes` 拆成 `event_notes` 表挂在 event 上;Q2 Phase 1 改走 daily_notes 独立表,event 不再有 notes 概念
-- [role-split-2026-04-23](archive/role-split-2026-04-23.md) — **部分废止**:Role A/B 拆分被 Q2 Phase 2 的 Flash+Smart 分发取代;Role C 夜间清理并入 Phase 1 的 daily summary cron;阶段 3(主动询问重写)思路保留并入 Phase 3
-- [ai-token-classifier-2026-04-23](archive/ai-token-classifier-2026-04-23.md) — **部分吸收**:Classifier 前置多处理器架构改为"Flash 主聊 + 工具意图 escalate 到 Smart",落地在 Q2 Phase 2
+- [event-notes-split-2026-04-23](4-archive/event-notes-split-2026-04-23.md) — **废止**:原方案把 `events.notes` 拆成 `event_notes` 表挂在 event 上;后续替代方案(daily_notes 独立表)也已推翻,最终保留 `events.notes` 现状
+- [notes-memory-split-2026-04-25](4-archive/notes-memory-split-2026-04-25.md) — **废止**:Q2 原 Phase 1。notes 不需 first-class 化(`events.notes` 够用),memory 不该收紧到"纯偏好"(继续容纳备忘录式内容才是它的实际价值)
+- [role-split-2026-04-23](4-archive/role-split-2026-04-23.md) — **部分废止**:Role A/B 拆分被 Q2 Phase 2 的 Flash+Smart 分发取代;Role C 夜间清理原计划并入 Phase 1 daily summary cron,Phase 1 推翻后整体搁置;阶段 3(主动询问重写)保留并入 Phase 3
+- [ai-token-classifier-2026-04-23](4-archive/ai-token-classifier-2026-04-23.md) — **部分吸收**:Classifier 前置多处理器架构改为"Flash 主聊 + 工具意图 escalate 到 Smart",落地在 Q2 Phase 2
 
 ## 📦 已完成 (done,最近 10 条)
 
