@@ -83,8 +83,10 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
     # cancelled 的不注入——已取消的不需要反复感知，只给前端看
     planned_events = db.get_planned_events()
 
-    # 注意：pending reminders 不再注入 prompt——scheduler 到期自会触发，
-    # AI 需要去重时主动调 list_reminders。
+    # pending reminders 注入 Block 4：让 AI 看到自己已设的 follow-up 队列，
+    # 避免被聊天历史带回去重复 set 同一件事。
+    pending_reminders = db.list_active_reminders()
+
     return build_prompt(
         mode,
         provider=provider,
@@ -94,6 +96,7 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
         deadlines=deadlines or None,
         projects=projects or None,
         planned_events=planned_events or None,
+        pending_reminders=pending_reminders or None,
     )
 
 

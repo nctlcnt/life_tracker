@@ -142,7 +142,7 @@ helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用。
 - **Block 1（静态）**：IDENTITY + USER_MODEL + SYSTEM_MECHANICS + COMMUNICATION + PROTOCOLS + TOOLS_SECTION（几乎不变，~5444 字符）
 - **Block 2（稳定上下文）**：deadlines + projects（低频变化：projects 几乎不增删，deadline 仅在新增/完成时变）
 - **Block 3（记忆）**：memories（独立成 block，避免记忆更新连带 invalidate Block 2 的 cache）
-- **Block 4（高频动态）**：ongoing + deadlines + planned_events + weather
+- **Block 4（高频动态）**：ongoing + pending_reminders + deadlines + planned_events + weather
 
 各引擎消费方式：
 - Claude: `prompt.to_claude_blocks()` → 最多 4 个 cached system block（chat ↔ poll 切换 100% cache hit）
@@ -155,9 +155,12 @@ helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用。
 - 【当前进行中的事件】— `end_time IS NULL` 且 `status IS NULL` 的真实活动（Block 4）
 - 【待完成的 Deadline】— 过滤 active 状态，带倒计时（Block 4）
 - 【未来安排（planned events）】— events 表 `status='planned'` 过滤，按 start_time 升序，带倒计时（Block 4）
+- 【待触发的 Reminder】— `db.list_active_reminders()` 取所有 status='pending' 的，按 trigger_time 升序，带倒计时（Block 4）
 - 【今日天气】— 早上时段调 `bot/weather.py::get_weather_brief()`（Block 4）
 
-**不注入**：pending reminders、cancelled planned events。scheduler 到时间自会触发 reminder，AI 若需要去重主动调 `list_reminders`；cancelled 的只给前端看，AI 不需要反复感知，避免 Block 4 膨胀和 cache invalidate。
+**为什么 pending reminders 注入 Block 4**：聊天历史里"几小时前她说要 xxx"这种触发消息会反复出现在 fetch_history(20) 窗口内，AI 看不到队列状态就容易再 set 一次同款。注入到 Block 4 让 AI 一眼看到自己已设的 follow-up，避免重复 set；也是"主动 follow-up（默认开启）"策略的去重兜底。代价是 Block 4 cache 失效频率上升一点（每次 set/cancel/触发都失效），但 Block 4 本来就是最易变层，影响有限。
+
+**不注入**：cancelled planned events。已取消的只给前端看，AI 不需要反复感知。
 
 ### 调度 Prompt 模板
 

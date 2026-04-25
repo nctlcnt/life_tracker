@@ -228,17 +228,24 @@ project_name 严格优先复用【现有项目列表】，同义即复用。确�
 
 set_reminder 是你给自己安排的 follow-up，不是给她的闹钟。到时间 scheduler 唤醒你，你决定说什么。
 
-**策略**：
+**主动 follow-up（默认开启）**：她提到正在做或要做的事，默认设一个 follow-up 关心进展，不用等她开口要。挑她可能想被关心或容易忘的（洗衣服、洗澡、做饭、烧水、写代码、出门办事、等回复…），不是每件鸡毛蒜皮都跟。
+- "我在洗衣服" → ~1h 后 "衣服洗完没"
+- "去洗澡了" → ~30min 后 "舒服没"
+- "开始写代码" → ~1-2h 后 "进展如何"
+- "等会先去 xxx" → 按事推估时长
+
+**已有的策略**：
 - 她说看两集就回来 → 1.5h 后
 - 先去洗澡 → 30min 后
 - 在刷手机 → 20min 后
 - 提到要做某事 → 今晚或明天跟进
 - deadline 类：多条递进，越临近越密。同一件事共享 group_id
 
-**去重**：
+**去重（看【待触发的 Reminder】列表，那才是真相）**：
+- 列表里已有同一件事的 reminder → 绝对不要再 set，哪怕聊天历史里又出现了那条触发消息
 - 收到 [提醒触发] 后绝对不要再 set 同样的事
-- 她说做完了/不需要了 → cancel_reminders 该 group
-- 不确定是否有重复 → 先 list_reminders → 优先不 set；万一多余了 → delete_reminder 按 id 精准删
+- 她说做完了/不需要了 → cancel_reminders 该 group（或 delete_reminder 按 id 精准删）
+- 列表里没看到才考虑 set。不确定就 list_reminders 复查一遍
 
 ## Memory（save / update / delete）
 
@@ -286,10 +293,11 @@ class PromptParts:
     Block 2 (stable context)：projects（项目列表几乎不增删）
     Block 3 (memories)：memories（比 projects 变化略频繁，独立成 block 避免
            因记忆更新连带 invalidate Block 2 的 cache）
-    Block 4 (volatile)：ongoing + deadlines + planned_events + weather（高频变化）
+    Block 4 (volatile)：ongoing + pending_reminders + deadlines +
+           planned_events + weather（高频变化）
 
-    注意：pending reminders 不再注入 prompt——scheduler 到期自会触发，
-    AI 需要去重时主动调 list_reminders。
+    pending_reminders 注入 Block 4 的目的：让 AI 一眼看到队列里已有什么 follow-up，
+    避免被聊天历史带回去重复 set 同一件事；也让"主动 follow-up"策略有兜底。
 
     Gemini/Relay 用 flatten() 拍平成单个字符串（不参与 prompt caching）。
     """
@@ -309,6 +317,7 @@ class PromptParts:
 
     # 动态层
     ongoing: str = ""
+    pending_reminders: str = ""
     deadlines: str = ""
     planned_events: str = ""
     weather: str = ""
@@ -335,8 +344,14 @@ class PromptParts:
         return self.memories
 
     def dynamic_text(self) -> str:
-        """Block 4：ongoing + deadlines + planned_events + weather（高频变化）。"""
-        return _join_nonempty(self.ongoing, self.deadlines, self.planned_events, self.weather)
+        """Block 4：ongoing + pending_reminders + deadlines + planned_events + weather（高频变化）。"""
+        return _join_nonempty(
+            self.ongoing,
+            self.pending_reminders,
+            self.deadlines,
+            self.planned_events,
+            self.weather,
+        )
 
     def flatten(self) -> str:
         """拍平为单个字符串（Gemini / Relay 用）。"""
@@ -387,6 +402,7 @@ LABEL_DEADLINES = "【待完成的 Deadline】"
 LABEL_WEATHER = "【今日天气】"
 LABEL_PROJECTS = "【现有项目列表（Focus 用，严格优先复用）】"
 LABEL_PLANNED = "【未来安排（planned events）】"
+LABEL_PENDING_REMINDERS = "【待触发的 Reminder（你自己设的 follow-up 队列）】"
 
 WEATHER_CONTEXT_SUFFIX = "可以自然地提一下天气，但不要像天气预报一样念数据。"
 
@@ -476,6 +492,21 @@ def _format_deadlines(deadlines: list[dict] | None) -> str:
     return f"{LABEL_DEADLINES}\n" + "\n".join(lines)
 
 
+def _format_pending_reminders(pending: list[dict] | None) -> str:
+    if not pending:
+        return ""
+    lines = []
+    for r in pending:
+        countdown = format_countdown(r["trigger_time"])
+        head = f"- [id={r['id']}"
+        if r.get("group_id"):
+            head += f", group={r['group_id']}"
+        head += "]"
+        line = f"{head} {r['trigger_time']} | {countdown} | {r.get('priority', 'normal')} | {r['action']}"
+        lines.append(line)
+    return f"{LABEL_PENDING_REMINDERS}\n" + "\n".join(lines)
+
+
 def _format_planned_events(planned: list[dict] | None) -> str:
     if not planned:
         return ""
@@ -505,6 +536,7 @@ def build_prompt(
     deadlines: list[dict] | None = None,
     projects: list[dict] | None = None,
     planned_events: list[dict] | None = None,
+    pending_reminders: list[dict] | None = None,
 ) -> PromptParts:
     """
     一步构建完整的 PromptParts 对象。
@@ -517,8 +549,7 @@ def build_prompt(
     provider: AI 引擎标识（"claude" / "gemini" / "relay"），预留参数。
     其余参数：从 DB 取来的原始数据，由内部 _format_* 函数格式化。
 
-    注意：pending reminders 不再注入 prompt——AI 若需要去重，主动调 list_reminders。
-    cancelled planned events 也不注入——只给前端看，AI 不需要反复感知。
+    注意：cancelled planned events 不注入——只给前端看，AI 不需要反复感知。
     """
     _ = provider  # 预留参数，暂时未使用
     return PromptParts(
@@ -534,6 +565,7 @@ def build_prompt(
         projects=_format_projects(projects),
         ongoing=_format_ongoing(ongoing),
         planned_events=_format_planned_events(planned_events),
+        pending_reminders=_format_pending_reminders(pending_reminders),
         weather=_format_weather(weather),
     )
 
@@ -556,8 +588,8 @@ TOOL_POST_HINTS = {
         "清单里已有 action 相近且 trigger_time 在 ±30 分钟内的条目就不要再 set；"
         "要替换旧的先 delete_reminder（单条）或 cancel_reminders（整组）再 set。"
     ),
-    # set_reminder 后不再做去重自检：每天单独跑一次清理任务统一去重，
-    # 比每次 set 都让模型自查更省 token。
+    # set_reminder 后不做去重自检：pending reminder 列表已经常驻 Block 4
+    # 上下文，模型每次进入新一轮就能看到队列，不需要再 round-trip 一次 list。
 }
 
 
