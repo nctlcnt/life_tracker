@@ -2,6 +2,16 @@
 
 > 从 `00-index.md` 搬出,按时间倒序累积;新条目加在顶部。
 
+## 2026-04-25
+
+- **MCP Bot B Phase 1 完成（只读查询入口）**：新 Discord application 走私聊，与 Bot A 同进程并发；通过 MCP 协议读 Obsidian vault + life-tracker SQLite 只读视图。spec 见 `plans/2-specs/mcp-bot.md`。关键技术决策：
+  - **WAL 兜并发**：`bot/database.py::_get_conn` 加 `PRAGMA journal_mode=WAL`，让 Bot A 写时 Bot B 能并发读且看到一致 snapshot；该模式持久化到 DB 文件，Bot A 后续连接自动也走 WAL（无需在 Bot A 单独配置）。验证通过：`PRAGMA journal_mode` 返回 `wal`，两 bot 同时跑 1 分钟无 sqlite lock 报错。
+  - **两个独立 stdio MCP server 而非合并**：`mcp_bot/obsidian_mcp_server.py` 暴露 search_notes / read_note；`mcp_bot/lifetracker_mcp_server.py` 暴露 9 个 DB 只读工具（含 `weekly_summary` 聚合便捷糖，专门服务"我近一周做了什么"高频问句）。理由：Obsidian server 长期可独立给 Claude Code CLI 用（旧 `obsidian-claude-code.md` spec 方向不浪费），DB server 项目专属。
+  - **MCP client 多 server 合并 + 路由**：`mcp_bot/mcp_client.py` 用 `contextlib.AsyncExitStack` 管理多个 stdio session，启动时拉两 server 的 `list_tools` 合并成 Anthropic 风格 `tools_schema`、按工具名建路由表，name 冲突时抛错（保护设计）。
+  - **agent loop 复用 Bot A 模式但精简**：`mcp_bot/agent.py` 仿 `bot/ai_engine_claude::_call_with_tools` 的 tool_use 循环，简化为单次查询（无 history、无流式、6 轮兜底）。**当前时间注入 user message 头部**而非 system prompt——每次都不同的 wall-clock 若放 system prompt 会破坏将来可能开启的 prompt cache，user message 头部则不影响。
+  - **直接 `from bot.database import Database`**：`lifetracker_mcp_server.py` 复用现有读 API，避免 schema 双写漂移；MVP 阶段只读、风险可控。未来 Bot B 要写时再考虑抽公共模块 + 锁策略（spec 中 Phase 2 占位列了双 writer 并发、scheduler 内存 wakeup 不会自动刷新等已知风险）。
+  - **DM-only 过滤**：`mcp_bot/discord_client.py` 在 `on_message` 检查 `channel.type == ChannelType.private` + `author.id == ALLOWED_USER_ID`，无需新建频道、Bot A 单独配置不变；`allowed_user_id` 顶层复用，不重复配置。Discord 那边需开 `MESSAGE CONTENT INTENT` privileged intent，否则 DM 收到的 `message.content` 是空。
+
 ## 2026-04-23
 
 - **Proactive Prompt 按 Provider 分版本**（commit `18b7da6`）：`bot/prompts.py` 将原单一 `PROACTIVE_PROMPT` 拆为两个私有变量 `_PROACTIVE_PROMPT_GEMINI`（新增心流/睡眠状态判断分支，显式 `<think>` 推理框架五步结构）和 `_PROACTIVE_PROMPT_CLAUDE`（保留原选项式四步结构），通过 `get_proactive_prompt(provider)` 统一暴露给 `bot/scheduler.py`。动机：Gemini 对显式思考框架指令遵从更稳定，Claude / Relay 走选项式更简洁；两版模板行为差异通过函数封装，调用方无感切换。
