@@ -23,15 +23,15 @@
 
 所有建了 spec 但不是本周焦点的。
 
-- [Merlin 精力调度引擎](specs/merlin.md) — v3 架构 + M1–M4+ 路线图,长线
-- [Obsidian 接入](specs/obsidian-claude-code.md) — `query_obsidian` 工具 + MCP server 设计稿,尚未实施
+- [Merlin 精力调度引擎](2-specs/merlin.md) — v3 架构 + M1–M4+ 路线图,长线
+- [Obsidian 接入](2-specs/obsidian-claude-code.md) — `query_obsidian` 工具 + MCP server 设计稿,尚未实施
 
 ## 💡 想法池 (ideas)
 
 没升级成 spec,可能永远不会做。**不要在这里排序,也不要强迫自己处理**。
 
-- [inspiration.md](ideas/inspiration.md) — 8 段原始想法流水,Q2 整合 plan 的源头
-- [dispatch-cost-estimate.md](ideas/dispatch-cost-estimate.md) — Flash+Smart 分发成本调研(Phase 2 决策依据),配套数据 `dispatch-labels.json` / `dispatch-spot-check.txt`
+- [inspiration.md](1-ideas/inspiration.md) — 8 段原始想法流水,Q2 整合 plan 的源头
+- [dispatch-cost-estimate.md](1-ideas/dispatch-cost-estimate.md) — Flash+Smart 分发成本调研(Phase 2 决策依据)
 
 ## 📋 执行清单 (todos)
 
@@ -41,8 +41,8 @@
 
 被推翻或已完成沉淀,**不要在这里排序**。文件名带日期方便排序。
 
-- [prompt-sections-2026-04-18](archive/prompt-sections-2026-04-18.md) — 6 段正交 section + chat/poll unify,2026-04-18 已落地,文件首行自标 ✅ 归档
-- [energy-2026-04-18](archive/energy-2026-04-18.md) — 精力调度 `energy_type` chill/drain 子标签整体撤销,后续情绪/洞察转 Merlin 路线
+- [prompt-sections-2026-04-18](4-archive/prompt-sections-2026-04-18.md) — 6 段正交 section + chat/poll unify,2026-04-18 已落地,文件首行自标 ✅ 归档
+- [energy-2026-04-18](4-archive/energy-2026-04-18.md) — 精力调度 `energy_type` chill/drain 子标签整体撤销,后续情绪/洞察转 Merlin 路线
 - [event-notes-split-2026-04-23](4-archive/event-notes-split-2026-04-23.md) — **废止**:原方案把 `events.notes` 拆成 `event_notes` 表挂在 event 上;后续替代方案(daily_notes 独立表)也已推翻,最终保留 `events.notes` 现状
 - [notes-memory-split-2026-04-25](4-archive/notes-memory-split-2026-04-25.md) — **废止**:Q2 原 Phase 1。notes 不需 first-class 化(`events.notes` 够用),memory 不该收紧到"纯偏好"(继续容纳备忘录式内容才是它的实际价值)
 - [role-split-2026-04-23](4-archive/role-split-2026-04-23.md) — **部分废止**:Role A/B 拆分被 Q2 Phase 2 的 Flash+Smart 分发取代;Role C 夜间清理原计划并入 Phase 1 daily summary cron,Phase 1 推翻后整体搁置;阶段 3(主动询问重写)保留并入 Phase 3
@@ -53,6 +53,10 @@
 
 只保留最近的,老的直接删,**有 git log 作证就够了**。
 
+- 2026-04-25 ✅ pending_reminders 注入 Block 4 + 主动 follow-up 策略默认开启 (`a44fb46`)
+- 2026-04-25 ✅ 前端移除 Memory Tab，导航收为 4 个（日/周/Project/Rhythm）(`a44fb46`)
+- 2026-04-24 ✅ OpenAI 原生引擎 `ai_engine_openai.py` 新增 (`f36f996`)
+- 2026-04-24 ✅ weather 模块改接 tomorrow.io API，支持小时预报 (`4c16475`)
 - 2026-04-23 ✅ dispatch 成本离线估算脚本 + 人工标注工具 (`c8b7126`)
 - 2026-04-23 ✅ proactive prompt 按 provider 分离 + `get_proactive_prompt()` (`18b7da6`)
 - 2026-04-23 ✅ planned-event 前端删除按钮 (`d2eccc9`)
