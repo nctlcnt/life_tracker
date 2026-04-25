@@ -2,6 +2,23 @@
 
 > 从 `00-index.md` 搬出,按时间倒序累积;新条目加在顶部。
 
+## 2026-04-25
+
+- **MCP Bot B Phase 1 探索 + 整体推翻**（commits `465aefb` / `7933b63` 已 revert at `0631972`，详情归档 `plans/4-archive/mcp-bot-2026-04-25.md`）：实施完整 Phase 1（10 步全跑通：WAL、obsidian_search、两个 MCP server、multi-server stdio client、agent loop with 时间注入、DM-only Discord listener、main entry），3 个真实 query 测试通过；随即在与用户讨论计费时撞到三道独立的 TOS / 物理 / 文档边界，整体推翻。沉淀的可复用结论：
+
+  - **Anthropic 反 abuse 政策（2026-02 enforced）禁第三方 app 走订阅 OAuth token**：Agent SDK 强制 `ANTHROPIC_API_KEY`（[issue #559](https://github.com/anthropics/claude-agent-sdk-python/issues/559)），`claude -p` headless 即使登了订阅也强制 API 计费（[issue #43333](https://github.com/anthropics/claude-code/issues/43333)，已有用户 2 天烧 $1800 的真实事故）。规则的 spirit：**任何 Anthropic 一方 client 之外的"程序自动驱动 LLM 调用"都吃 API 账单**——不论用户是不是发起者、不论用什么 SDK 包装。
+  - **MCP stdio 协议物理隔离**：stdio server = 本机子进程，靠 stdin/stdout pipe 通讯；云端跑的 claude.ai/code web 物理够不到本机进程。要让 web 用，server 得改 streamable-http transport + 公网暴露 + auth；且 web 端是否支持用户自定义 remote MCP server **官方文档未写**，需实测，工程量大。
+  - **Slack 一方集成不可类推到 Discord**：Anthropic 的 "Claude Code in Slack" 是 GitHub task delegator（不是聊天界面），"Claude for Slack" 是 chat 但不挂自定义 MCP；Discord 未建一方集成。这是产品决策，没有技术 workaround。
+  - **MCP 协议层对单用户场景无架构价值**：Bot A 用 in-process function dispatch（`bot/tools.py` + `_execute_tool`），Bot B 走 stdio MCP——模型能调的工具集一样、计费方式一样、可靠性反而更低（多两个子进程 + IPC 失败点）。MCP 的真实价值在"让 *外部* LLM client 用你的工具"——单用户单 bot 用不上，新基础设施全是开销。
+  - **真正能同时拿到"手机 UX + 订阅计费 + 自定义 MCP"的路径只有 SSH + CLI claude**：手机 Termius/Blink → Mac → `claude` REPL，`~/.claude/settings.json` 挂 stdio MCP server，零代码工程。
+
+  对未来的指导：再想"我手机 / 第三方平台能不能跑订阅 + 自定义工具"，**先问 "X 是不是 Anthropic 一方建的 client"**——不是就 stop，直接看 SSH 路径。
+
+  附带技术发现（即便方案推翻，部分仍有参考价值）：
+  - SQLite WAL 模式是文件级持久属性（一次 PRAGMA 永久生效），不是会话级；多进程并发读 + 单进程写场景下 reader 不阻塞 writer，是 SQLite 推荐的现代默认。本次因为整体回滚也把 WAL 一并 revert，但作为一般性技术方案在两进程读写场景下值得保留。
+  - FastMCP 自动从 Python 函数签名 + docstring 生成 JSONSchema，省去手写 tool schema 的功夫；如果将来确实要写 MCP server 给 Claude Code CLI 用，可以省一半代码。
+  - Anthropic Python SDK tool_use loop 用 `assistant_content` / `tool_results` 反复 append message 数组的写法，跟 Bot A 现有 `bot/ai_engine_claude::_call_with_tools` 完全同构——agent loop 结构稳定，复用没问题。
+
 ## 2026-04-23
 
 - **Proactive Prompt 按 Provider 分版本**（commit `18b7da6`）：`bot/prompts.py` 将原单一 `PROACTIVE_PROMPT` 拆为两个私有变量 `_PROACTIVE_PROMPT_GEMINI`（新增心流/睡眠状态判断分支，显式 `<think>` 推理框架五步结构）和 `_PROACTIVE_PROMPT_CLAUDE`（保留原选项式四步结构），通过 `get_proactive_prompt(provider)` 统一暴露给 `bot/scheduler.py`。动机：Gemini 对显式思考框架指令遵从更稳定，Claude / Relay 走选项式更简洁；两版模板行为差异通过函数封装，调用方无感切换。

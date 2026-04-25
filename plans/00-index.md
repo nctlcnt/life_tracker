@@ -7,6 +7,7 @@
 ## 近期计划更新
 
 > 最近 7 天有改动的 plan 文件：
+> - `4-archive/mcp-bot-2026-04-25.md` — 2026-04-25 整体推翻（Phase 1 实施全跑通后因 TOS / 物理 / 单用户价值三层边界 revert；详 devlog 同日条目）
 > - `2-specs/planned-event.md` — 2026-04-22 多次修订（分支核查 + plan 最终化），PR #8 已合入 main，功能收尾
 > - `2-specs/2026Q2-consolidation.md` — 2026-04-23 新建（Q2 整合重构总纲 + Phase 2 dispatch 成本估算完成）；2026-04-25 抽掉原 Phase 1（已推翻）
 > - `4-archive/notes-memory-split-2026-04-25.md` — 2026-04-25 新归档（Q2 原 Phase 1 整体推翻）
@@ -46,6 +47,7 @@
 - [notes-memory-split-2026-04-25](4-archive/notes-memory-split-2026-04-25.md) — **废止**:Q2 原 Phase 1。notes 不需 first-class 化(`events.notes` 够用),memory 不该收紧到"纯偏好"(继续容纳备忘录式内容才是它的实际价值)
 - [role-split-2026-04-23](4-archive/role-split-2026-04-23.md) — **部分废止**:Role A/B 拆分被 Q2 Phase 2 的 Flash+Smart 分发取代;Role C 夜间清理原计划并入 Phase 1 daily summary cron,Phase 1 推翻后整体搁置;阶段 3(主动询问重写)保留并入 Phase 3
 - [ai-token-classifier-2026-04-23](4-archive/ai-token-classifier-2026-04-23.md) — **部分吸收**:Classifier 前置多处理器架构改为"Flash 主聊 + 工具意图 escalate 到 Smart",落地在 Q2 Phase 2
+- [mcp-bot-2026-04-25](4-archive/mcp-bot-2026-04-25.md) — **整体推翻**：Phase 1 实施全跑通后，因 Anthropic TOS 禁第三方 app 走订阅 + MCP 单用户无架构价值，整体 revert（commit `0631972`）
 
 ## 📦 已完成 (done,最近 10 条)
 
