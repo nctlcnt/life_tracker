@@ -166,12 +166,3 @@ WEATHER_LOCATION: str = _weather.get("location", "-33.8688,151.2093")  # 默认�
 _log = _cfg.get("log", {})
 LOG_LEVEL: str = _log.get("level", "INFO")
 LOG_FILE: str | None = _log.get("file") or None  # null → 仅输出 stdout
-
-# ── MCP Bot (Bot B) ────────────────────────────────────────────────────
-# 独立 Discord application，只读查询入口；运行 `python -m mcp_bot.main`
-_mcp_bot = _cfg.get("mcp_bot", {})
-MCP_BOT_TOKEN: str = _mcp_bot.get("discord_token", "")
-MCP_BOT_MODEL: str = _mcp_bot.get("model", "claude-sonnet-4-6")
-
-# ── Obsidian ───────────────────────────────────────────────────────────
-OBSIDIAN_VAULT_PATH: str = _cfg.get("obsidian", {}).get("vault_path", "")

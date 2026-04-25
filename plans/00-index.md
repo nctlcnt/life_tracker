@@ -7,7 +7,6 @@
 ## 近期计划更新
 
 > 最近 7 天有改动的 plan 文件：
-> - `2-specs/mcp-bot.md` — 2026-04-25 新建并完成 Phase 1（Bot B 只读查询入口已上线，Bot A 不动；devlog 见同日条目）
 > - `2-specs/planned-event.md` — 2026-04-22 多次修订（分支核查 + plan 最终化），PR #8 已合入 main，功能收尾
 > - `2-specs/2026Q2-consolidation.md` — 2026-04-23 新建（Q2 整合重构总纲 + Phase 2 dispatch 成本估算完成）；2026-04-25 抽掉原 Phase 1（已推翻）
 > - `4-archive/notes-memory-split-2026-04-25.md` — 2026-04-25 新归档（Q2 原 Phase 1 整体推翻）
@@ -24,7 +23,7 @@
 所有建了 spec 但不是本周焦点的。
 
 - [Merlin 精力调度引擎](specs/merlin.md) — v3 架构 + M1–M4+ 路线图,长线
-- [Obsidian 接入](specs/obsidian-claude-code.md) — `query_obsidian` 工具（Bot A 内）尚未实施；MCP server 部分已由 `mcp-bot.md` Phase 1 实现，可复用同一 `obsidian_search.py`
+- [Obsidian 接入](specs/obsidian-claude-code.md) — `query_obsidian` 工具 + MCP server 设计稿,尚未实施
 
 ## 💡 想法池 (ideas)
 
@@ -52,7 +51,6 @@
 
 只保留最近的,老的直接删,**有 git log 作证就够了**。
 
-- 2026-04-25 ✅ MCP Bot B Phase 1（只读查询入口，10 步全部完成；spec `2-specs/mcp-bot.md`，devlog 同日详述）
 - 2026-04-23 ✅ dispatch 成本离线估算脚本 + 人工标注工具 (`c8b7126`)
 - 2026-04-23 ✅ proactive prompt 按 provider 分离 + `get_proactive_prompt()` (`18b7da6`)
 - 2026-04-23 ✅ planned-event 前端删除按钮 (`d2eccc9`)
