@@ -13,7 +13,7 @@
 
 ## 🎯 本周焦点 (最多 3 个)
 
-当前正在投入精力的,超过 3 个说明注意力分散了。
+当前正在投入精力的,详细介绍改动的过程和最新进展，以追踪最近的更新。
 
 - [2026 Q2 整合重构](2-specs/2026Q2-consolidation.md) — 原四阶段总纲;Phase 1 (Notes+Memory) 已推翻归档;剩余 Phase 2 (Flash+Smart 分发) / Phase 3 (主动询问重写) / Phase 4 (精力槽);Phase 2 离线成本估算已完成(见 1-ideas/dispatch-cost-estimate.md,人工标注 23.3% 需工具,always_smart+Sonnet ≈$12.6/月);下一步先做 Phase 3
 - [planned-event 支持](2-specs/planned-event.md) — 后端 + 三态视觉已合入 main (PR #8),前端删除按钮刚补,收尾中
