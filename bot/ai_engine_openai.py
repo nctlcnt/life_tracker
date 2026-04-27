@@ -119,7 +119,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
     for round_idx in range(5):
         kwargs = dict(
             model=model,
-            max_tokens=4096,
+            max_completion_tokens=4096,
             messages=full_messages,
         )
         if tools:
