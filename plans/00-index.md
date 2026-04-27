@@ -53,6 +53,7 @@
 
 只保留最近的,老的直接删,**有 git log 作证就够了**。
 
+- 2026-04-27 ✅ OpenAI 引擎 `max_tokens` 改名 `max_completion_tokens`，兼容新版 API (`d839534`)
 - 2026-04-25 ✅ pending_reminders 注入 Block 4 + 主动 follow-up 策略默认开启 (`a44fb46`)
 - 2026-04-25 ✅ 前端移除 Memory Tab，导航收为 4 个（日/周/Project/Rhythm）(`a44fb46`)
 - 2026-04-24 ✅ OpenAI 原生引擎 `ai_engine_openai.py` 新增 (`f36f996`)
