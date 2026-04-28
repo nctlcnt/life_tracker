@@ -193,9 +193,14 @@ def render(must: list[dict], sampled: list[dict]) -> str:
         "## 标注方式",
         "",
         "把每条前面的 `[ ]` 改成：",
-        "- `[Y]` — SMALL_DECIDE 应该 escalate（需要工具/状态查询/记忆操作）",
+        "- `[Y]` — SMALL_DECIDE 应该 escalate 到大模型",
+        "- `[L]` — 该 escalate，但**小模型独立用 `log_timeline_event` 就能搞定**（L1 候选，"
+        "不需要大模型介入）。POC v1 仍走大模型；此标签为 v2 是否下放该工具收集量化依据",
         "- `[N]` — SMALL_DECIDE 应该直接闲聊回复（情绪、闲扯、persona 反应）",
         "- `[?]` — 不确定，留待讨论",
+        "",
+        "parser 里 `[L]` 计入 `[Y]` 算 SMALL_DECIDE 准确率，"
+        "**同时单独算一个「L1 覆盖率」**。",
         "",
         "**不必参考 `tool_use_proxy`**——那是 prod AI 当时的实际行为，仅供参考。"
         "我们要的是「**理想**情况下小模型该不该 escalate」的判断，可能与 prod 当时不一致。",

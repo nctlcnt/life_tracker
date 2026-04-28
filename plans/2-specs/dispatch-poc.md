@@ -312,6 +312,7 @@ turn 3:  user: "走路 20 分钟"
 - **状态信号（PROTOCOLS）放小模型识别还是 prompt 里完全删除**：本 spec 倾向"小模型识别 → 强制 escalate"，但识别准确率未知
 - **决策门槛具体数字**：失真率、准确率、延迟的 threshold 等数据出来后定
 - **通过后推 prod 的路径**：env flag、灰度、A/B？留到决策时再讨论
+- **POC v2: L1 tools 是否下放给小模型**：`log_timeline_event` 在所有写工具里爆炸半径最小（分类错可纠正，远比"漏 reminder"轻），是 L1 候选首选。POC v1 保持小模型无工具以简化失败模式验证；步骤 0 标注表加 `[L]` 标签收集 L1 覆盖率数据。决策依据：v1 跑通后看 escalate 样本里 `[L]` 占比，>40% 值得做 v2，<20% 不做。涉及的新失败模式：category 误判 / project 复用错 / ongoing 调和 / 时间反推
 
 ---
 
