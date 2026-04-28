@@ -31,6 +31,8 @@
 
 ## Phase 2：Dispatch 机制 AB POC（优先级 2）
 
+> **2026-04-28**：本 Phase 的细化设计 + 隔离测试方法论拆到独立 spec [`dispatch-poc.md`](dispatch-poc.md)，由"prod env-flag 切换"调整为"第二 bot 进程隔离测试 → 验证通过再讨论 prod"。本 Phase 总纲保留作为背景上下文，**实际推进以 dispatch-poc.md 为准**。
+
 **目标**：加一个 `DISPATCH_MODE` 开关，开 = 走 Flash（人格/聊天） + Smart（工具/日程）的双模型路径；关 = 现有单模型路径。用户**用开关做每日 AB 对照**（比如奇数日开、偶数日关），观察 token / 体感 / bug。
 
 ### 2.1 架构

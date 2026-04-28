@@ -6,13 +6,19 @@
 
 ## 近期计划更新
 
-> 最近 7 天无 plan 文件改动。
+> 最近 7 天有改动的 plan 文件：
+> - `2-specs/dispatch-poc.md` — 2026-04-28 新建并增补：第二 bot 进程 + 4 份 prompt + ACTIONS/FACTS 协议 + 离线标注先行；增补 escalate_state 多轮粘滞机制（Option b：跳 DECIDE 不跳 PARAPHRASE，对话风格不切换）+ 离线 replay 验证步骤（cache hit / 模型间通讯全程 log）+ 实施步骤重排（先本地 API 验证再上 Discord）
+> - `4-archive/mcp-bot-2026-04-25.md` — 2026-04-25 整体推翻（Phase 1 实施全跑通后因 TOS / 物理 / 单用户价值三层边界 revert；详 devlog 同日条目）
+> - `2-specs/planned-event.md` — 2026-04-22 多次修订（分支核查 + plan 最终化），PR #8 已合入 main，功能收尾
+> - `2-specs/2026Q2-consolidation.md` — 2026-04-23 新建（Q2 整合重构总纲 + Phase 2 dispatch 成本估算完成）；2026-04-25 抽掉原 Phase 1（已推翻）
+> - `4-archive/notes-memory-split-2026-04-25.md` — 2026-04-25 新归档（Q2 原 Phase 1 整体推翻）
 
 ## 🎯 本周焦点 (最多 3 个)
 
 当前正在投入精力的,详细介绍改动的过程和最新进展，以追踪最近的更新。
 
-- [2026 Q2 整合重构](2-specs/2026Q2-consolidation.md) — 原四阶段总纲;Phase 1 (Notes+Memory) 已推翻归档;剩余 Phase 2 (Flash+Smart 分发) / Phase 3 (主动询问重写) / Phase 4 (精力槽);Phase 2 离线成本估算已完成(见 1-ideas/dispatch-cost-estimate.md,人工标注 23.3% 需工具,always_smart+Sonnet ≈$12.6/月);下一步先做 Phase 3
+- [Dispatch POC 双层架构](2-specs/dispatch-poc.md) — 设计本周新立;隔离测试频道 + 第二 bot 进程,prod 主路径不动;关键词 pre-filter + 4 份 prompt + ACTIONS/FACTS/ESCALATE_STATE 三段输出协议 + escalate_state 多轮粘滞(Option b 不切换对话风格);下一步：步骤 0 离线标注 ~50 条样本(JSONL 已盘点 226 条可抽)
+- [2026 Q2 整合重构](2-specs/2026Q2-consolidation.md) — 原四阶段总纲;Phase 1 (Notes+Memory) 已推翻归档;Phase 2 (Flash+Smart 分发) 细化设计落地到独立 spec dispatch-poc.md;剩余 Phase 3 (主动询问重写) / Phase 4 (精力槽)
 - [planned-event 支持](2-specs/planned-event.md) — 后端 + 三态视觉已合入 main (PR #8),前端删除按钮刚补,收尾中
 
 ## 🟢 进行中 (active)
