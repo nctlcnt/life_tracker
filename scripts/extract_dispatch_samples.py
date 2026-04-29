@@ -194,8 +194,10 @@ def render(must: list[dict], sampled: list[dict]) -> str:
         "",
         "把每条前面的 `[ ]` 改成：",
         "- `[Y]` — SMALL_DECIDE 应该 escalate 到大模型",
-        "- `[L]` — 该 escalate，但**小模型独立用 `log_timeline_event` 就能搞定**（L1 候选，"
-        "不需要大模型介入）。POC v1 仍走大模型；此标签为 v2 是否下放该工具收集量化依据",
+        "- `[L]` — 该 escalate，但**小模型用受限的 `update_timeline_event(notes 追加)` 就够了**"
+        "（L1 候选）。严格条件：当前有且仅有一个 ongoing event + 用户在叙述这个 event 的细节 + "
+        "**不涉及时间/category/project 变更**（小模型只允许 append notes 文字，不能动其他字段）。"
+        "POC v1 仍走大模型；此标签为 v2 是否下放该工具收集量化依据",
         "- `[N]` — SMALL_DECIDE 应该直接闲聊回复（情绪、闲扯、persona 反应）",
         "- `[?]` — 不确定，留待讨论",
         "",
