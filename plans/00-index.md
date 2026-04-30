@@ -1,6 +1,6 @@
 # 项目大脑缓存
 
-> 最后整理: 2026-04-29
+> 最后整理: 2026-04-30
 > 规则: 此文件是唯一入口,任何 plan 变动都要同步这里
 > 技术难题沉淀见 [devlog.md](../devlog.md)
 
@@ -8,7 +8,6 @@
 
 > 最近 7 天有改动的 plan 文件：
 > - `4-archive/mcp-bot-2026-04-25.md` — 2026-04-25 整体推翻（Phase 1 实施全跑通后因 TOS / 物理 / 单用户价值三层边界 revert；详 devlog 同日条目）
-> - `2-specs/planned-event.md` — 2026-04-22 多次修订（分支核查 + plan 最终化），PR #8 已合入 main，功能收尾
 > - `2-specs/2026Q2-consolidation.md` — 2026-04-23 新建（Q2 整合重构总纲 + Phase 2 dispatch 成本估算完成）；2026-04-25 抽掉原 Phase 1（已推翻）
 > - `4-archive/notes-memory-split-2026-04-25.md` — 2026-04-25 新归档（Q2 原 Phase 1 整体推翻）
 
