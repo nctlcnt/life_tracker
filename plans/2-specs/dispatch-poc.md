@@ -207,26 +207,33 @@ turn 3:  user: "走路 20 分钟"
 
 **整体策略**：本地 API 先验证 → 通过再上 Discord。前 4 步全程不需要 bot 进程。
 
-### 步骤 0（先做）：离线标注 escalation 触发样本
+> **进度（2026-05-01 暂停）**：步骤 0 + 1 已完成；步骤 2 起未开工。所有产出在 `feature/dispatch-poc` 分支，HEAD `2c30ad3`。
 
-**先做这一步，不要直接写 prompt**。从 prod 的 `bot/test_mode.py` 抓的 JSONL（已盘点：26 个文件，226 条唯一用户消息）里抽样人工标"该 escalate / 不该 escalate"。建议抽样：
+### ✅ 步骤 0：离线标注 escalation 触发样本（完成 2026-04-29）
 
-- 必标层：23 条关键词命中样本（"提醒/记一下/明天/deadline" 等显式工具意图）
-- 采样层：从 203 条灰区里随机抽 30 条（闲聊/情绪/状态信号/弱意图）
-- 共 ~50 条，作为 SMALL_DECIDE 的回归集
+最终产出（commits `51d3ad9` → `aedaafa`）：
 
-产出：
+- `scripts/extract_dispatch_samples.py` — 从 26 个 JSONL（226 条唯一用户消息）抽 33 条关键词命中 + 30 条灰区随机（seed=42），生成带 `[Y]/[L]/[N]/[?]` checkbox 的标注表
+- `scripts/parse_dispatch_labels.py` — markdown 标注 → JSONL fixture + 分布报告
+- `plans/2-specs/dispatch-escalation-samples.md` — 63 条样本人工标完
+- 数据 `data/fixtures/escalation-labeled.jsonl`（gitignored，可由 parser 重新生成）
 
-- `scripts/extract_dispatch_samples.py`：从 JSONL 抽样 + 输出 markdown 标注表（含当时 AI 的实际响应作为 ground-truth proxy）
-- `plans/2-specs/dispatch-escalation-triggers.md`：标注结果 + 触发清单白话总结
+**实际分布**：Y=35（55.6%）/ L=10（15.9%）/ N=7（11.1%）/ ?=9（14.3%）/ 未标注=2（按 ? 处理）
 
-### 步骤 1：4 份 prompt 草稿
+**关键数据**：L1 覆盖率 = 10/45 = **22.2%**，落在 spec 写的 20-40% 灰区——POC v1 不做 L1 tools，等 v1 验证通过后看延迟/成本再决定。
 
-依据步骤 0 的标注集写：
+### ✅ 步骤 1：4 份 prompt 草稿（完成 2026-05-01）
 
-- `bot/prompts.py` 加 `SMALL_DECIDE` / `SMALL_PARAPHRASE` / `BIG_WORKER` 三个常量（或拆 `prompts_dispatch.py`）
-- ESCALATION_TRIGGER_LIST 用白话写在 SMALL_DECIDE 内
-- BIG_WORKER 输出格式约束：明确要求三段 markdown（`[ESCALATE_STATE]` / `[ACTIONS]` / `[FACTS_TO_CONVEY]`），SMALL_PARAPHRASE 只读 FACTS
+最终产出（commit `2c30ad3`）：
+
+- `bot/prompts_dispatch.py`（342 行）独立模块，复用 `bot/prompts.py` 里的 IDENTITY / USER_MODEL / COMMUNICATION / SYSTEM_MECHANICS / TOOLS_SECTION
+- `SMALL_DECIDE`（2524 字符）：人格 + 6 类触发清单 + 输出格式规约（`[ESCALATE]` 一行 OR 直接闲聊文本）
+- `build_small_paraphrase_prompt(facts) → str`：FACTS 嵌入 system prompt 末尾（不污染 messages），strict no-mutation 规则 + `[SILENT]` 透传
+- `build_big_worker_parts(...) → PromptParts`：identity 改为后台 worker 角色、user_model 用精简事实版、tools = TOOLS_SECTION + 三段输出 spec（含一个完整例子）
+- Parsers：`parse_small_decide_output`（escalate 容错，第一行匹配即可）、`parse_big_worker_output`（缺字段 fail-safe close）、`is_silent` 属性
+- 6 类触发清单白话内容嵌在 SMALL_DECIDE 里（依据步骤 0 的 45 条 escalate 样本提炼）
+
+**未跑通条件**：尚未跑过任何模型，仅做了 import + parser smoke test。真实模型行为留到步骤 3 离线 replay 验证。
 
 ### 步骤 2：dispatch engine
 

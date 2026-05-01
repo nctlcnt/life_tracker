@@ -7,6 +7,7 @@
 ## 近期计划更新
 
 > 最近 7 天有改动的 plan 文件：
+> - `2-specs/dispatch-poc.md` — 2026-05-01 步骤 0 + 1 完成后**暂停**，feature 分支保留：步骤 0（63 条人工标注，L1 覆盖率 22.2% 落在灰区）+ 步骤 1（`bot/prompts_dispatch.py` 4 份 prompt + parsers，342 行）。剩余步骤 2-7 未开工
 > - `2-specs/dispatch-poc.md` — 2026-04-28 新建并增补：第二 bot 进程 + 4 份 prompt + ACTIONS/FACTS 协议 + 离线标注先行；增补 escalate_state 多轮粘滞机制（Option b：跳 DECIDE 不跳 PARAPHRASE，对话风格不切换）+ 离线 replay 验证步骤（cache hit / 模型间通讯全程 log）+ 实施步骤重排（先本地 API 验证再上 Discord）
 > - `4-archive/mcp-bot-2026-04-25.md` — 2026-04-25 整体推翻（Phase 1 实施全跑通后因 TOS / 物理 / 单用户价值三层边界 revert；详 devlog 同日条目）
 > - `2-specs/planned-event.md` — 2026-04-22 多次修订（分支核查 + plan 最终化），PR #8 已合入 main，功能收尾
@@ -17,14 +18,14 @@
 
 当前正在投入精力的,详细介绍改动的过程和最新进展，以追踪最近的更新。
 
-- [Dispatch POC 双层架构](2-specs/dispatch-poc.md) — 设计本周新立;隔离测试频道 + 第二 bot 进程,prod 主路径不动;关键词 pre-filter + 4 份 prompt + ACTIONS/FACTS/ESCALATE_STATE 三段输出协议 + escalate_state 多轮粘滞(Option b 不切换对话风格);下一步：步骤 0 离线标注 ~50 条样本(JSONL 已盘点 226 条可抽)
-- [2026 Q2 整合重构](2-specs/2026Q2-consolidation.md) — 原四阶段总纲;Phase 1 (Notes+Memory) 已推翻归档;Phase 2 (Flash+Smart 分发) 细化设计落地到独立 spec dispatch-poc.md;剩余 Phase 3 (主动询问重写) / Phase 4 (精力槽)
+- [2026 Q2 整合重构](2-specs/2026Q2-consolidation.md) — 原四阶段总纲;Phase 1 (Notes+Memory) 已推翻归档;Phase 2 (Flash+Smart 分发) 细化设计落地到 dispatch-poc.md (步骤 0+1 完成后暂停);剩余 Phase 3 (主动询问重写) / Phase 4 (精力槽)
 - [planned-event 支持](2-specs/planned-event.md) — 后端 + 三态视觉已合入 main (PR #8),前端删除按钮刚补,收尾中
 
 ## 🟢 进行中 (active)
 
 所有建了 spec 但不是本周焦点的。
 
+- [Dispatch POC 双层架构](2-specs/dispatch-poc.md) — **2026-05-01 暂停**,在 `feature/dispatch-poc` 分支 (HEAD `2c30ad3`)。步骤 0 完成 (63 条人工标,L1 覆盖率 22.2%) + 步骤 1 完成 (`bot/prompts_dispatch.py` 4 份 prompt + parsers)。剩余 7 步未开工：步骤 2 dispatch engine → 步骤 3 离线 replay 验证 (核心) → 步骤 4 第二 bot 进程 → 步骤 5 路由 + config → 步骤 6 实测 2 周 → 步骤 7 决策。恢复时直接接步骤 2
 - [Merlin 精力调度引擎](2-specs/merlin.md) — v3 架构 + M1–M4+ 路线图,长线
 - [Obsidian 接入](2-specs/obsidian-claude-code.md) — `query_obsidian` 工具 + MCP server 设计稿,尚未实施
 
