@@ -29,8 +29,8 @@ release:
 	git push origin $(VERSION)
 	@echo ""
 	@echo "Done. GitHub Actions will build and push:"
-	@echo "  ghcr.io/chachaya/life-tracker:$(VERSION)"
-	@echo "  ghcr.io/chachaya/life-tracker:stable"
+	@echo "  ghcr.io/nctlcnt/life_tracker:$(VERSION)"
+	@echo "  ghcr.io/nctlcnt/life_tracker:stable"
 
 ## ── Production deployment (run on the server) ────────────────────────────────
 

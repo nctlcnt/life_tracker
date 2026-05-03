@@ -1,7 +1,7 @@
 # Triggered when you push a version tag: git tag v1.0.0 && git push origin v1.0.0
 # Builds the Docker image and pushes two tags to GitHub Container Registry:
-#   ghcr.io/chachaya/life-tracker:v1.0.0   ← pinned, immutable
-#   ghcr.io/chachaya/life-tracker:stable   ← always points to latest release
+#   ghcr.io/nctlcnt/life_tracker:v1.0.0   ← pinned, immutable
+#   ghcr.io/nctlcnt/life_tracker:stable   ← always points to latest release
 name: Release
 
 on:
@@ -10,7 +10,7 @@ on:
       - "v*.*.*"
 
 env:
-  IMAGE: ghcr.io/${{ github.repository_owner }}/life-tracker
+  IMAGE: ghcr.io/${{ github.repository_owner }}/life_tracker
 
 jobs:
   build-and-push:

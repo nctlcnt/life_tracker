@@ -76,8 +76,8 @@ GitHub Actions 会自动构建并推送两个镜像标签：
 
 | 标签 | 含义 |
 |------|------|
-| `ghcr.io/chachaya/life-tracker:v1.0.0` | 不可变，永久存档 |
-| `ghcr.io/chachaya/life-tracker:stable` | 始终指向最新稳定版 |
+| `ghcr.io/nctlcnt/life_tracker:v1.0.0` | 不可变，永久存档 |
+| `ghcr.io/nctlcnt/life_tracker:stable` | 始终指向最新稳定版 |
 
 ### 在服务器上部署 / 升级
 

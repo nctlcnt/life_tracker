@@ -10,7 +10,7 @@
 # Pinning an explicit version means you control exactly when to upgrade.
 services:
   app:
-    image: ghcr.io/chachaya/life-tracker:${VERSION:-stable}
+    image: ghcr.io/nctlcnt/life_tracker:${VERSION:-stable}
     ports:
       - "${API_PORT:-8080}:${API_PORT:-8080}"
     env_file: .env
