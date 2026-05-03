@@ -1,13 +1,14 @@
 # 项目大脑缓存
 
-> 最后整理: 2026-05-02
+> 最后整理: 2026-05-03
 > 规则: 此文件是唯一入口,任何 plan 变动都要同步这里
 > 技术难题沉淀见 [devlog.md](../devlog.md)
 
 ## 近期计划更新
 
 > 最近 7 天有改动的 plan 文件：
-> - `2-specs/dispatch-poc.md` — 2026-05-01 步骤 0 + 1 完成后**暂停**，feature 分支保留：步骤 0（63 条人工标注，L1 覆盖率 22.2% 落在灰区）+ 步骤 1（`bot/prompts_dispatch.py` 4 份 prompt + parsers，342 行）。剩余步骤 2-7 未开工
+> - `1-ideas/inspiration.md` — 2026-05-03 新增想法 #9–#15（美食地图/偏好查询系统、memory 强化用户画像、bot 系统消息自动消失、觉察 channel + 轻量状态打标 agent 新思路、prompt 个人信息移出 cache 权衡）
+> - `2-specs/dispatch-poc.md` — 2026-05-01 步骤 0 + 1 完成后**暂停**，产出已合入 main：步骤 0（63 条人工标注，L1 覆盖率 22.2% 落在灰区）+ 步骤 1（`bot/prompts_dispatch.py` 4 份 prompt + parsers，342 行）。剩余步骤 2-7 未开工
 > - `2-specs/dispatch-poc.md` — 2026-04-28 新建并增补：第二 bot 进程 + 4 份 prompt + ACTIONS/FACTS 协议 + 离线标注先行；增补 escalate_state 多轮粘滞机制（Option b：跳 DECIDE 不跳 PARAPHRASE，对话风格不切换）+ 离线 replay 验证步骤（cache hit / 模型间通讯全程 log）+ 实施步骤重排（先本地 API 验证再上 Discord）
 > - `4-archive/mcp-bot-2026-04-25.md` — 2026-04-25 整体推翻（Phase 1 实施全跑通后因 TOS / 物理 / 单用户价值三层边界 revert；详 devlog 同日条目）
 > - `2-specs/planned-event.md` — 2026-04-22 多次修订（分支核查 + plan 最终化），PR #8 已合入 main，功能收尾
@@ -25,7 +26,7 @@
 
 所有建了 spec 但不是本周焦点的。
 
-- [Dispatch POC 双层架构](2-specs/dispatch-poc.md) — **2026-05-01 暂停**,在 `feature/dispatch-poc` 分支 (HEAD `2c30ad3`)。步骤 0 完成 (63 条人工标,L1 覆盖率 22.2%) + 步骤 1 完成 (`bot/prompts_dispatch.py` 4 份 prompt + parsers)。剩余 7 步未开工：步骤 2 dispatch engine → 步骤 3 离线 replay 验证 (核心) → 步骤 4 第二 bot 进程 → 步骤 5 路由 + config → 步骤 6 实测 2 周 → 步骤 7 决策。恢复时直接接步骤 2
+- [Dispatch POC 双层架构](2-specs/dispatch-poc.md) — **2026-05-01 暂停**,产出已合入 main (step 1 commit `b06e283`)。步骤 0 完成 (63 条人工标,L1 覆盖率 22.2%) + 步骤 1 完成 (`bot/prompts_dispatch.py` 4 份 prompt + parsers)。剩余 7 步未开工：步骤 2 dispatch engine → 步骤 3 离线 replay 验证 (核心) → 步骤 4 第二 bot 进程 → 步骤 5 路由 + config → 步骤 6 实测 2 周 → 步骤 7 决策。恢复时直接接步骤 2
 - [Merlin 精力调度引擎](2-specs/merlin.md) — v3 架构 + M1–M4+ 路线图,长线
 - [Obsidian 接入](2-specs/obsidian-claude-code.md) — `query_obsidian` 工具 + MCP server 设计稿,尚未实施
 
@@ -33,7 +34,7 @@
 
 没升级成 spec,可能永远不会做。**不要在这里排序,也不要强迫自己处理**。
 
-- [inspiration.md](1-ideas/inspiration.md) — 8 段原始想法流水,Q2 整合 plan 的源头
+- [inspiration.md](1-ideas/inspiration.md) — 15 段原始想法流水（#2–#8 是 Q2 整合 plan 的源头；#9–#15 为 2026-05-03 新增）
 - [dispatch-cost-estimate.md](1-ideas/dispatch-cost-estimate.md) — Flash+Smart 分发成本调研(Phase 2 决策依据)
 
 ## 📋 执行清单 (todos)
@@ -56,6 +57,9 @@
 
 只保留最近的,老的直接删,**有 git log 作证就够了**。
 
+- 2026-05-03 ✅ deploy 修复：ghcr 镜像引用统一到 `nctlcnt/life_tracker`（release.yml / Makefile / docker-compose.prod.yml 全部对齐，VPS 拉取恢复正常）(`d8e9462`)
+- 2026-05-01 ✅ dispatch-poc 步骤 1：`bot/prompts_dispatch.py` 4 份 prompt + parsers，342 行，已合入 main (`b06e283`)
+- 2026-04-29 ✅ dispatch-poc 步骤 0：63 条样本人工标注完成 + `scripts/parse_dispatch_labels.py`，L1 覆盖率 22.2% (`f293cf5`)
 - 2026-04-27 ✅ OpenAI 引擎 `max_tokens` 改名 `max_completion_tokens`，兼容新版 API (`d839534`)
 - 2026-04-25 ✅ pending_reminders 注入 Block 4 + 主动 follow-up 策略默认开启 (`a44fb46`)
 - 2026-04-25 ✅ 前端移除 Memory Tab，导航收为 4 个（日/周/Project/Rhythm）(`a44fb46`)
