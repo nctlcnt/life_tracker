@@ -1,0 +1,9 @@
+dbs:
+  - path: /data/life_tracker.db
+    replicas:
+      - type: s3
+        bucket: ${R2_BUCKET}
+        path: life_tracker
+        endpoint: ${R2_ENDPOINT}
+        region: auto
+        force-path-style: true
