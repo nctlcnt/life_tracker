@@ -4,6 +4,7 @@ import { WeekView, getMonday } from './components/WeekView';
 import { MultiLaneTimeline, TimelineEvent } from './components/MultiLaneTimeline';
 import { ProjectOverview } from './components/ProjectOverview';
 import { RhythmView } from './components/RhythmView';
+import { PresetManager } from './components/PresetManager';
 
 // ── 日期格式化 ─────────────────────────────────────────────────
 const DAY_NAMES_FULL = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
@@ -13,7 +14,7 @@ function fmtDateStr(d: Date) {
 }
 
 // ── Tab 类型 ────────────────────────────────────────────────────
-type ViewMode = 'day' | 'week' | 'project' | 'rhythm';
+type ViewMode = 'day' | 'week' | 'project' | 'rhythm' | 'api';
 
 export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('day');
@@ -213,7 +214,7 @@ export default function App() {
         <div className="flex items-center gap-3">
           {/* Tab 切换：日 | 周 | Project Overview | 记忆 */}
           <div className="flex rounded-md border border-border overflow-hidden">
-            {(['day', 'week', 'project', 'rhythm'] as ViewMode[]).map((mode) => (
+            {(['day', 'week', 'project', 'rhythm', 'api'] as ViewMode[]).map((mode) => (
               <button
                 key={mode}
                 onClick={() => setViewMode(mode)}
@@ -229,7 +230,9 @@ export default function App() {
                   ? '周'
                   : mode === 'project'
                   ? 'Project Overview'
-                  : 'Rhythm'}
+                  : mode === 'rhythm'
+                  ? 'Rhythm'
+                  : 'API'}
               </button>
             ))}
           </div>
@@ -278,6 +281,10 @@ export default function App() {
       ) : viewMode === 'rhythm' ? (
         <div className="flex-1 min-h-0 overflow-hidden">
           <RhythmView />
+        </div>
+      ) : viewMode === 'api' ? (
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          <PresetManager />
         </div>
       ) : (
         /* ── 日视图：左 1/4 泳道图 + 右 3/4 ─────────────────── */

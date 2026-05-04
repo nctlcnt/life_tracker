@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+import config
 from bot.database import Database
 from bot.merge import merge_events
 
@@ -16,7 +17,7 @@ app = FastAPI(title="Life Tracker API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # 生产环境应该改为你的前端域名
-    allow_methods=["GET", "DELETE", "PATCH"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     allow_headers=["*"],
 )
 
@@ -203,6 +204,98 @@ async def get_projects_heatmap(days: int = Query(90, description="统计天数�
     }
 
     return {"projects": projects, "dates": dates, "data": data}
+
+
+# ── AI Preset 管理 ──────────────────────────────────────────────────
+# 仅在受信任网络（VPN）下暴露；返回包含 api_key 全文，便于编辑回填。
+
+def _preset_to_dict(p: config.Preset) -> dict:
+    return {
+        "name": p.name,
+        "provider": p.provider,
+        "api_key": p.api_key,
+        "base_url": p.base_url,
+        "model": p.model,
+        "notes": p.notes,
+    }
+
+
+@app.get("/api/presets")
+async def list_api_presets():
+    """列出所有 preset 及当前主/备 preset 名称。"""
+    return {
+        "presets": [_preset_to_dict(p) for p in config.PRESETS.values()],
+        "active": config.get_active_name(),
+        "fallback": config.get_fallback_name(),
+        "supported_providers": list(config.SUPPORTED_PROVIDERS),
+    }
+
+
+@app.post("/api/presets")
+async def create_api_preset(body: dict):
+    """创建一条 preset；body: { name, provider, api_key, base_url, model, notes }"""
+    try:
+        p = config.add_preset(
+            name=body.get("name", ""),
+            provider=body.get("provider", ""),
+            api_key=body.get("api_key", ""),
+            base_url=body.get("base_url", ""),
+            model=body.get("model", ""),
+            notes=body.get("notes", ""),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _preset_to_dict(p)
+
+
+@app.put("/api/presets/{name}")
+async def update_api_preset(name: str, body: dict):
+    """更新 preset 字段；不允许重命名（要改名请删后再加）。"""
+    try:
+        p = config.update_preset(
+            name,
+            provider=body.get("provider"),
+            api_key=body.get("api_key"),
+            base_url=body.get("base_url"),
+            model=body.get("model"),
+            notes=body.get("notes"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _preset_to_dict(p)
+
+
+@app.delete("/api/presets/{name}")
+async def delete_api_preset(name: str):
+    try:
+        config.delete_preset(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "name": name}
+
+
+@app.post("/api/presets/active")
+async def set_active_preset(body: dict):
+    """切换主 preset；body: { name }"""
+    name = body.get("name")
+    if not name:
+        raise HTTPException(status_code=400, detail="缺少 name")
+    try:
+        config.set_active(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "active": config.get_active_name()}
+
+
+@app.post("/api/presets/fallback")
+async def set_fallback_preset(body: dict):
+    """切换 fallback preset；body: { name } 或 { name: null } 关闭。"""
+    name = body.get("name")  # 可为 None 表示关闭
+    try:
+        config.set_fallback(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "fallback": config.get_fallback_name()}
 
 
 @app.get("/api/health")
