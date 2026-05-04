@@ -13,9 +13,9 @@ services:
     image: ghcr.io/nctlcnt/life_tracker:${VERSION:-stable}
     ports:
       - "${API_PORT:-8080}:${API_PORT:-8080}"
-    env_file: .env
     volumes:
       - ./data:/app/data
+      - ./config.json:/app/config.json:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:${API_PORT:-8080}/api/health"]

@@ -13,7 +13,7 @@
 ## 本地开发
 
 ```bash
-cp .env.example .env      # 填入 Token 和 API Key
+cp config.example.json config.json      # 填入 Discord Token、AI API Key 等
 
 # 方式一：直接运行（需要本地有 Python 3.12+ 和 Node/pnpm）
 pip install -r requirements.txt
@@ -29,19 +29,36 @@ make dev                  # 等价于 docker compose up --build
 
 访问 `http://localhost:8080` 查看前端。
 
-## 环境变量
+## 配置
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `DISCORD_TOKEN` | Discord Bot Token | 必填 |
-| `ALLOWED_USER_ID` | Discord 用户 ID（单用户模式） | 必填 |
-| `AI_PROVIDER` | AI 提供商：`claude` / `relay` / `gemini` | `claude` |
-| `AI_API_KEY` | 对应提供商的 API Key | 必填 |
-| `CHAT_MODEL` | 对话模型 | `claude-opus-4-6` |
-| `POLL_MODEL` | 轮询模型 | `claude-3-5-sonnet-latest` |
-| `AI_BASE_URL` | 中转站地址（仅 `relay` 模式） | — |
-| `API_PORT` | FastAPI 端口 | `8080` |
-| `LOG_LEVEL` | 日志级别 | `INFO` |
+所有配置集中在 `config.json`（不进 git、不进镜像，由部署侧挂载）。结构参考 `config.example.json`：
+
+```jsonc
+{
+  "discord": {
+    "token": "...",                  // 必填
+    "allowed_user_id": 0             // 必填，单用户模式
+  },
+  "ai": {
+    "default_preset": "claude-opus", // 必填，必须在 presets 里
+    "default_fallback": "",          // 可选，主 preset 失败时降级用
+    "presets": {                     // 至少一条；运行时用 /model 切换
+      "claude-opus": {
+        "provider": "claude",        // claude / relay / gemini / openai
+        "api_key": "...",
+        "base_url": "",              // 仅 relay 需要
+        "model": "claude-opus-4-6"
+      }
+    }
+  },
+  "server": { "port": 8080 },
+  "weather": { "api_key": "", "location": "-33.8688,151.2093" },  // tomorrow.io；空 key 静默降级
+  "poll": { "min_seconds": 60, "max_seconds": 3600 },
+  "log": { "level": "INFO", "file": null }
+}
+```
+
+运行时通过 Discord 斜杠命令 `/model`、`/fallback` 在 presets 之间切换，状态持久化到 `data/active_preset.json`。
 
 ## 项目结构
 
@@ -57,8 +74,8 @@ make dev                  # 等价于 docker compose up --build
 ├── api/server.py           # FastAPI REST 接口 + 静态文件托管
 ├── frontend/               # React + Vite + TypeScript 前端
 ├── main.py                 # 入口，asyncio.gather 启动所有服务
-├── config.py               # 从环境变量读取配置
-└── data/                   # SQLite 数据库（挂载到容器外）
+├── config.py               # 从 config.json 读取配置 + 运行时 preset 切换
+└── data/                   # SQLite 数据库 + active_preset 状态（挂载到容器外）
 ```
 
 ## Docker 与版本管理
@@ -159,35 +176,28 @@ echo "你的_PAT" | docker login ghcr.io -u 你的GitHub用户名 --password-std
 
 ### 第四步：上传配置文件
 
-在 VPS 上创建项目目录并上传必要文件：
+在 VPS 上创建项目目录：
 
 ```bash
 mkdir -p ~/life-tracker/data
 cd ~/life-tracker
 ```
 
-从本地上传（在本机执行）：
+只需要两个文件落到服务器：`docker-compose.prod.yml`（描述容器怎么跑）和 `config.json`（含密钥，运行时挂载进容器）。最简方式是直接 clone 仓库，再把本地填好的 `config.json` 拷上去：
 
 ```bash
-scp docker-compose.prod.yml Makefile .env.example user@your-server:~/life-tracker/
-```
-
-或者直接在服务器上创建 `.env`：
-
-```bash
-# 在服务器上
+# 服务器上
+git clone git@github.com:nctlcnt/life_tracker.git ~/life-tracker
 cd ~/life-tracker
-cp .env.example .env
-nano .env                              # 填入真实的 Token 和 API Key
+mkdir -p data
+
+# 本地另开终端，把填好密钥的 config.json scp 过去
+scp config.json user@your-server:~/life-tracker/config.json
 ```
 
-`.env` 最少需要填写：
+或者在服务器上 `cp config.example.json config.json` 然后 `nano config.json` 直接填。
 
-```bash
-DISCORD_TOKEN=你的_discord_bot_token
-AI_API_KEY=你的_api_key
-ALLOWED_USER_ID=你的_discord_user_id
-```
+> **必须存在 `~/life-tracker/config.json` 再起容器**。compose 把它以只读方式挂载到 `/app/config.json`，文件不存在 docker 反而会把它当成目录创建，启动会更乱。
 
 ---
 
