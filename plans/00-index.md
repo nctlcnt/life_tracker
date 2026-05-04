@@ -1,13 +1,14 @@
 # 项目大脑缓存
 
 > 最后整理: 2026-05-05
-> 规则: 此文件是 plan 总览入口。specs/todos 已迁 Linear (LT team)，本文件保留指针；ideas/archive 仍为本地 markdown
+> 规则: 此文件是 plan 总览入口。specs/todos/archive 已迁 Linear (LT team)，本文件保留指针；ideas 仍为本地 markdown
 > 技术难题沉淀见 [devlog.md](../devlog.md)
 
 ## 近期计划更新
 
 > 最近 7 天有改动的 plan 文件：
-> - **2026-05-05 specs/todos 迁移至 Linear (LT team)**：5 个 spec → Linear Project，1 个 todo → LT-1 Issue。stub 集中在 `5-migrated/`；`1-ideas/` 和 `4-archive/` 保持不动
+> - **2026-05-05 archive 也迁 Linear + 进度细化**：7 个 archive → Project (6 Cancelled + 1 Completed)；4 个 active Project 加 21 个 progress issues (LT-2~LT-22) 反映步骤完成情况；planned-event Project → Completed。所有 stub 收在 `5-migrated/`
+> - **2026-05-05 specs/todos 迁移至 Linear (LT team)**：5 个 spec → Linear Project，1 个 todo → LT-1 Issue。stub 集中在 `5-migrated/`；`1-ideas/` 保持本地 markdown
 > - `1-ideas/inspiration.md` — 2026-05-03 新增想法 #9–#15（美食地图/偏好查询系统、memory 强化用户画像、bot 系统消息自动消失、觉察 channel + 轻量状态打标 agent 新思路、prompt 个人信息移出 cache 权衡）
 > - `2-specs/dispatch-poc.md` — 2026-05-01 步骤 0 + 1 完成后**暂停**，产出已合入 main：步骤 0（63 条人工标注，L1 覆盖率 22.2% 落在灰区）+ 步骤 1（`bot/prompts_dispatch.py` 4 份 prompt + parsers，342 行）。剩余步骤 2-7 未开工
 > - `2-specs/dispatch-poc.md` — 2026-04-28 新建并增补：第二 bot 进程 + 4 份 prompt + ACTIONS/FACTS 协议 + 离线标注先行；增补 escalate_state 多轮粘滞机制（Option b：跳 DECIDE 不跳 PARAPHRASE，对话风格不切换）+ 离线 replay 验证步骤（cache hit / 模型间通讯全程 log）+ 实施步骤重排（先本地 API 验证再上 Discord）
@@ -20,16 +21,15 @@
 
 当前正在投入精力的,详细介绍改动的过程和最新进展，以追踪最近的更新。
 
-- [2026 Q2 整合重构](https://linear.app/chachas/project/2026-q2-整合重构-97639f6c6030) — 原四阶段总纲;Phase 1 (Notes+Memory) 已推翻归档;Phase 2 (Flash+Smart 分发) 细化设计落地到 dispatch-poc (步骤 0+1 完成后暂停);剩余 Phase 3 (主动询问重写) / Phase 4 (精力槽)
-- [planned-event 支持](https://linear.app/chachas/project/planned-event-支持-aec55f2886f9) — 后端 + 三态视觉已合入 main (PR #8),前端删除按钮刚补,收尾中
+- [2026 Q2 整合重构](https://linear.app/chachas/project/2026-q2-整合重构-97639f6c6030) `0/2 active` — Phase 1 已推翻 (LT-2 Cancelled，详见 archive Project Notes+Memory); Phase 3 删除 PROTOCOLS (LT-3 Backlog, 半天); Phase 4 精力槽方向 A (LT-4 Backlog, 2-3 工作日); Phase 2 dispatch 细化到独立 Project
 
 ## 🟢 进行中 (active)
 
 所有建了 spec 但不是本周焦点的。
 
-- [Dispatch POC 双层架构](https://linear.app/chachas/project/dispatch-poc-双层架构-d2edb322e01c) — **2026-05-01 暂停**,产出已合入 main (step 1 commit `b06e283`)。步骤 0 完成 (63 条人工标,L1 覆盖率 22.2%) + 步骤 1 完成 (`bot/prompts_dispatch.py` 4 份 prompt + parsers)。剩余 7 步未开工：步骤 2 dispatch engine → 步骤 3 离线 replay 验证 (核心) → 步骤 4 第二 bot 进程 → 步骤 5 路由 + config → 步骤 6 实测 2 周 → 步骤 7 决策。恢复时直接接步骤 2
-- [Merlin 精力调度引擎](https://linear.app/chachas/project/merlin-精力调度引擎-1a080495a02d) — v3 架构 + M1–M4+ 路线图,长线
-- [Obsidian 接入](https://linear.app/chachas/project/obsidian-接入-b7441f2f60eb) — `query_obsidian` 工具 + MCP server 设计稿,尚未实施
+- [Dispatch POC 双层架构](https://linear.app/chachas/project/dispatch-poc-双层架构-d2edb322e01c) `2/8 done` — **2026-05-01 暂停**。LT-10 (步骤 0 标注) + LT-11 (步骤 1 prompt 草稿) Done; 剩 LT-12 (engine) → LT-13 (离线 replay 验证, 核心) → LT-14 (第二 bot 进程) → LT-15 (路由+config) → LT-16 (实测 2 周) → LT-17 (决策) 全 Backlog。恢复直接接 LT-12
+- [Merlin 精力调度引擎](https://linear.app/chachas/project/merlin-精力调度引擎-1a080495a02d) `0/5 backlog` — 长线。LT-18 (LLM 抽取器 benchmark, M1 prereq) → LT-19 (M1 离线管道) → LT-20 (M2 词缀固化) → LT-21 (M3 Apriori 月报) → LT-22 (M4+ 重算法)
+- [Obsidian 接入](https://linear.app/chachas/project/obsidian-接入-b7441f2f60eb) — `query_obsidian` 工具 + MCP server 设计稿,尚未实施 (Project 自身即 todo, 无 sub-issue)
 
 ## 💡 想法池 (ideas)
 
@@ -44,22 +44,23 @@
 
 - [LT-1 Disaster Recovery Drill](https://linear.app/chachas/issue/LT-1/disaster-recovery-drill-litestreamr2-备份链验收) — Litestream → R2 备份链首次验收（档位 1+2 read-only / 不动 live DB；档位 3 全链路演练可选）
 
-## 🪦 已归档 (archive)
+## 🪦 已归档 (archive, 在 Linear)
 
-被推翻或已完成沉淀,**不要在这里排序**。文件名带日期方便排序。
+被推翻或已完成沉淀。本地 stub 在 `5-migrated/`，full description 在 Linear。
 
-- [prompt-sections-2026-04-18](4-archive/prompt-sections-2026-04-18.md) — 6 段正交 section + chat/poll unify,2026-04-18 已落地,文件首行自标 ✅ 归档
-- [energy-2026-04-18](4-archive/energy-2026-04-18.md) — 精力调度 `energy_type` chill/drain 子标签整体撤销,后续情绪/洞察转 Merlin 路线
-- [event-notes-split-2026-04-23](4-archive/event-notes-split-2026-04-23.md) — **废止**:原方案把 `events.notes` 拆成 `event_notes` 表挂在 event 上;后续替代方案(daily_notes 独立表)也已推翻,最终保留 `events.notes` 现状
-- [notes-memory-split-2026-04-25](4-archive/notes-memory-split-2026-04-25.md) — **废止**:Q2 原 Phase 1。notes 不需 first-class 化(`events.notes` 够用),memory 不该收紧到"纯偏好"(继续容纳备忘录式内容才是它的实际价值)
-- [role-split-2026-04-23](4-archive/role-split-2026-04-23.md) — **部分废止**:Role A/B 拆分被 Q2 Phase 2 的 Flash+Smart 分发取代;Role C 夜间清理原计划并入 Phase 1 daily summary cron,Phase 1 推翻后整体搁置;阶段 3(主动询问重写)保留并入 Phase 3
-- [ai-token-classifier-2026-04-23](4-archive/ai-token-classifier-2026-04-23.md) — **部分吸收**:Classifier 前置多处理器架构改为"Flash 主聊 + 工具意图 escalate 到 Smart",落地在 Q2 Phase 2
-- [mcp-bot-2026-04-25](4-archive/mcp-bot-2026-04-25.md) — **整体推翻**：Phase 1 实施全跑通后，因 Anthropic TOS 禁第三方 app 走订阅 + MCP 单用户无架构价值，整体 revert（commit `0631972`）
+- [Prompt 6 段正交 section](https://linear.app/chachas/project/prompt-6-段正交-section-已落地-d4d7a0f330db) — **Completed**: 6 段正交 + chat/poll unify, 2026-04-18 落地 (refactor/prompt-sections 分支)
+- [energy_type chill/drain 子标签](https://linear.app/chachas/project/energy-type-chilldrain-子标签-撤销-94c7423cc072) — **Cancelled**: 蓄水/漏水二级标签整体撤销, 后续转 Merlin 离线管道
+- [event-notes 拆表](https://linear.app/chachas/project/event-notes-拆表-废止-4044ed41a8c5) — **Cancelled**: `events.notes` 现状已够用, notes 不需 first-class 化
+- [Notes + Memory 重构 (Q2 原 P1)](https://linear.app/chachas/project/notes-memory-重构-q2-原-p1废止-37d5c2e3a592) — **Cancelled**: events.notes + memory 现状够用, memory 不该收紧到纯偏好
+- [Role A/B/C 拆分](https://linear.app/chachas/project/role-abc-拆分-部分废止-bade0dcc0193) — **Cancelled (部分废止)**: A/B 被 Q2 Phase 2 的 Flash+Smart dispatch 取代; C 并入 Phase 1 后整体搁置; 阶段 3 (主动询问重写) 保留并入 Phase 3
+- [AI Token Classifier 架构](https://linear.app/chachas/project/ai-token-classifier-架构-部分吸收-831b9f5191cb) — **Cancelled (部分吸收)**: Classifier 前置多处理器架构改为 "Flash 主聊 + 工具意图 escalate 到 Smart", 落地在 Q2 Phase 2 / Dispatch POC
+- [MCP Bot B](https://linear.app/chachas/project/mcp-bot-b-整体推翻-12614a547eed) — **Cancelled (整体推翻)**: Phase 1 跑通后因 Anthropic TOS 禁第三方 app 走订阅 + MCP 单用户无架构价值，整体 revert (commit `0631972`)
 
 ## 📦 已完成 (done,最近 10 条)
 
 只保留最近的,老的直接删,**有 git log 作证就够了**。
 
+- 2026-05-05 ✅ planned-event 支持 Project 收口 → Completed (5 sub-issues LT-5~LT-9 全 Done): Schema / Tools / Prompts / API / Frontend 三态视觉已全部合入 main
 - 2026-05-03 ✅ deploy 修复：ghcr 镜像引用统一到 `nctlcnt/life_tracker`（release.yml / Makefile / docker-compose.prod.yml 全部对齐，VPS 拉取恢复正常）(`d8e9462`)
 - 2026-05-01 ✅ dispatch-poc 步骤 1：`bot/prompts_dispatch.py` 4 份 prompt + parsers，342 行，已合入 main (`b06e283`)
 - 2026-04-29 ✅ dispatch-poc 步骤 0：63 条样本人工标注完成 + `scripts/parse_dispatch_labels.py`，L1 覆盖率 22.2% (`f293cf5`)
