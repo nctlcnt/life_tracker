@@ -12,7 +12,7 @@ services:
   app:
     image: ghcr.io/nctlcnt/life_tracker:${VERSION:-stable}
     ports:
-      - "${API_PORT:-8080}:${API_PORT:-8080}"
+      - "${BIND:-0.0.0.0}:${API_PORT:-8080}:${API_PORT:-8080}"
     volumes:
       - ./data:/app/data
       - ./config.json:/app/config.json:ro
