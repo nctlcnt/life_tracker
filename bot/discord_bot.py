@@ -36,6 +36,7 @@ class LifeTrackerBot(commands.Bot):
         self.tree.add_command(_weather_command(self))
         self.tree.add_command(_model_command(self))
         self.tree.add_command(_fallback_command(self))
+        self.tree.add_command(_tz_command(self))
         await self.tree.sync()
         logger.info("✅ 斜杠命令已同步")
 
@@ -355,6 +356,65 @@ def _fallback_command(bot: LifeTrackerBot) -> app_commands.Command:
         )
 
     return fallback
+
+
+_COMMON_TZS = [
+    "Australia/Sydney",
+    "Asia/Tokyo",
+    "Asia/Shanghai",
+    "Asia/Hong_Kong",
+    "Asia/Singapore",
+    "Asia/Bangkok",
+    "Asia/Seoul",
+    "Asia/Taipei",
+    "Asia/Kuala_Lumpur",
+    "Asia/Dubai",
+    "Europe/London",
+    "Europe/Paris",
+    "Europe/Berlin",
+    "America/Los_Angeles",
+    "America/New_York",
+    "America/Chicago",
+    "Pacific/Auckland",
+    "UTC",
+]
+
+
+async def _tz_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    filtered = [n for n in _COMMON_TZS if current.lower() in n.lower()] or _COMMON_TZS
+    return [app_commands.Choice(name=n, value=n) for n in filtered[:25]]
+
+
+def _tz_command(bot: LifeTrackerBot) -> app_commands.Command:
+    """/tz [name] — 无参显示当前 TZ；带 name 切换并持久化（用于 travel）。"""
+
+    @app_commands.command(name="tz", description="查看或切换进程时区（用于 travel）")
+    @app_commands.describe(name="IANA 时区名（如 Asia/Tokyo），留空显示当前")
+    @app_commands.autocomplete(name=_tz_autocomplete)
+    async def tz(interaction: discord.Interaction, name: str | None = None):
+        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
+            return
+        from bot import timezone_state
+        if name is None:
+            current = timezone_state.get_timezone()
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            await interaction.response.send_message(
+                f"🕐 当前时区: `{current}`\n本地时间: {now_str}"
+            )
+            return
+        try:
+            timezone_state.set_timezone(name)
+        except ValueError:
+            await interaction.response.send_message(f"⚠️ 未知时区: `{name}`")
+            return
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        await interaction.response.send_message(
+            f"✅ 已切换时区 → `{name}`\n本地时间: {now_str}"
+        )
+
+    return tz
 
 
 def _weather_command(bot: LifeTrackerBot) -> app_commands.Command:

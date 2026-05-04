@@ -19,9 +19,9 @@ FROM python:3.12-slim AS runtime
 
 WORKDIR /app
 
-# curl is needed for HEALTHCHECK
+# curl is needed for HEALTHCHECK; tzdata supplies IANA zone files for runtime TZ switching
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps (cached layer)

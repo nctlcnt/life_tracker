@@ -416,14 +416,14 @@ def format_countdown(due_time_str: str) -> str:
     > 7 天 → "⏳ 剩余 12天"
     已过期 → "⚠️ 已过期 3h"
     """
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime
     try:
         # 尝试解析 ISO 8601
         due = datetime.fromisoformat(due_time_str)
-        if due.tzinfo is None:
-            # 假设悉尼时区 UTC+10（无夏令时简化）
-            due = due.replace(tzinfo=timezone(timedelta(hours=10)))
-        now = datetime.now(timezone(timedelta(hours=10)))
+        # 项目约定 datetime.now() 用进程本地时区（由 /tz 控制），统一在 naive 域里比
+        if due.tzinfo is not None:
+            due = due.astimezone().replace(tzinfo=None)
+        now = datetime.now()
         delta = due - now
         total_hours = delta.total_seconds() / 3600
 

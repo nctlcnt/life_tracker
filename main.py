@@ -16,6 +16,10 @@ from bot.logger import setup_logging, get_logger
 setup_logging(config.LOG_LEVEL, config.LOG_FILE)
 logger = get_logger(__name__)
 
+# 进程时区在所有 datetime.now() 调用前固定下来
+from bot.timezone_state import init_timezone
+init_timezone(config.TIMEZONE)
+
 from bot.discord_bot import LifeTrackerBot
 from bot.scheduler import Scheduler
 from bot.database import Database

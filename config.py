@@ -153,6 +153,10 @@ def list_presets() -> list[str]:
 # ── 服务器 ─────────────────────────────────────────────────────────────
 API_PORT: int = int(_cfg.get("server", {}).get("port", 8080))
 
+# ── 时区 ───────────────────────────────────────────────────────────────
+# 进程默认时区（IANA 名）。运行时可通过 /tz 命令切换并持久化到 data/active_tz.json。
+TIMEZONE: str = _cfg.get("timezone", "Australia/Sydney")
+
 # ── 数据库 ─────────────────────────────────────────────────────────────
 DB_PATH: str = os.path.join(os.path.dirname(__file__), "data", "life_tracker.db")
 

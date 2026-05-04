@@ -42,6 +42,7 @@
   "server": {
     "port": 8080
   },
+  "timezone": "Australia/Sydney",
   "weather": {
     "api_key": "",
     "location": "-33.8688,151.2093"
