@@ -191,7 +191,7 @@ export function WeekView({ weekStart, onWeekChange }: WeekViewProps) {
   return (
     <div className="flex flex-col h-full">
       {/* 周导航栏 */}
-      <div className="px-6 py-3 flex items-center gap-3 border-b border-border">
+      <div className="px-4 md:px-6 py-3 flex items-center gap-3 border-b border-border">
         <button
           onClick={() => shiftWeek(-1)}
           className="px-2 py-1 rounded border border-border hover:bg-muted text-sm transition-colors"
@@ -221,14 +221,8 @@ export function WeekView({ weekStart, onWeekChange }: WeekViewProps) {
           加载中…
         </div>
       ) : (
-        <div className="flex-1 min-h-0 px-4 py-3 sm:px-5">
-          <div
-            className="grid gap-3 h-full"
-            style={{
-              gridTemplateColumns: 'repeat(3, 1fr)',
-              gridTemplateRows: 'repeat(3, minmax(0, 1fr))',
-            }}
-          >
+        <div className="flex-1 min-h-0 px-3 md:px-5 py-3 overflow-y-auto md:overflow-hidden">
+          <div className="grid gap-3 grid-cols-1 md:grid-cols-3 md:grid-rows-[repeat(3,minmax(0,1fr))] md:h-full">
             {/* 周一 ~ 周六（前 6 天）*/}
             {daysData.slice(0, 6).map((day, idx) => (
               <DayCard
@@ -253,8 +247,8 @@ export function WeekView({ weekStart, onWeekChange }: WeekViewProps) {
               />
             )}
 
-            {/* Deadline 面板 — 合并后两格 */}
-            <DeadlinePanel deadlines={deadlines} style={{ gridColumn: 'span 2' }} />
+            {/* Deadline 面板 — 桌面合并后两格，手机单列 */}
+            <DeadlinePanel deadlines={deadlines} className="md:col-span-2" />
           </div>
         </div>
       )}
@@ -359,14 +353,13 @@ function DayCard({ day, dayName, isToday, hasDeadline, index }: DayCardProps) {
 // ── Deadline 合并面板 ──────────────────────────────────────────
 interface DeadlinePanelProps {
   deadlines: Deadline[];
-  style?: React.CSSProperties;
+  className?: string;
 }
 
-function DeadlinePanel({ deadlines, style }: DeadlinePanelProps) {
+function DeadlinePanel({ deadlines, className = '' }: DeadlinePanelProps) {
   return (
     <motion.div
-      className="rounded-lg border border-border bg-background overflow-hidden flex flex-col"
-      style={style}
+      className={`rounded-lg border border-border bg-background overflow-hidden flex flex-col ${className}`}
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, delay: 0.3 }}

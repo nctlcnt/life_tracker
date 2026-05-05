@@ -199,7 +199,7 @@ export default function App() {
   return (
     <div className="size-full bg-background overflow-hidden flex flex-col text-foreground">
       {/* ── Header ────────────────────────────────────────────── */}
-      <header className="px-8 py-5 border-b border-border flex items-center justify-between flex-shrink-0">
+      <header className="px-4 py-3 md:px-8 md:py-5 border-b border-border flex flex-col gap-3 md:flex-row md:items-center md:justify-between flex-shrink-0">
         <div className="flex items-baseline gap-2">
           <h1
             className="text-2xl font-bold tracking-tight text-foreground leading-none"
@@ -210,7 +210,7 @@ export default function App() {
           <span className="text-sm text-muted-foreground font-medium">{todayDayName}</span>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 md:gap-3">
           {/* Tab 切换：日 | 周 | Project Overview | 记忆 */}
           <div className="flex rounded-md border border-border overflow-hidden">
             {(['day', 'week', 'project', 'rhythm'] as ViewMode[]).map((mode) => (
@@ -280,10 +280,10 @@ export default function App() {
           <RhythmView />
         </div>
       ) : (
-        /* ── 日视图：左 1/4 泳道图 + 右 3/4 ─────────────────── */
-        <div className="flex-1 flex min-h-0 overflow-hidden">
-          {/* 左 1/4：多泳道时间轴 */}
-          <div className="w-1/4 flex-shrink-0 border-r border-border flex flex-col min-h-0">
+        /* ── 日视图：桌面=左 1/4 泳道图 + 右 3/4，手机=上下堆叠 ─── */
+        <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
+          {/* 时间轴：手机顶部 40vh，桌面左侧 1/4 */}
+          <div className="w-full h-[40vh] md:w-1/4 md:h-auto flex-shrink-0 border-b border-border md:border-b-0 md:border-r flex flex-col min-h-0">
             <MultiLaneTimeline
               events={timelineEvents}
               plannedEvents={plannedEvents}
@@ -293,9 +293,9 @@ export default function App() {
             />
           </div>
 
-          {/* 右 3/4：2×2 grid */}
-          <div className="flex-1 min-w-0 overflow-auto px-6 py-6">
-            <div className="grid grid-cols-2 gap-4 h-full">
+          {/* 列表区：桌面 2×2，手机 1 列 */}
+          <div className="flex-1 min-w-0 overflow-auto px-3 py-3 md:px-6 md:py-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 md:h-full">
               <ItemList title="提醒" items={reminders} type="reminder" />
               <ItemList title="待办" items={todos} type="todo" onToggle={handleTodoToggle} />
               <ItemList title="Deadline" items={deadlines} type="deadline" />
