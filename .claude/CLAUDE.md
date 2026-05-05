@@ -50,8 +50,9 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 - **后端**: Python, discord.py, httpx, FastAPI, SQLite
 - **前端**: React + Vite + Tailwind，由 FastAPI 静态挂载在 `/app/`
 - **部署**: Docker → 云服务器
-- **AI 动态路由**: 支持随时通过环境变量切换后端：
+- **AI 动态路由**: `config.json` 维护 presets 表，运行时通过 `/model` `/fallback` 斜杠命令切换 active/fallback preset，状态持久化到 `data/active_preset.json`。支持的 provider：
   - Anthropic 原生 API (`claude`)
+  - OpenAI 官方 SDK (`openai`)
   - OpenAI 兼容中转站 (`relay`)
   - Google Gemini 原生 API (`gemini`)
 
@@ -59,12 +60,13 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 
 | 文件 | 职责 |
 |---|---|
-| `main.py` | 入口，asyncio.gather 启动 Bot + Scheduler + FastAPI |
-| `config.py` | 环境变量加载，分离 `CHAT_MODEL` 和 `POLL_MODEL` 降低成本 |
-| `bot/discord_bot.py` | Discord 收发消息，支持解析用户的引用/回复消息，过滤非目标用户 |
-| `bot/ai_engine.py` | AI 引擎路由器，根据 `AI_PROVIDER` 分发请求 |
-| `bot/ai_engine_base.py` | 三个引擎共享的逻辑：动态上下文构建、消息格式处理、工具执行、chat/scheduled_action 高层流程 |
+| `main.py` | 入口，asyncio.gather 启动 Bot + Scheduler + FastAPI；支持 `--test`（测试模式）和 `--api-only`（跳过 Bot/Scheduler，仅起 FastAPI 用于本地前端调试） |
+| `config.py` | 从 `config.json` 加载配置；维护 AI presets 表（`Preset` dataclass）、运行时 active/fallback 状态读写、时区/天气/日志等 |
+| `bot/discord_bot.py` | Discord 收发消息，支持解析用户的引用/回复消息，过滤非目标用户；注册斜杠命令 `/todo` `/weather` `/model` `/fallback` `/tz` |
+| `bot/ai_engine.py` | AI 引擎路由器，按 `config.get_active().provider` 加载对应引擎模块；带 fallback preset 自动重试 |
+| `bot/ai_engine_base.py` | 四个引擎共享的逻辑：动态上下文构建、消息格式处理、工具执行、chat/scheduled_action 高层流程 |
 | `bot/ai_engine_claude.py` | Claude 原生调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
+| `bot/ai_engine_openai.py` | OpenAI 官方 SDK 调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
 | `bot/ai_engine_relay.py` | OpenAI 格式中转站调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
 | `bot/ai_engine_gemini.py` | Gemini 原生 REST API 调用引擎（仅实现 `_call_with_tools`，其余委托 base） |
 | `bot/ai_provider_error.py` | 自定义异常类 `AIProviderError`，统一表示 AI 服务商调用失败 |
@@ -73,12 +75,13 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 | `bot/scheduler.py` | 两个并发循环 + asyncio.Lock：Timer 循环（随机轮询+睡前）+ Reminder 循环（数据库提醒倒计时+Event 唤醒） |
 | `bot/database.py` | SQLite DB 操作 (events, messages, reminders, memories, todos, deadlines)；events 表含 project_name 字段，可空 `status` 列：NULL=已发生，`planned`=未来 dummy，`cancelled`=已取消的 planned |
 | `bot/merge.py` | 事件合并模块，将相邻同 content+category 的事件合并为时间段 |
-| `bot/weather.py` | 天气查询模块，使用 wttr.in 免费 API（无需 key），早上时段（6-10点）注入天气数据 |
-| `bot/test_mode.py` | 测试模式：`/start-test` 开启后捕获所有日志和 AI prompt payload 写入 JSONL；`/stop-test` 结束并命名文件 |
+| `bot/weather.py` | 天气查询模块，使用 tomorrow.io API（需 `weather.api_key`，免费档 500 calls/day），早上时段注入天气数据 |
+| `bot/timezone_state.py` | 进程时区管理：通过 `os.environ['TZ']` + `time.tzset()` 控制本地时间；启动时从 `data/active_tz.json` 读取，运行时通过 `/tz` 切换并持久化 |
+| `bot/test_mode.py` | 测试模式：`python main.py --test` 启动后捕获所有日志和 AI prompt payload 写入 JSONL |
 | `bot/logger.py` | 集中日志配置，其他模块 `get_logger(__name__)` 统一获取，支持 RotatingFileHandler |
 | `api/server.py` | FastAPI 接口：`/api/timeline`(合并后), `/api/events`, `/api/categories`, `/api/memories`, `/api/reminders`, `/api/todos`, `/api/deadlines`, `/api/projects/heatmap` |
-| `frontend/` | React + Vite + Tailwind 组件化前端：时间轴日视图 (`MultiLaneTimeline`)、周视图 (`WeekView`)、Project Overview (`ProjectOverview`)、甘特图 (`GanttChart`)、时间分布饼图 (`TimeDistribution`)、通用列表 (`ItemList`) |
-| `scripts/` | 辅助脚本：`cleanup.py`（数据清理）、`test_api.py`（接口测试） |
+| `frontend/` | React + Vite + Tailwind 组件化前端：日视图编辑式 Dashboard (`Dashboard`，内嵌 `MultiLaneTimeline`)、周视图 (`WeekView`)、Project Overview (`ProjectOverview`)、通用列表 (`ItemList`) |
+| `scripts/` | 辅助脚本：`cleanup.py`（数据清理）、`dev.sh` / `dev_pull.sh`（本地 api-only 调试 + 从 R2 拉取生产 DB）、`extract_dispatch_samples.py` / `parse_dispatch_labels.py`（dispatch POC 标注工具） |
 
 ### 消息进程与数据流
 
@@ -87,7 +90,7 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 #### 1. 用户主动发消息
 - **触发点**: 用户在 Discord 发送任意常规文字（或引用回复）。
 - **使用 Prompt**: 全量 `SYSTEM_PROMPT`（包括人设、各种响应规则、记忆调度指引等）。
-- **处理模型**: 配置的 `CHAT_MODEL`。
+- **处理模型**: 当前 active preset 的 model（chat / poll 共用同一个 preset，由 `/model` 切换）。
 - **流转路径**: Discord `on_message` → `fetch_history(limit=20)` 拉取历史 → `ai_engine.chat` 注入动态上下文（记忆、正在进行的事件、待触发提醒等） → AI 按需调用 tool 并在任意轮次输出文字回复（每一轮文字都会实时 send 给用户）→ 模型停止调工具后结束。
 
 #### 2. 斜杠指令 (Slash Commands)
@@ -110,7 +113,7 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 
 **每一轮的文字都会原样 send 给用户**——支持"边说边调工具"（例如先回一句"好，五分钟看着呢"，同一轮再 set_reminder）。不想说话时就只调工具、不输出文字。模型若要完全沉默由 scheduler 的 `[SILENT]` 机制处理，不依赖"中间轮独白"这种隐式约定。
 
-维护点：`bot/prompts.py::TOOL_ROUND_REMINDER`、三个引擎的每轮文字发送逻辑。
+维护点：`bot/prompts.py::TOOL_ROUND_REMINDER`、四个引擎的每轮文字发送逻辑。
 
 ### 工具后置提示（TOOL_POST_HINTS）
 
@@ -120,7 +123,7 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 - `list_reminders` → 决策辅助：查完清单后若要 set_reminder，先比对 group_id / 时间窗
 - `set_reminder` → 去重自检：set 后如担心重复可调 `list_reminders` 看 pending，发现重复立即 `delete_reminder` 精准删
 
-helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用。
+helper: `build_tool_round_hint(called_names)` 在四个引擎里统一调用。
 
 ### Prompt 模块化
 
@@ -146,7 +149,7 @@ helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用。
 
 各引擎消费方式：
 - Claude: `prompt.to_claude_blocks()` → 最多 4 个 cached system block（chat ↔ poll 切换 100% cache hit）
-- Gemini / Relay: `prompt.flatten()` → 单个字符串
+- OpenAI / Relay / Gemini: `prompt.flatten()` → 单个字符串
 - 中间轮省 token: `prompt.concise().flatten()`（去掉 `TOOLS_SECTION`）
 
 `_build_prompt()` 动态注入内容（见 `ai_engine_base._build_prompt`）：
@@ -168,3 +171,12 @@ helper: `build_tool_round_hint(called_names)` 在三个引擎里统一调用。
 - `PROACTIVE_PROMPT` — 随机轮询：给 AI 四选一（聊几句 / 关心 / 提一嘴记忆 / [SILENT]）
 - `REMINDER_PROMPT` — 提醒触发：注入 action + 优先级 + group 进度，硬规定"禁止再 set 相同内容"
 - `BEDTIME_PROMPT` — 睡前提醒：22:30-00:00 随机两次
+
+## Linear connection
+本项目的 issue 跟踪在 Linear 上
+每次get issue时，使用两个步骤：
+1. Linear:get_issue(id="LIN-123")          # 拿 issue 主体
+2. Linear:list_comments(issueId="LIN-123") # 再拿评论列表
+评论列表里面是需求变更记录，和一些讨论，甚至有时会有新的需求冒出来，比description更活跃，所以需要单独拿，并且评估和implement。
+
+如果推送改动的comment，不要说技术细节，用自然语言描述改动的scope、内容和原因，方便非技术人员理解。
