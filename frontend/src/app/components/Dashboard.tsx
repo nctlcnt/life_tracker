@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, Fragment } from 'react';
 import { MultiLaneTimeline, TimelineEvent } from './MultiLaneTimeline';
 import { ListItem } from './ItemList';
 import './dashboard.css';
@@ -65,6 +65,20 @@ const fmtMinutes = (m: number) => {
   return `${h}h ${mm}m`;
 };
 
+const fmtUntil = (due: Date) => {
+  const ms = due.getTime() - Date.now();
+  if (ms < 0) return 'overdue';
+  const min = Math.round(ms / 60000);
+  if (min < 1) return 'now';
+  if (min < 60) return `in ${min}m`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `in ${h}h`;
+  return `in ${Math.round(h / 24)}d`;
+};
+
+const fmtClock = (d: Date) =>
+  `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
 export function Dashboard({
   date,
   timelineEvents,
@@ -129,6 +143,15 @@ export function Dashboard({
   const [showAllDates, setShowAllDates] = useState(false);
   const visibleDeadlines = showAllDates ? sortedDeadlines : sortedDeadlines.slice(0, 3);
   const hasMoreDates = sortedDeadlines.length > 3;
+
+  // ── Next pending reminders (next 1–2) shown subtly under "Next deadline"
+  const nextReminders = useMemo(
+    () =>
+      reminders
+        .filter(r => (r.description ?? '').includes('pending') && r.dueDate)
+        .slice(0, 2),
+    [reminders]
+  );
 
   // ── Date pieces for the rail-date card
   const dateObj = new Date(`${date}T00:00:00`);
@@ -350,15 +373,15 @@ export function Dashboard({
           )}
         </div>
 
-        {/* Deadlines */}
+        {/* Deadlines + interleaved next reminders */}
         {visibleDeadlines.map((d, idx) => {
           const isNext = idx === 0;
           const isWarn = (d.countdown ?? '').includes('⚠️');
           const dueLabel = d.dueDate
             ? `${fmtWeekday(d.dueDate)}\n${fmtMonthDay(d.dueDate)}`
             : '';
-          return (
-            <div key={d.id} className={`deadline${isNext ? ' next' : ''}`}>
+          const card = (
+            <div key={`d-${d.id}`} className={`deadline${isNext ? ' next' : ''}`}>
               <p className="label">{isNext ? 'Next deadline' : 'Upcoming'}</p>
               <p className="when">
                 {dueLabel.split('\n').map((line, i) => (
@@ -373,6 +396,31 @@ export function Dashboard({
                 {d.title}
               </p>
             </div>
+          );
+          if (!isNext || nextReminders.length === 0) return card;
+          return (
+            <Fragment key={`d-block-${d.id}`}>
+              {card}
+              {nextReminders.map(r => (
+                <div key={`r-${r.id}`} className="reminder-item">
+                  <svg className="bell" viewBox="0 0 16 16" fill="none">
+                    <path
+                      d="M8 2v1M5 5a3 3 0 016 0v3l1.5 2h-9L5 8V5zM6.5 12.5a1.5 1.5 0 003 0"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  <div className="body">
+                    <div className="title">{r.title}</div>
+                    <div className="countdown">
+                      {r.dueDate ? `${fmtUntil(r.dueDate)} · ${fmtClock(r.dueDate)}` : ''}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </Fragment>
           );
         })}
 
