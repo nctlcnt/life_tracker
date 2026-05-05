@@ -29,6 +29,7 @@ config.json
 .env
 .env.*
 !.env.example
+!.env.dev.example
 .venv
 venv/
 ENV/

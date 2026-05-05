@@ -3,43 +3,52 @@ import os
 import sys
 from dataclasses import dataclass
 
+# api-only 模式跳过 Discord/AI 相关字段校验，便于纯前端调试启动
+API_ONLY_MODE: bool = os.environ.get("LIFE_TRACKER_API_ONLY") == "1"
+
 _CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
 _STATE_FILE = os.path.join(os.path.dirname(__file__), "data", "active_preset.json")
 
 if not os.path.exists(_CONFIG_FILE):
-    print(
-        f"[ERROR] 找不到配置文件 {_CONFIG_FILE}\n"
-        "请复制模板并填写配置：\n"
-        "  cp config.example.json config.json",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-with open(_CONFIG_FILE, encoding="utf-8") as _f:
-    _cfg: dict = json.load(_f)
-
-# ── 必填字段校验 ───────────────────────────────────────────────────────────
-_REQUIRED_PATHS: list[tuple[str, ...]] = [
-    ("discord", "token"),
-    ("discord", "allowed_user_id"),
-    ("ai", "presets"),
-    ("ai", "default_preset"),
-]
-for _keys in _REQUIRED_PATHS:
-    _val = _cfg
-    for _k in _keys:
-        _val = _val.get(_k, "") if isinstance(_val, dict) else ""
-    if not _val:
+    if API_ONLY_MODE:
+        # api-only 时容忍配置缺失，提供最小骨架让 FastAPI 跑起来
+        _cfg = {"server": {}, "ai": {"presets": {}, "default_preset": ""}}
+    else:
         print(
-            f"[ERROR] config.json 缺少必填项: {'.'.join(_keys)}\n"
-            "请参考 config.example.json 填写完整配置。",
+            f"[ERROR] 找不到配置文件 {_CONFIG_FILE}\n"
+            "请复制模板并填写配置：\n"
+            "  cp config.example.json config.json",
             file=sys.stderr,
         )
         sys.exit(1)
+else:
+    with open(_CONFIG_FILE, encoding="utf-8") as _f:
+        _cfg: dict = json.load(_f)
+
+# ── 必填字段校验 ───────────────────────────────────────────────────────────
+# api-only 模式跳过 Discord / AI 校验，纯前端调试不需要这些字段
+if not API_ONLY_MODE:
+    _REQUIRED_PATHS: list[tuple[str, ...]] = [
+        ("discord", "token"),
+        ("discord", "allowed_user_id"),
+        ("ai", "presets"),
+        ("ai", "default_preset"),
+    ]
+    for _keys in _REQUIRED_PATHS:
+        _val = _cfg
+        for _k in _keys:
+            _val = _val.get(_k, "") if isinstance(_val, dict) else ""
+        if not _val:
+            print(
+                f"[ERROR] config.json 缺少必填项: {'.'.join(_keys)}\n"
+                "请参考 config.example.json 填写完整配置。",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
 # ── Discord ────────────────────────────────────────────────────────────
-DISCORD_TOKEN: str = _cfg["discord"]["token"]
-ALLOWED_USER_ID: int = int(_cfg["discord"]["allowed_user_id"])
+DISCORD_TOKEN: str = _cfg.get("discord", {}).get("token", "")
+ALLOWED_USER_ID: int = int(_cfg.get("discord", {}).get("allowed_user_id", 0) or 0)
 
 # ── AI Presets ─────────────────────────────────────────────────────────
 # config.json 里维护一张 presets 表，每条 preset 是一套 { provider, api_key, base_url, model }
@@ -70,21 +79,22 @@ for _name, _p in _raw_presets.items():
 _DEFAULT_PRESET: str = _ai.get("default_preset", "")
 _DEFAULT_FALLBACK: str = _ai.get("default_fallback", "")
 
-if _DEFAULT_PRESET not in PRESETS:
-    print(
-        f"[ERROR] default_preset '{_DEFAULT_PRESET}' 不在 presets 列表里\n"
-        f"已知 presets: {list(PRESETS.keys())}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+if not API_ONLY_MODE:
+    if _DEFAULT_PRESET not in PRESETS:
+        print(
+            f"[ERROR] default_preset '{_DEFAULT_PRESET}' 不在 presets 列表里\n"
+            f"已知 presets: {list(PRESETS.keys())}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-if _DEFAULT_FALLBACK and _DEFAULT_FALLBACK not in PRESETS:
-    print(
-        f"[ERROR] default_fallback '{_DEFAULT_FALLBACK}' 不在 presets 列表里\n"
-        f"已知 presets: {list(PRESETS.keys())}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+    if _DEFAULT_FALLBACK and _DEFAULT_FALLBACK not in PRESETS:
+        print(
+            f"[ERROR] default_fallback '{_DEFAULT_FALLBACK}' 不在 presets 列表里\n"
+            f"已知 presets: {list(PRESETS.keys())}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 # ── 运行时状态 ─────────────────────────────────────────────────────────

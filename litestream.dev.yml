@@ -1,0 +1,11 @@
+# 本地 dev 用的 litestream 配置：路径指向 ./data/，bucket / endpoint 同生产
+# 仅用于 `litestream restore`（拉取最新备份到本地），不要 `replicate` 否则会回写线上备份。
+dbs:
+  - path: ./data/life_tracker.db
+    replicas:
+      - type: s3
+        bucket: ${R2_BUCKET}
+        path: life_tracker
+        endpoint: ${R2_ENDPOINT}
+        region: auto
+        force-path-style: true
