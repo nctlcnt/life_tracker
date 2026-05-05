@@ -90,6 +90,35 @@ async def _fetch_forecast() -> dict | None:
         return None
 
 
+async def get_weather_struct() -> dict | None:
+    """
+    获取今日天气结构化数据（前端 dashboard 用）。
+    返回 {temp, condition, max_temp, min_temp, location} 或 None。
+    """
+    data = await _fetch_forecast()
+    if not data:
+        return None
+    try:
+        timelines = data.get("timelines", {})
+        hourly = timelines.get("hourly", [])
+        daily = timelines.get("daily", [])
+        minutely = timelines.get("minutely", [])
+        if not hourly or not daily:
+            return None
+        current = (minutely[0] if minutely else hourly[0]).get("values", {})
+        today_values = daily[0].get("values", {})
+        return {
+            "temp": round(current.get("temperature", 0), 1),
+            "condition": _desc(current.get("weatherCode")),
+            "max_temp": round(today_values.get("temperatureMax", 0), 1),
+            "min_temp": round(today_values.get("temperatureMin", 0), 1),
+            "location": LOCATION_LABEL,
+        }
+    except Exception as e:
+        logger.warning(f"⚠️ 天气结构化解析失败: {e}")
+        return None
+
+
 async def get_weather_brief() -> str | None:
     """
     获取今日天气简报，返回中文摘要。

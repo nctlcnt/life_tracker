@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { ItemList, ListItem } from './components/ItemList';
+import { ListItem } from './components/ItemList';
 import { WeekView, getMonday } from './components/WeekView';
-import { MultiLaneTimeline, TimelineEvent } from './components/MultiLaneTimeline';
+import { TimelineEvent } from './components/MultiLaneTimeline';
 import { ProjectOverview } from './components/ProjectOverview';
-import { RhythmView } from './components/RhythmView';
+import { Dashboard } from './components/Dashboard';
+import './components/dashboard.css';
 
 // ── 日期格式化 ─────────────────────────────────────────────────
 const DAY_NAMES_FULL = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
@@ -13,7 +14,7 @@ function fmtDateStr(d: Date) {
 }
 
 // ── Tab 类型 ────────────────────────────────────────────────────
-type ViewMode = 'day' | 'week' | 'project' | 'rhythm';
+type ViewMode = 'day' | 'week' | 'project';
 
 export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('day');
@@ -28,15 +29,17 @@ export default function App() {
   const [reminders, setReminders] = useState<ListItem[]>([]);
   const [todos, setTodos] = useState<ListItem[]>([]);
   const [deadlines, setDeadlines] = useState<ListItem[]>([]);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   // ── Week View State ──────────────────────────────────────────
   const [weekStart, setWeekStart] = useState(() => getMonday(new Date()));
 
-  // ── 今日显示 ─────────────────────────────────────────────────
-  const today = new Date();
-  const todayDate = today.getDate();
-  const todayMonth = today.getMonth() + 1;
-  const todayDayName = DAY_NAMES_FULL[today.getDay()];
+  // ── 当前选中日期显示 ─────────────────────────────────────────
+  const selectedDateObj = new Date(currentDate + 'T00:00:00');
+  const headerDate = selectedDateObj.getDate();
+  const headerMonth = selectedDateObj.getMonth() + 1;
+  const headerDayName = DAY_NAMES_FULL[selectedDateObj.getDay()];
+  const headerDayNameEn = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][selectedDateObj.getDay()];
 
   useEffect(() => {
     if (viewMode !== 'day') return;
@@ -144,7 +147,7 @@ export default function App() {
       })
       .catch(err => console.error('Failed to load deadlines:', err));
 
-  }, [currentDate, viewMode]);
+  }, [currentDate, viewMode, refreshKey]);
 
   const handleDeletePlannedEvent = (id: string) => {
     // 前置乐观更新：planned / cancelled 都可能命中，两个 state 都尝试过滤
@@ -196,74 +199,51 @@ export default function App() {
     setCurrentDate(fmtDateStr(d));
   };
 
+  const tabLabels: Record<ViewMode, string> = {
+    day: 'Day',
+    week: 'Week',
+    project: 'Projects',
+  };
+
   return (
-    <div className="size-full bg-background overflow-hidden flex flex-col text-foreground">
-      {/* ── Header ────────────────────────────────────────────── */}
-      <header className="px-4 py-3 md:px-8 md:py-5 border-b border-border flex flex-col gap-3 md:flex-row md:items-center md:justify-between flex-shrink-0">
-        <div className="flex items-baseline gap-2">
-          <h1
-            className="text-2xl font-bold tracking-tight text-foreground leading-none"
-            style={{ fontFamily: "'Inter', 'SF Pro Display', -apple-system, sans-serif" }}
-          >
-            {todayMonth}月{todayDate}日
-          </h1>
-          <span className="text-sm text-muted-foreground font-medium">{todayDayName}</span>
+    <div className="dash size-full bg-background overflow-hidden flex flex-col text-foreground">
+      {/* ── Top bar (editorial) ───────────────────────────────── */}
+      <header className="dash-topbar">
+        <div className="dash-brand">
+          <div className="date">{headerMonth}月{headerDate}日</div>
+          <div className="day">{headerDayName} · {headerDayNameEn}</div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 md:gap-3">
-          {/* Tab 切换：日 | 周 | Project Overview | 记忆 */}
-          <div className="flex rounded-md border border-border overflow-hidden">
-            {(['day', 'week', 'project', 'rhythm'] as ViewMode[]).map((mode) => (
-              <button
-                key={mode}
-                onClick={() => setViewMode(mode)}
-                className={`px-3 py-1 text-sm transition-colors ${
-                  viewMode === mode
-                    ? 'bg-foreground text-background font-medium'
-                    : 'bg-transparent text-muted-foreground hover:bg-muted'
-                }`}
-              >
-                {mode === 'day'
-                  ? '日'
-                  : mode === 'week'
-                  ? '周'
-                  : mode === 'project'
-                  ? 'Project Overview'
-                  : 'Rhythm'}
-              </button>
-            ))}
+        <div className="dash-tabs" role="tablist">
+          {(['day', 'week', 'project'] as ViewMode[]).map(mode => (
+            <button
+              key={mode}
+              onClick={() => setViewMode(mode)}
+              className={viewMode === mode ? 'active' : ''}
+            >
+              {tabLabels[mode]}
+            </button>
+          ))}
+        </div>
+
+        {viewMode === 'day' && (
+          <div className="dash-nav">
+            <button className="arrow" onClick={() => shiftDate(-1)} title="prev">‹</button>
+            <input
+              type="date"
+              className="date-input"
+              value={currentDate}
+              onChange={e => setCurrentDate(e.target.value)}
+            />
+            <button className="arrow" onClick={() => shiftDate(1)} title="next">›</button>
+            <button
+              className="today"
+              onClick={() => setCurrentDate(fmtDateStr(new Date()))}
+            >
+              Today
+            </button>
           </div>
-
-          {/* 日视图的日期导航 */}
-          {viewMode === 'day' && (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => shiftDate(-1)}
-                className="px-2 py-1 rounded border border-border hover:bg-muted text-sm transition-colors"
-              >
-                ‹
-              </button>
-              <input
-                type="date"
-                value={currentDate}
-                onChange={e => setCurrentDate(e.target.value)}
-                className="px-2 py-1 rounded border border-border bg-transparent text-sm min-w-[125px] outline-none"
-              />
-              <button
-                onClick={() => shiftDate(1)}
-                className="px-2 py-1 rounded border border-border hover:bg-muted text-sm transition-colors"
-              >
-                ›
-              </button>
-              <button
-                onClick={() => setCurrentDate(fmtDateStr(new Date()))}
-                className="px-3 py-1 rounded border border-border hover:bg-muted text-sm transition-colors ml-1"
-              >
-                今天
-              </button>
-            </div>
-          )}
-        </div>
+        )}
       </header>
 
       {/* ── Content ───────────────────────────────────────────── */}
@@ -275,33 +255,21 @@ export default function App() {
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <ProjectOverview />
         </div>
-      ) : viewMode === 'rhythm' ? (
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <RhythmView />
-        </div>
       ) : (
-        /* ── 日视图：桌面=左 1/4 泳道图 + 右 3/4，手机=上下堆叠 ─── */
-        <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
-          {/* 时间轴：手机顶部 40vh，桌面左侧 1/4 */}
-          <div className="w-full h-[40vh] md:w-1/4 md:h-auto flex-shrink-0 border-b border-border md:border-b-0 md:border-r flex flex-col min-h-0">
-            <MultiLaneTimeline
-              events={timelineEvents}
-              plannedEvents={plannedEvents}
-              cancelledEvents={cancelledEvents}
-              date={currentDate}
-              onDeletePlanned={handleDeletePlannedEvent}
-            />
-          </div>
-
-          {/* 列表区：桌面 2×2，手机 1 列 */}
-          <div className="flex-1 min-w-0 overflow-auto px-3 py-3 md:px-6 md:py-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 md:h-full">
-              <ItemList title="提醒" items={reminders} type="reminder" />
-              <ItemList title="待办" items={todos} type="todo" onToggle={handleTodoToggle} />
-              <ItemList title="Deadline" items={deadlines} type="deadline" />
-              <ItemList title="记忆" items={memories} type="memory" />
-            </div>
-          </div>
+        <div className="flex-1 min-h-0 overflow-auto">
+          <Dashboard
+            date={currentDate}
+            timelineEvents={timelineEvents}
+            plannedEvents={plannedEvents}
+            cancelledEvents={cancelledEvents}
+            todos={todos}
+            memories={memories}
+            reminders={reminders}
+            deadlines={deadlines}
+            onDeletePlanned={handleDeletePlannedEvent}
+            onTodoToggle={handleTodoToggle}
+            onRefresh={() => setRefreshKey(k => k + 1)}
+          />
         </div>
       )}
     </div>

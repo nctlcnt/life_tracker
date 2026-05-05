@@ -16,7 +16,7 @@ app = FastAPI(title="Life Tracker API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # 生产环境应该改为你的前端域名
-    allow_methods=["GET", "DELETE", "PATCH"],
+    allow_methods=["GET", "POST", "DELETE", "PATCH"],
     allow_headers=["*"],
 )
 
@@ -82,6 +82,30 @@ async def delete_event(event_id: int):
     return {"success": True, "event_id": event_id}
 
 
+@app.post("/api/events")
+async def create_event(body: dict):
+    """手动新建一条 timeline event（仪表板 New event 模态框入口）。
+    body: {content, category?, start_time?, end_time?, project_name?, notes?}
+    缺省: category=Routine, start_time=now ISO, end_time=null（进行中）。
+    """
+    from datetime import datetime
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+    category = body.get("category") or "Routine"
+    start_time = body.get("start_time") or datetime.now().isoformat(timespec="seconds")
+    end_time = body.get("end_time") or None
+    event_id = db.add_event(
+        start_time=start_time,
+        end_time=end_time,
+        content=content,
+        category=category,
+        notes=body.get("notes"),
+        project_name=body.get("project_name"),
+    )
+    return {"id": event_id}
+
+
 @app.get("/api/categories")
 async def get_categories():
     """获取所有事件分类"""
@@ -93,6 +117,16 @@ async def get_categories():
 async def get_memories():
     """获取所有记忆"""
     return db.get_all_memories()
+
+
+@app.post("/api/memories")
+async def create_memory(body: dict):
+    """手动新建一条记忆（Quick note 模态框入口）。"""
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+    memory_id = db.add_memory(content, source="user")
+    return {"id": memory_id}
 
 
 @app.delete("/api/memories/{memory_id}")
@@ -131,6 +165,16 @@ async def get_todos(all: bool = False):
     return {"todos": todos, "count": len(todos)}
 
 
+@app.post("/api/todos")
+async def create_todo(body: dict):
+    """手动新建一条待办（New todo 模态框入口）。"""
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+    todo_id = db.add_todo(content)
+    return {"id": todo_id}
+
+
 @app.patch("/api/todos/{todo_id}/done")
 async def set_todo_done(todo_id: int, body: dict):
     """更新待办完成状态"""
@@ -152,6 +196,16 @@ async def get_deadlines():
             "countdown": format_countdown(d["due_time"]),
         })
     return {"deadlines": result, "count": len(result)}
+
+
+@app.get("/api/weather")
+async def get_weather():
+    """今日天气结构化数据。无配置或失败时返回 {available: false}。"""
+    from bot.weather import get_weather_struct
+    data = await get_weather_struct()
+    if data is None:
+        return {"available": False}
+    return {"available": True, **data}
 
 
 @app.get("/api/projects/heatmap")
