@@ -293,6 +293,21 @@
   margin-top: 3px;
   letter-spacing: 0.02em;
 }
+.mem-toggle {
+  margin-top: 10px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 6px 0;
+  font-family: var(--display);
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.mem-toggle:hover { color: var(--foreground); }
 
 /* Action bar */
 .actionbar {

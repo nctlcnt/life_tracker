@@ -95,6 +95,23 @@ export function Dashboard({
   const [heatmap, setHeatmap] = useState<HeatmapResponse | null>(null);
   const [weather, setWeather] = useState<WeatherResponse | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
+  const [showAllMemories, setShowAllMemories] = useState(false);
+
+  // Snapshot of uncompleted todo IDs at last data refresh. Single toggles
+  // (which only flip `completed` on the same IDs) won't update this set, so
+  // a just-checked todo remains visible until the next refresh.
+  const todoIdsKey = useMemo(
+    () => todos.map(t => t.id).join('|'),
+    [todos]
+  );
+  const [visibleTodoIds, setVisibleTodoIds] = useState<Set<string>>(
+    () => new Set(todos.filter(t => !t.completed).map(t => t.id))
+  );
+  useEffect(() => {
+    setVisibleTodoIds(new Set(todos.filter(t => !t.completed).map(t => t.id)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todoIdsKey]);
+  const visibleTodos = todos.filter(t => visibleTodoIds.has(t.id));
 
   useEffect(() => {
     fetch('/api/projects/heatmap?days=7')
@@ -265,10 +282,12 @@ export function Dashboard({
               {todos.filter(t => !t.completed).length} of {todos.length}
             </span>
           </h3>
-          {todos.length === 0 ? (
-            <div className="today-empty">No todos.</div>
+          {visibleTodos.length === 0 ? (
+            <div className="today-empty">
+              {todos.length === 0 ? 'No todos.' : 'All caught up.'}
+            </div>
           ) : (
-            todos.map(t => (
+            visibleTodos.map(t => (
               <div
                 key={t.id}
                 className={`dash-todo${t.completed ? ' done' : ''}`}
@@ -298,17 +317,33 @@ export function Dashboard({
         {/* MEMORIES */}
         <section className="dash-card">
           <h3 className="h-section">
-            Memory <span className="count">recent</span>
+            Memory{' '}
+            <span className="count">
+              {showAllMemories ? `all ${memories.length}` : 'recent'}
+            </span>
           </h3>
           {memories.length === 0 ? (
             <div className="today-empty">No memories yet.</div>
           ) : (
-            memories.slice(0, 6).map(m => (
-              <div key={m.id} className="mem-item">
-                <div className="quote">{m.title}</div>
-                {m.description && <div className="src">{m.description}</div>}
-              </div>
-            ))
+            <>
+              {(showAllMemories ? memories : memories.slice(0, 6)).map(m => (
+                <div key={m.id} className="mem-item">
+                  <div className="quote">{m.title}</div>
+                  {m.description && <div className="src">{m.description}</div>}
+                </div>
+              ))}
+              {memories.length > 6 && (
+                <button
+                  type="button"
+                  className="mem-toggle"
+                  onClick={() => setShowAllMemories(s => !s)}
+                >
+                  {showAllMemories
+                    ? 'Show less ↑'
+                    : `Show all ${memories.length} ↓`}
+                </button>
+              )}
+            </>
           )}
         </section>
 
