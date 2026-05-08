@@ -4,9 +4,9 @@
 */
 
 .dash {
-  --display: 'Fraunces', 'Iowan Old Style', Georgia, serif;
-  --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
-  --mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+  --display: 'Fraunces', 'ChillRound', 'Iowan Old Style', Georgia, serif;
+  --sans: 'Inter', 'ChillRound', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  --mono: 'JetBrains Mono', 'ChillRound', ui-monospace, Menlo, monospace;
   --focus: #94A3B5;
   --routine: #C4BFB0;
   --chill: #A8B9A0;
