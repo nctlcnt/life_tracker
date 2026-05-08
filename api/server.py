@@ -271,6 +271,115 @@ async def get_version():
     return {"version": os.environ.get("APP_VERSION", "dev")}
 
 
+# ── Admin: AI Preset 管理 ───────────────────────────────────────────────
+# 给前端 admin 页面用，不走 Discord 斜杠命令通道。复用 config.set_active/
+# set_fallback；测试端点直接对指定 preset 发 hello，绕过 system prompt 和工具。
+def _preset_view(name: str, p) -> dict:
+    return {
+        "name": name,
+        "provider": p.provider,
+        "model": p.model,
+        "base_url": p.base_url or "",
+    }
+
+
+@app.get("/api/admin/presets")
+async def admin_list_presets():
+    """列出所有 preset，标记当前 active / fallback。"""
+    import config
+    try:
+        active_name = config.get_active().name
+    except Exception:
+        active_name = None
+    fb = config.get_fallback()
+    presets = [_preset_view(name, p) for name, p in config.PRESETS.items()]
+    return {
+        "presets": presets,
+        "active": active_name,
+        "fallback": fb.name if fb else None,
+    }
+
+
+@app.post("/api/admin/presets/active")
+async def admin_set_active(body: dict):
+    """切换主 preset。"""
+    import config
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    try:
+        config.set_active(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "active": name}
+
+
+@app.post("/api/admin/presets/fallback")
+async def admin_set_fallback(body: dict):
+    """切换 fallback preset；name=null 关闭 fallback。"""
+    import config
+    name = body.get("name")
+    if isinstance(name, str):
+        name = name.strip() or None
+    try:
+        config.set_fallback(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "fallback": name}
+
+
+@app.post("/api/admin/presets/test")
+async def admin_test_preset(body: dict):
+    """对指定 preset 发一条 'hello'，绕过 system prompt + 工具，纯连接测试。"""
+    import time
+    import config
+    from bot.ai_provider_error import AIProviderError
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    p = config.PRESETS.get(name)
+    if p is None:
+        raise HTTPException(status_code=404, detail=f"unknown preset: {name}")
+
+    provider = p.provider.lower().strip()
+    if provider == "gemini":
+        from bot import ai_engine_gemini as engine
+    elif provider == "relay":
+        from bot import ai_engine_relay as engine
+    elif provider == "openai":
+        from bot import ai_engine_openai as engine
+    else:
+        from bot import ai_engine_claude as engine
+
+    t0 = time.monotonic()
+    try:
+        reply = await engine.simple_completion("hello", p)
+        latency = round((time.monotonic() - t0) * 1000)
+        return {
+            "ok": True,
+            "reply": reply,
+            "latency_ms": latency,
+            "provider": p.provider,
+            "model": p.model,
+        }
+    except AIProviderError as e:
+        return {
+            "ok": False,
+            "error": str(e),
+            "latency_ms": round((time.monotonic() - t0) * 1000),
+            "provider": p.provider,
+            "model": p.model,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": f"{type(e).__name__}: {e}",
+            "latency_ms": round((time.monotonic() - t0) * 1000),
+            "provider": p.provider,
+            "model": p.model,
+        }
+
+
 @app.get("/")
 async def root():
     return RedirectResponse(url="/app/index.html")

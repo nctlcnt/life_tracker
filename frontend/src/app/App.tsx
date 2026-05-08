@@ -4,6 +4,7 @@ import { WeekView, getMonday } from './components/WeekView';
 import { TimelineEvent } from './components/MultiLaneTimeline';
 import { ProjectOverview } from './components/ProjectOverview';
 import { Dashboard } from './components/Dashboard';
+import { AdminPanel } from './components/AdminPanel';
 import './components/dashboard.css';
 
 // ── 日期格式化 ─────────────────────────────────────────────────
@@ -16,7 +17,24 @@ function fmtDateStr(d: Date) {
 // ── Tab 类型 ────────────────────────────────────────────────────
 type ViewMode = 'day' | 'week' | 'project';
 
+function isAdminHash(): boolean {
+  return window.location.hash.replace(/^#/, '') === 'admin';
+}
+
+// Top-level router: '#admin' surfaces the hidden admin panel; everything
+// else renders the regular dashboard. Kept off the main nav so it's only
+// reachable by typing the URL.
 export default function App() {
+  const [isAdmin, setIsAdmin] = useState<boolean>(isAdminHash);
+  useEffect(() => {
+    const onHash = () => setIsAdmin(isAdminHash());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  return isAdmin ? <AdminPanel /> : <DashboardApp />;
+}
+
+function DashboardApp() {
   const [viewMode, setViewMode] = useState<ViewMode>('day');
 
   // ── Day View State ───────────────────────────────────────────
