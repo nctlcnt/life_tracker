@@ -1,0 +1,242 @@
+/* ── Admin panel ──────────────────────────────────────────────
+   Hidden admin surface for AI preset management. Reuses theme.css
+   tokens; matches the muted Morandi aesthetic of the rest of the app.
+*/
+
+.admin-panel {
+  --display: 'Fraunces', 'ChillRound', 'Iowan Old Style', Georgia, serif;
+  --sans: 'Inter', 'ChillRound', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  --mono: 'JetBrains Mono', 'ChillRound', ui-monospace, Menlo, monospace;
+  --warn: #B85C5C;
+  --ok: #6B8E5A;
+  --border-strong: rgba(74, 69, 64, 0.22);
+
+  font-family: var(--sans);
+  color: var(--foreground);
+  background: var(--background);
+  min-height: 100vh;
+  padding: 32px 48px 64px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.admin-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 24px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 14px;
+  margin-bottom: 22px;
+}
+.admin-header h1 {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 26px;
+  letter-spacing: -0.01em;
+}
+.admin-actions { display: flex; gap: 8px; }
+
+.admin-summary {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 18px;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.admin-summary .badge {
+  padding: 6px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.admin-summary .badge b {
+  color: var(--foreground);
+  font-weight: 600;
+  margin-right: 6px;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.admin-table th {
+  text-align: left;
+  padding: 10px 12px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border-strong);
+}
+.admin-table td {
+  padding: 14px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.admin-table td.name { font-weight: 500; }
+.admin-table td.mono { font-family: var(--mono); font-size: 12px; color: var(--muted-foreground); }
+.admin-table td.actions { white-space: nowrap; }
+.admin-table td.actions .admin-btn { margin-right: 6px; }
+
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 999px;
+  margin-right: 4px;
+  letter-spacing: 0.05em;
+}
+.tag-active { background: var(--foreground); color: var(--background); }
+.tag-fallback { background: var(--muted); color: var(--foreground); border: 1px solid var(--border-strong); }
+
+.admin-btn {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.admin-btn:hover:not(:disabled) { background: var(--muted); }
+.admin-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.admin-btn.primary {
+  background: var(--foreground);
+  color: var(--background);
+  border-color: var(--foreground);
+}
+.admin-btn.primary:hover:not(:disabled) { opacity: 0.85; background: var(--foreground); }
+.admin-btn.warn { color: var(--warn); border-color: rgba(184, 92, 92, 0.4); }
+.admin-btn.warn:hover:not(:disabled) { background: rgba(184, 92, 92, 0.08); }
+
+.admin-table td.dim { color: var(--muted-foreground); }
+.admin-table td.note-cell { min-width: 180px; }
+
+.note-input {
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--foreground);
+  transition: border-color 0.15s, background 0.15s;
+}
+.note-input::placeholder { color: var(--muted-foreground); opacity: 0.5; }
+.note-input:hover { border-color: var(--border); }
+.note-input:focus { outline: none; border-color: var(--border-strong); background: var(--card); }
+
+/* ── Modal overlay (Add / Edit form) ────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(40, 36, 32, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 24px;
+}
+.modal-card {
+  background: var(--background);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  padding: 24px 28px 20px;
+  width: min(460px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.18);
+}
+.modal-card h2 {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 18px;
+  margin-bottom: 16px;
+  letter-spacing: -0.01em;
+}
+.form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+.form-row > span:first-child {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.form-row input, .form-row select {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--foreground);
+  font-family: inherit;
+  font-size: 13px;
+}
+.form-row input:focus, .form-row select:focus {
+  outline: none;
+  border-color: var(--foreground);
+}
+.form-row input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.form-hint {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  margin-top: 2px;
+}
+.form-err {
+  color: var(--warn);
+  font-size: 12px;
+  padding: 8px 10px;
+  background: rgba(184, 92, 92, 0.08);
+  border-radius: 6px;
+  margin-bottom: 12px;
+  word-break: break-word;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.test-result {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--muted);
+  font-size: 12px;
+  max-width: 380px;
+}
+.test-result.ok { border-left: 3px solid var(--ok); }
+.test-result.err { border-left: 3px solid var(--warn); }
+.test-result .meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+  margin-bottom: 4px;
+}
+.test-result pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--foreground);
+}
+
+.admin-msg { padding: 32px; color: var(--muted-foreground); font-size: 14px; }
+.admin-msg.err { color: var(--warn); }
