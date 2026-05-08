@@ -129,8 +129,18 @@ class LifeTrackerBot(commands.Bot):
                     except Exception as react_err:
                         logger.warning(f"⚠️ 无法添加反馈 emoji: {react_err}")
 
-            async with message.channel.typing():
-                await chat(self.db, ai_messages, send_callback=send_reply, tool_callback=on_tool_call)
+            chat_started = False
+            try:
+                async with message.channel.typing():
+                    chat_started = True
+                    await chat(self.db, ai_messages, send_callback=send_reply, tool_callback=on_tool_call)
+            except discord.HTTPException as e:
+                # typing 指示器被限流（如 40062）只在 __aenter__ 抛，此时 chat 还没跑，跳过 typing 重试一次
+                if e.status == 429 and not chat_started:
+                    logger.warning(f"⚠️ Discord typing 限流，跳过指示器继续: {e}")
+                    await chat(self.db, ai_messages, send_callback=send_reply, tool_callback=on_tool_call)
+                else:
+                    raise
         except Exception as e:
             error_msg = f"❌ {type(e).__name__}: {e}"
             logger.exception(error_msg)
@@ -438,46 +448,26 @@ def _weather_command(bot: LifeTrackerBot) -> app_commands.Command:
     return weather
 
 
-def _split_for_chat(text: str, limit: int = 2000) -> list[str]:
-    """
-    把一段 AI 回复拆成多条 Discord 消息，模拟真实聊天节奏：
-    1. 先按换行符 \\n 切分，每一行当作一条独立消息
-    2. 去掉空行和首尾空白
-    3. 超长行再按 Discord 2000 字符上限兜底切分
-    """
-    chunks = []
-    for line in text.split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        while len(line) > limit:
-            chunks.append(line[:limit])
-            line = line[limit:]
-        chunks.append(line)
-    return chunks
-
-
 _RE_TS_PREFIX = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]\s*")
 
 
 async def _send_chat_chunks(target, text: str) -> None:
     """
-    按 _split_for_chat 拆分后依次发送，并在消息之间用 typing 指示器 + 小延迟
-    模拟打字节奏。第一条立刻发送，后续消息根据长度计算思考/打字时间。
+    一次性发送整段 AI 回复，仅在超过 Discord 2000 字符上限时按长度兜底切分。
+    发送期间保留 typing indicator。
     target: 任何支持 .send() 和 .typing() 的 Discord 通道对象
     """
     if "[SILENT]" in text:
         return
-    text = _RE_TS_PREFIX.sub("", text)
-    chunks = _split_for_chat(text)
-    for i, chunk in enumerate(chunks):
-        if i > 0:
-            # 粗略模拟：基础 0.4s 思考 + 每字符 0.03s 打字，上限 2s
-            delay = min(0.4 + len(chunk) * 0.03, 2.0)
-            try:
-                async with target.typing():
-                    await asyncio.sleep(delay)
-            except Exception:
-                # typing() 某些通道类型可能不支持，退化为纯 sleep
-                await asyncio.sleep(delay)
-        await target.send(chunk)
+    text = _RE_TS_PREFIX.sub("", text).strip()
+    if not text:
+        return
+    limit = 2000
+    chunks = [text[i:i + limit] for i in range(0, len(text), limit)]
+    try:
+        async with target.typing():
+            for chunk in chunks:
+                await target.send(chunk)
+    except Exception:
+        for chunk in chunks:
+            await target.send(chunk)
