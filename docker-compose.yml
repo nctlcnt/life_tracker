@@ -7,7 +7,7 @@ services:
     volumes:
       # SQLite database lives outside the container so it survives rebuilds
       - ./data:/app/data
-      - ./config.json:/app/config.json:ro
+      - ./config.json:/app/config.json
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:${API_PORT:-8080}/api/health"]
