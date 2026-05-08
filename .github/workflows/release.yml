@@ -49,6 +49,8 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
             ${{ env.IMAGE }}:stable
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
           # Layer cache: speeds up subsequent builds significantly
           cache-from: type=gha
           cache-to: type=gha,mode=max

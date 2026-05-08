@@ -17,6 +17,9 @@ RUN pnpm run build
 # ─── Stage 2: Python runtime ──────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
+
 WORKDIR /app
 
 # curl is needed for HEALTHCHECK; tzdata supplies IANA zone files for runtime TZ switching

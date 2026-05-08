@@ -30,6 +30,14 @@ export default function App() {
   const [todos, setTodos] = useState<ListItem[]>([]);
   const [deadlines, setDeadlines] = useState<ListItem[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [appVersion, setAppVersion] = useState<string>('');
+
+  useEffect(() => {
+    fetch('/api/version')
+      .then(res => res.json())
+      .then(data => setAppVersion(data.version || ''))
+      .catch(err => console.error('Failed to load version:', err));
+  }, []);
 
   // ── Week View State ──────────────────────────────────────────
   const [weekStart, setWeekStart] = useState(() => getMonday(new Date()));
@@ -272,6 +280,10 @@ export default function App() {
           />
         </div>
       )}
+
+      <footer className="dash-footer">
+        {appVersion ? `Life Tracker · ${appVersion}` : 'Life Tracker'}
+      </footer>
     </div>
   );
 }

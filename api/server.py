@@ -265,6 +265,12 @@ async def health_check():
     return {"status": "ok"}
 
 
+@app.get("/api/version")
+async def get_version():
+    """返回当前镜像版本（由 Dockerfile 的 APP_VERSION build-arg 注入）"""
+    return {"version": os.environ.get("APP_VERSION", "dev")}
+
+
 @app.get("/")
 async def root():
     return RedirectResponse(url="/app/index.html")
