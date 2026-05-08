@@ -98,15 +98,22 @@ GitHub Actions 会自动构建并推送两个镜像标签：
 
 ### 在服务器上部署 / 升级
 
+服务器上直接用 docker compose 即可，不需要 `make`：
+
 ```bash
-make deploy VERSION=v1.0.0   # 拉取指定版本并重启
+# 跟随 :stable（默认）
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
 
-# 升级
-make deploy VERSION=v1.1.0
+# 锁定到具体版本
+VERSION=v1.0.0 docker compose -f docker-compose.prod.yml pull
+VERSION=v1.0.0 docker compose -f docker-compose.prod.yml up -d
 
-# 出问题了，回滚
-make deploy VERSION=v1.0.0
+# 出问题了，回滚到旧版本
+VERSION=v0.9.0 docker compose -f docker-compose.prod.yml up -d
 ```
+
+> 也可以用 `make deploy VERSION=v1.0.0`，那只是上面两行的薄封装。
 
 ---
 
