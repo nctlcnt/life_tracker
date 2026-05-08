@@ -7,7 +7,7 @@ import re
 import discord
 from discord import app_commands
 from discord.ext import commands
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from bot.ai_engine import chat, simple_completion
 from bot.weather import get_weather_brief, get_weather_detailed
 from bot.prompts import WEATHER_REPORT_PROMPT
@@ -17,6 +17,13 @@ from bot.logger import get_logger
 import config
 
 logger = get_logger(__name__)
+_TYPING_COOLDOWN = timedelta(minutes=5)
+
+
+def _is_rate_limited_error(exc: Exception) -> bool:
+    return isinstance(exc, discord.RateLimited) or (
+        isinstance(exc, discord.HTTPException) and exc.status == 429
+    )
 
 
 class LifeTrackerBot(commands.Bot):
@@ -27,8 +34,30 @@ class LifeTrackerBot(commands.Bot):
         self.db = db
         self.target_channel_id: int | None = None
         self.last_typing_at: datetime | None = None  # 目标用户最近 typing 时刻（UTC aware）
+        # typing 被 429 限流后的冷却截止时间（按 channel_id），命中时直接跳过 typing 不再撞 API
+        self._typing_cooldown_until: dict[int, datetime] = {}
         # 由 main.py 注入：chat 完成时调用，用于重置 scheduler 的 poll 基准时间
         self.on_ai_call_done = None
+
+    def _get_typing_cooldown_until(self, channel_id: int) -> datetime | None:
+        until = self._typing_cooldown_until.get(channel_id)
+        if not until:
+            return None
+        if until <= datetime.now(timezone.utc):
+            self._typing_cooldown_until.pop(channel_id, None)
+            return None
+        return until
+
+    def _is_typing_cooling_down(self, channel_id: int) -> bool:
+        return self._get_typing_cooldown_until(channel_id) is not None
+
+    def _mark_typing_cooldown(self, channel_id: int, reason: str) -> None:
+        until = datetime.now(timezone.utc) + _TYPING_COOLDOWN
+        current = self._typing_cooldown_until.get(channel_id)
+        if current and current > until:
+            until = current
+        self._typing_cooldown_until[channel_id] = until
+        logger.warning(f"⚠️ {reason}，进入 5min 冷却，直到 {until.isoformat()}")
 
     async def setup_hook(self):
         """注册斜杠命令并同步到 Discord"""
@@ -117,7 +146,14 @@ class LifeTrackerBot(commands.Bot):
 
         try:
             async def send_reply(text):
-                await _send_chat_chunks(message.channel, text)
+                await _send_chat_chunks(
+                    message.channel,
+                    text,
+                    use_typing=not self._is_typing_cooling_down(message.channel.id),
+                    on_typing_rate_limited=lambda: self._mark_typing_cooldown(
+                        message.channel.id, "Discord typing 发送限流"
+                    ),
+                )
 
             tool_called_flag = False
             async def on_tool_call(tool_names: list[str]):
@@ -129,18 +165,23 @@ class LifeTrackerBot(commands.Bot):
                     except Exception as react_err:
                         logger.warning(f"⚠️ 无法添加反馈 emoji: {react_err}")
 
-            chat_started = False
-            try:
-                async with message.channel.typing():
-                    chat_started = True
-                    await chat(self.db, ai_messages, send_callback=send_reply, tool_callback=on_tool_call)
-            except discord.HTTPException as e:
-                # typing 指示器被限流（如 40062）只在 __aenter__ 抛，此时 chat 还没跑，跳过 typing 重试一次
-                if e.status == 429 and not chat_started:
-                    logger.warning(f"⚠️ Discord typing 限流，跳过指示器继续: {e}")
+            if self._is_typing_cooling_down(message.channel.id):
+                # typing 限流冷却期，跳过 typing 直接 chat
+                await chat(self.db, ai_messages, send_callback=send_reply, tool_callback=on_tool_call)
+            else:
+                typing_cm = message.channel.typing()
+                try:
+                    await typing_cm.__aenter__()
+                except (discord.HTTPException, discord.RateLimited) as e:
+                    if not _is_rate_limited_error(e):
+                        raise
+                    self._mark_typing_cooldown(message.channel.id, f"Discord typing 入口限流: {e}")
                     await chat(self.db, ai_messages, send_callback=send_reply, tool_callback=on_tool_call)
                 else:
-                    raise
+                    try:
+                        await chat(self.db, ai_messages, send_callback=send_reply, tool_callback=on_tool_call)
+                    finally:
+                        await typing_cm.__aexit__(None, None, None)
         except Exception as e:
             error_msg = f"❌ {type(e).__name__}: {e}"
             logger.exception(error_msg)
@@ -158,7 +199,14 @@ class LifeTrackerBot(commands.Bot):
             return
         channel = self.get_channel(self.target_channel_id)
         if channel and isinstance(channel, (discord.TextChannel, discord.DMChannel)):
-            await _send_chat_chunks(channel, text)
+            await _send_chat_chunks(
+                channel,
+                text,
+                use_typing=not self._is_typing_cooling_down(channel.id),
+                on_typing_rate_limited=lambda: self._mark_typing_cooldown(
+                    channel.id, "Discord typing 主动发送限流"
+                ),
+            )
 
     async def _fetch_history_as_messages(
         self, channel, limit: int = 20, exclude_id: int | None = None
@@ -451,7 +499,9 @@ def _weather_command(bot: LifeTrackerBot) -> app_commands.Command:
 _RE_TS_PREFIX = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]\s*")
 
 
-async def _send_chat_chunks(target, text: str) -> None:
+async def _send_chat_chunks(target, text: str, *,
+                            use_typing: bool = True,
+                            on_typing_rate_limited=None) -> None:
     """
     一次性发送整段 AI 回复，仅在超过 Discord 2000 字符上限时按长度兜底切分。
     发送期间保留 typing indicator。
@@ -464,10 +514,22 @@ async def _send_chat_chunks(target, text: str) -> None:
         return
     limit = 2000
     chunks = [text[i:i + limit] for i in range(0, len(text), limit)]
-    try:
-        async with target.typing():
-            for chunk in chunks:
-                await target.send(chunk)
-    except Exception:
-        for chunk in chunks:
-            await target.send(chunk)
+    if use_typing:
+        typing_cm = target.typing()
+        try:
+            await typing_cm.__aenter__()
+        except (discord.HTTPException, discord.RateLimited) as e:
+            if not _is_rate_limited_error(e):
+                raise
+            if on_typing_rate_limited:
+                on_typing_rate_limited()
+        else:
+            try:
+                for chunk in chunks:
+                    await target.send(chunk)
+            finally:
+                await typing_cm.__aexit__(None, None, None)
+            return
+
+    for chunk in chunks:
+        await target.send(chunk)
