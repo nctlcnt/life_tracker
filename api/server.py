@@ -274,12 +274,23 @@ async def get_version():
 # ── Admin: AI Preset 管理 ───────────────────────────────────────────────
 # 给前端 admin 页面用，不走 Discord 斜杠命令通道。复用 config.set_active/
 # set_fallback；测试端点直接对指定 preset 发 hello，绕过 system prompt 和工具。
+def _mask_api_key(key: str) -> str:
+    """API key 不全文上 UI；保留尾 4 位帮人辨认是哪条 key。"""
+    if not key:
+        return ""
+    if len(key) <= 4:
+        return "•" * len(key)
+    return "••••" + key[-4:]
+
+
 def _preset_view(name: str, p) -> dict:
     return {
         "name": name,
         "provider": p.provider,
         "model": p.model,
         "base_url": p.base_url or "",
+        "note": getattr(p, "note", "") or "",
+        "api_key_masked": _mask_api_key(p.api_key),
     }
 
 
@@ -326,6 +337,65 @@ async def admin_set_fallback(body: dict):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "fallback": name}
+
+
+@app.post("/api/admin/presets")
+async def admin_create_preset(body: dict):
+    """新增 preset。重名 → 409，校验失败 → 400。"""
+    import config
+    name = (body.get("name") or "").strip()
+    try:
+        config.add_preset(
+            name=name,
+            provider=body.get("provider") or "",
+            api_key=body.get("api_key") or "",
+            base_url=body.get("base_url") or "",
+            model=body.get("model") or "",
+            note=body.get("note") or "",
+        )
+    except ValueError as e:
+        msg = str(e)
+        if "already exists" in msg:
+            raise HTTPException(status_code=409, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "name": name}
+
+
+@app.patch("/api/admin/presets/{name}")
+async def admin_update_preset(name: str, body: dict):
+    """更新 preset 字段。允许：provider / api_key / base_url / model / note。
+    api_key 传空字符串或不传 = 不动；不支持改名。"""
+    import config
+    fields: dict = {}
+    for k in ("provider", "base_url", "model", "note"):
+        if k in body and body[k] is not None:
+            fields[k] = body[k]
+    # api_key 留空 = 不变（避免误清空）
+    new_key = body.get("api_key")
+    if isinstance(new_key, str) and new_key.strip():
+        fields["api_key"] = new_key
+    try:
+        config.update_preset(name, **fields)
+    except ValueError as e:
+        msg = str(e)
+        if "unknown preset" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "name": name}
+
+
+@app.delete("/api/admin/presets/{name}")
+async def admin_delete_preset(name: str):
+    """删 preset。当前 active 拒删（400）；是 fallback 的会自动 clear。"""
+    import config
+    try:
+        config.delete_preset(name)
+    except ValueError as e:
+        msg = str(e)
+        if "unknown preset" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "deleted": name}
 
 
 @app.post("/api/admin/presets/test")

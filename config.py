@@ -58,23 +58,32 @@ ALLOWED_USER_ID: int = int(_cfg.get("discord", {}).get("allowed_user_id", 0) or 
 @dataclass
 class Preset:
     name: str
-    provider: str   # claude / relay / gemini
+    provider: str   # claude / openai / relay / gemini
     api_key: str
     base_url: str   # 仅 relay 需要
     model: str
+    note: str = ""
+
+
+_ALLOWED_PROVIDERS: set[str] = {"claude", "openai", "relay", "gemini"}
+
+
+def _build_preset(name: str, raw: dict) -> Preset:
+    return Preset(
+        name=name,
+        provider=raw.get("provider", "claude"),
+        api_key=raw.get("api_key", ""),
+        base_url=raw.get("base_url", ""),
+        model=raw.get("model", ""),
+        note=raw.get("note", ""),
+    )
 
 
 _ai = _cfg["ai"]
 _raw_presets: dict = _ai.get("presets", {})
-PRESETS: dict[str, Preset] = {}
-for _name, _p in _raw_presets.items():
-    PRESETS[_name] = Preset(
-        name=_name,
-        provider=_p.get("provider", "claude"),
-        api_key=_p.get("api_key", ""),
-        base_url=_p.get("base_url", ""),
-        model=_p.get("model", ""),
-    )
+PRESETS: dict[str, Preset] = {
+    _name: _build_preset(_name, _p) for _name, _p in _raw_presets.items()
+}
 
 _DEFAULT_PRESET: str = _ai.get("default_preset", "")
 _DEFAULT_FALLBACK: str = _ai.get("default_fallback", "")
@@ -158,6 +167,109 @@ def set_fallback(name: str | None) -> None:
 
 def list_presets() -> list[str]:
     return list(PRESETS.keys())
+
+
+# ── Preset 增删改 ──────────────────────────────────────────────────────
+# 三个写入函数都会：① 改 config.json 的 ai.presets 段（其他顶层字段不动）
+# ② 调 reload_presets() 把磁盘内容重读进 PRESETS dict，本进程立刻生效
+# 跨机/跨进程的同步靠人工（用户偏好手动 scp config.json 比自动同步更稳）。
+
+def reload_presets() -> None:
+    """重读 config.json 的 ai.presets，刷新内存中的 PRESETS dict。
+    保留 dict 对象身份（mutate in-place），其他模块持有的引用无需重新 import。"""
+    with open(_CONFIG_FILE, encoding="utf-8") as f:
+        cfg = json.load(f)
+    raw = cfg.get("ai", {}).get("presets", {}) or {}
+    PRESETS.clear()
+    for name, p in raw.items():
+        PRESETS[name] = _build_preset(name, p)
+
+
+def add_preset(name: str, provider: str, api_key: str, base_url: str,
+               model: str, note: str = "") -> None:
+    name = name.strip()
+    if not name:
+        raise ValueError("name required")
+    if name in PRESETS:
+        raise ValueError(f"preset already exists: {name}")
+    provider = provider.strip().lower()
+    if provider not in _ALLOWED_PROVIDERS:
+        raise ValueError(f"invalid provider: {provider} (allowed: {sorted(_ALLOWED_PROVIDERS)})")
+    if not api_key.strip():
+        raise ValueError("api_key required")
+    if not model.strip():
+        raise ValueError("model required")
+    if provider == "relay" and not base_url.strip():
+        raise ValueError("base_url required for relay provider")
+
+    with open(_CONFIG_FILE, encoding="utf-8") as f:
+        cfg = json.load(f)
+    presets = cfg.setdefault("ai", {}).setdefault("presets", {})
+    presets[name] = {
+        "provider": provider,
+        "api_key": api_key,
+        "base_url": base_url,
+        "model": model,
+        "note": note,
+    }
+    with open(_CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    reload_presets()
+
+
+def update_preset(name: str, **fields) -> None:
+    """更新现有 preset 的字段。允许的字段：provider / api_key / base_url / model / note。
+    api_key 传空字符串 = 不动（仅当显式传 None 跳过）。不支持改名。"""
+    if name not in PRESETS:
+        raise ValueError(f"unknown preset: {name}")
+
+    with open(_CONFIG_FILE, encoding="utf-8") as f:
+        cfg = json.load(f)
+    presets = cfg.setdefault("ai", {}).setdefault("presets", {})
+    entry = presets.get(name, {})
+
+    allowed = {"provider", "api_key", "base_url", "model", "note"}
+    for k, v in fields.items():
+        if k not in allowed:
+            raise ValueError(f"field not editable: {k}")
+        if v is None:
+            continue
+        if k == "provider":
+            v = v.strip().lower()
+            if v not in _ALLOWED_PROVIDERS:
+                raise ValueError(f"invalid provider: {v}")
+        entry[k] = v
+
+    final_provider = entry.get("provider", "claude")
+    if final_provider == "relay" and not entry.get("base_url", "").strip():
+        raise ValueError("base_url required for relay provider")
+    if not entry.get("model", "").strip():
+        raise ValueError("model required")
+    if not entry.get("api_key", "").strip():
+        raise ValueError("api_key required")
+
+    presets[name] = entry
+    with open(_CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    reload_presets()
+
+
+def delete_preset(name: str) -> None:
+    """删 preset。当前 active 拒绝；是 fallback 的话先自动 clear fallback 再删。"""
+    if name not in PRESETS:
+        raise ValueError(f"unknown preset: {name}")
+    if name == _ACTIVE_NAME:
+        raise ValueError(f"cannot delete active preset: {name}")
+    if name == _FALLBACK_NAME:
+        set_fallback(None)
+
+    with open(_CONFIG_FILE, encoding="utf-8") as f:
+        cfg = json.load(f)
+    presets = cfg.setdefault("ai", {}).setdefault("presets", {})
+    presets.pop(name, None)
+    with open(_CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    reload_presets()
 
 
 # ── 服务器 ─────────────────────────────────────────────────────────────
