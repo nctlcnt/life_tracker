@@ -16,6 +16,8 @@ services:
     volumes:
       - ./data:/app/data
       - ./config.json:/app/config.json
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:${API_PORT:-8080}/api/health"]
