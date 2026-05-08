@@ -408,56 +408,64 @@ export function Dashboard({
           )}
         </div>
 
-        {/* Deadlines + interleaved next reminders */}
-        {visibleDeadlines.map((d, idx) => {
-          const isNext = idx === 0;
-          const isWarn = (d.countdown ?? '').includes('⚠️');
-          const dueLabel = d.dueDate
-            ? `${fmtWeekday(d.dueDate)}\n${fmtMonthDay(d.dueDate)}`
-            : '';
-          const card = (
-            <div key={`d-${d.id}`} className={`deadline${isNext ? ' next' : ''}`}>
-              <p className="label">{isNext ? 'Next deadline' : 'Upcoming'}</p>
-              <p className="when">
-                {dueLabel.split('\n').map((line, i) => (
-                  <span key={i}>
-                    {line}
-                    {i === 0 && <br />}
-                  </span>
-                ))}
-              </p>
-              <p className={`countdown${isWarn ? ' warn' : ''}`}>
-                {d.countdown ? `${d.countdown} · ` : ''}
-                {d.title}
-              </p>
-            </div>
-          );
-          if (!isNext || nextReminders.length === 0) return card;
-          return (
-            <Fragment key={`d-block-${d.id}`}>
-              {card}
-              {nextReminders.map(r => (
-                <div key={`r-${r.id}`} className="reminder-item">
-                  <svg className="bell" viewBox="0 0 16 16" fill="none">
-                    <path
-                      d="M8 2v1M5 5a3 3 0 016 0v3l1.5 2h-9L5 8V5zM6.5 12.5a1.5 1.5 0 003 0"
-                      stroke="currentColor"
-                      strokeWidth="1.3"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                  <div className="body">
-                    <div className="title">{r.title}</div>
-                    <div className="countdown">
-                      {r.dueDate ? `${fmtUntil(r.dueDate)} · ${fmtClock(r.dueDate)}` : ''}
-                    </div>
-                  </div>
+        {/* Reminder bell icon + body — extracted so we can render standalone when there are no deadlines */}
+        {(() => {
+          const reminderCards = nextReminders.map(r => (
+            <div key={`r-${r.id}`} className="reminder-item">
+              <svg className="bell" viewBox="0 0 16 16" fill="none">
+                <path
+                  d="M8 2v1M5 5a3 3 0 016 0v3l1.5 2h-9L5 8V5zM6.5 12.5a1.5 1.5 0 003 0"
+                  stroke="currentColor"
+                  strokeWidth="1.3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              <div className="body">
+                <div className="title">{r.title}</div>
+                <div className="countdown">
+                  {r.dueDate ? `${fmtUntil(r.dueDate)} · ${fmtClock(r.dueDate)}` : ''}
                 </div>
-              ))}
-            </Fragment>
-          );
-        })}
+              </div>
+            </div>
+          ));
+
+          if (visibleDeadlines.length === 0) {
+            return reminderCards;
+          }
+
+          return visibleDeadlines.map((d, idx) => {
+            const isNext = idx === 0;
+            const isWarn = (d.countdown ?? '').includes('⚠️');
+            const dueLabel = d.dueDate
+              ? `${fmtWeekday(d.dueDate)}\n${fmtMonthDay(d.dueDate)}`
+              : '';
+            const card = (
+              <div key={`d-${d.id}`} className={`deadline${isNext ? ' next' : ''}`}>
+                <p className="label">{isNext ? 'Next deadline' : 'Upcoming'}</p>
+                <p className="when">
+                  {dueLabel.split('\n').map((line, i) => (
+                    <span key={i}>
+                      {line}
+                      {i === 0 && <br />}
+                    </span>
+                  ))}
+                </p>
+                <p className={`countdown${isWarn ? ' warn' : ''}`}>
+                  {d.countdown ? `${d.countdown} · ` : ''}
+                  {d.title}
+                </p>
+              </div>
+            );
+            if (!isNext || reminderCards.length === 0) return card;
+            return (
+              <Fragment key={`d-block-${d.id}`}>
+                {card}
+                {reminderCards}
+              </Fragment>
+            );
+          });
+        })()}
 
         {hasMoreDates && (
           <button className="more-dates" onClick={() => setShowAllDates(s => !s)}>
