@@ -1,9 +1,14 @@
 """
 AI 引擎模块 (Gemini 版本)
-负责调用 Google Gemini API，处理 tool calling
+用 google-genai 官方 SDK 调用 Gemini API，处理 tool calling。
+
+外壳（chat / scheduled_action / simple_completion）和 ai_engine_base 不变；
+工具定义沿用 bot/tools.py::TOOLS（OpenAI 格式），转一层薄 schema 给 SDK。
 """
-import httpx
 import re
+from google import genai
+from google.genai import types
+from google.genai import errors as genai_errors
 from bot.tools import TOOLS
 from bot.prompts import PromptParts
 from bot.database import Database
@@ -40,176 +45,190 @@ async def simple_completion(prompt: str, preset: Preset) -> str:
     return await _base_simple_completion(prompt, _call_with_tools, preset)
 
 
-def _convert_to_gemini_format(messages: list[dict]) -> list[dict]:
-    """将内部消息格式转换为 Gemini 原生格式"""
-    gemini_messages = []
+# 懒加载客户端缓存：按 api_key 存储
+_clients: dict[str, genai.Client] = {}
+
+
+def _get_client(api_key: str) -> genai.Client:
+    if api_key not in _clients:
+        _clients[api_key] = genai.Client(api_key=api_key)
+    return _clients[api_key]
+
+
+def _convert_type(schema):
+    """OpenAI schema 的 type 字段是小写（"object" / "string"），
+    Gemini 的 Schema 期望大写（OBJECT / STRING）。递归转换。"""
+    if not isinstance(schema, dict):
+        return schema
+    new_schema = {}
+    for k, v in schema.items():
+        if k == "type" and isinstance(v, str):
+            new_schema[k] = v.upper()
+        elif isinstance(v, dict):
+            new_schema[k] = _convert_type(v)
+        elif isinstance(v, list):
+            new_schema[k] = [_convert_type(i) for i in v]
+        else:
+            new_schema[k] = v
+    return new_schema
+
+
+def _build_gemini_tool(tool_names: set | None) -> types.Tool | None:
+    source_tools = TOOLS
+    if tool_names is not None:
+        source_tools = [t for t in TOOLS if t["function"]["name"] in tool_names]
+    if not source_tools:
+        return None
+    decls = [
+        types.FunctionDeclaration(
+            name=t["function"]["name"],
+            description=t["function"]["description"],
+            parameters=_convert_type(t["function"]["parameters"]),
+        )
+        for t in source_tools
+    ]
+    return types.Tool(function_declarations=decls)
+
+
+def _messages_to_contents(messages: list[dict]) -> list[types.Content]:
+    """把内部消息格式（role + content:str）转为 SDK 的 types.Content。
+    入口 messages 都是 str content（_ensure_valid_messages 已保证）。"""
+    contents = []
     for m in messages:
         role = "user" if m["role"] == "user" else "model"
-        if isinstance(m["content"], list):
-            gemini_messages.append({"role": role, "parts": m["content"]})
-        else:
-            gemini_messages.append({"role": role, "parts": [{"text": m["content"]}]})
-    return gemini_messages
+        text = m["content"] if isinstance(m["content"], str) else str(m["content"])
+        contents.append(types.Content(role=role, parts=[types.Part(text=text)]))
+    return contents
+
+
+def _to_loggable(obj):
+    """把 SDK pydantic 对象转成 JSON-friendly dict 给 test_mode 日志用。"""
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump(exclude_none=True, mode="json")
+    return obj
 
 
 async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: list[dict],
                            preset: Preset,
                            send_callback=None, tool_callback=None,
                            tool_names: set | None = None) -> str:
-    """使用 httpx 直接调用 Gemini REST API。
-
-    preset: 当前激活的 AI preset，提供 api_key 与 model。
-    """
-    api_key = preset.api_key
+    """通过 google-genai SDK 调用 Gemini，处理多轮 tool calling。"""
+    client = _get_client(preset.api_key)
     model = preset.model
     model_name = model if "gemini" in model.lower() else "gemini-2.0-flash"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
 
-    # 拍平 PromptParts 为单个字符串（全量）；中间轮用精简版省 token，最后一轮用全量
+    # 拍平 PromptParts；中间轮用精简版省 token，最后一轮用全量
     system_prompt = prompt.flatten() if prompt else ""
     concise_prompt = prompt.concise().flatten() if prompt else None
 
-    # 转换工具格式
-    def convert_type(schema):
-        if not isinstance(schema, dict):
-            return schema
-        new_schema = {}
-        for k, v in schema.items():
-            if k == "type" and isinstance(v, str):
-                new_schema[k] = v.upper()
-            elif isinstance(v, dict):
-                new_schema[k] = convert_type(v)
-            elif isinstance(v, list):
-                new_schema[k] = [convert_type(i) for i in v]
-            else:
-                new_schema[k] = v
-        return new_schema
+    gemini_tool = _build_gemini_tool(tool_names)
+    tools_arg = [gemini_tool] if gemini_tool else None
 
-    # 按 tool_names 过滤工具子集
-    source_tools = TOOLS
-    if tool_names is not None:
-        source_tools = [t for t in TOOLS if t["function"]["name"] in tool_names]
-
-    gemini_tools = []
-    if source_tools:
-        decls = []
-        for t in source_tools:
-            decls.append({
-                "name": t["function"]["name"],
-                "description": t["function"]["description"],
-                "parameters": convert_type(t["function"]["parameters"])
-            })
-        gemini_tools = [{"functionDeclarations": decls}]
-
-    all_texts = []  # 收集发送过的文本
-    sent_display_texts = set()
+    contents: list[types.Content] = _messages_to_contents(messages)
+    all_texts: list[str] = []
+    sent_display_texts: set[str] = set()
+    is_intermediate = False  # 首轮发全量；有过工具调用后切精简
 
     test_mode.ensure_handler_state()
 
-    async with httpx.AsyncClient() as client:
-        current_messages = [m.copy() for m in messages]
-        is_intermediate = False  # 首轮发全量；有过工具调用后切精简
+    for round_idx in range(5):
+        current_prompt = (concise_prompt if is_intermediate and concise_prompt
+                          else system_prompt)
+        config = types.GenerateContentConfig(
+            system_instruction=current_prompt,
+            tools=tools_arg,
+        )
 
-        for round_idx in range(5):
-            current_prompt = (concise_prompt if is_intermediate and concise_prompt
-                              else system_prompt)
-            gemini_payload = {
-                "systemInstruction": {
-                    "parts": [{"text": current_prompt}]
-                },
-                "contents": _convert_to_gemini_format(current_messages),
-            }
-            if gemini_tools:
-                gemini_payload["tools"] = gemini_tools
+        test_mode.log_prompt("gemini", model, {
+            "model": model_name,
+            "system_instruction": current_prompt,
+            "contents": [_to_loggable(c) for c in contents],
+            "tools": _to_loggable(gemini_tool) if gemini_tool else None,
+        }, round_num=round_idx + 1)
 
-            test_mode.log_prompt("gemini", model, gemini_payload, round_num=round_idx + 1)
+        try:
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config,
+            )
+        except genai_errors.APIError as e:
+            logger.error(f"❌ Gemini API Error: {e}")
+            raise AIProviderError(f"Gemini API 错误: {e}") from e
 
-            resp = await client.post(url, json=gemini_payload, timeout=60.0)
-            if resp.status_code != 200:
-                logger.error(f"❌ Gemini API Error: {resp.text[:500]}")
-                raise AIProviderError(f"Gemini API 错误 ({resp.status_code}): {resp.text[:200]}")
+        test_mode.log_response("gemini", model, _to_loggable(response),
+                               round_num=round_idx + 1)
 
-            data = resp.json()
-            test_mode.log_response("gemini", model, data, round_num=round_idx + 1)
+        candidates = response.candidates or []
+        if not candidates:
+            raise AIProviderError("Gemini API 未返回有效 candidates")
 
-            candidates = data.get("candidates", [])
-            if not candidates:
-                raise AIProviderError("Gemini API 未返回有效 candidates")
+        assistant_content = candidates[0].content
+        parts = (assistant_content.parts if assistant_content else None) or []
 
-            first_candidate = candidates[0]
-            parts = first_candidate.get("content", {}).get("parts", [])
+        text_parts = []
+        tool_calls = []
+        for part in parts:
+            if getattr(part, "text", None):
+                text_parts.append(part.text)
+            elif getattr(part, "function_call", None):
+                tool_calls.append(part.function_call)
 
-            text_parts = []
-            tool_calls = []
+        round_text = "\n".join(text_parts).strip()
 
-            for part in parts:
-                if "text" in part:
-                    text_parts.append(part["text"])
-                elif "functionCall" in part:
-                    tool_calls.append(part["functionCall"])
+        # 提取并记录 <think> / <thinking> 块
+        think_blocks = re.findall(r'<think(?:ing)?>(.*?)</think(?:ing)?>', round_text, flags=re.DOTALL)
+        if think_blocks:
+            think_content = "\n".join(b.strip() for b in think_blocks if b.strip())
+            if think_content:
+                logger.info(f"🤔 思考:\n{think_content}")
 
-            round_text = "\n".join(text_parts).strip()
-            
-            # 提取并记录 <think> / <thinking> 块
-            think_blocks = re.findall(r'<think(?:ing)?>(.*?)</think(?:ing)?>', round_text, flags=re.DOTALL)
-            if think_blocks:
-                think_content = "\n".join(b.strip() for b in think_blocks if b.strip())
-                if think_content:
-                    logger.info(f"🤔 思考:\n{think_content}")
+        display_text = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', round_text, flags=re.DOTALL).strip()
 
-            display_text = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', round_text, flags=re.DOTALL).strip()
-
-            # 最后一轮（没有 tool_call）
-            if not tool_calls:
-                if display_text and display_text not in sent_display_texts:
-                    logger.info(f"💬 发送回复:\n{display_text}")
-                    if send_callback:
-                        await send_callback(display_text)
-                    sent_display_texts.add(display_text)
-                    all_texts.append(display_text)
-                return "\n".join(all_texts)
-
-            # 中间轮：文字也直接发给用户（每一轮文字 = 给她看的）
+        # 最后一轮（没有 tool_call）
+        if not tool_calls:
             if display_text and display_text not in sent_display_texts:
                 logger.info(f"💬 发送回复:\n{display_text}")
                 if send_callback:
                     await send_callback(display_text)
                 sent_display_texts.add(display_text)
                 all_texts.append(display_text)
+            return "\n".join(all_texts)
 
-            current_messages.append({
-                "role": "model",
-                "content": parts
-            })
+        # 中间轮：文字也直接发给用户（每一轮文字 = 给她看的）
+        if display_text and display_text not in sent_display_texts:
+            logger.info(f"💬 发送回复:\n{display_text}")
+            if send_callback:
+                await send_callback(display_text)
+            sent_display_texts.add(display_text)
+            all_texts.append(display_text)
 
-            # 执行工具
-            tool_responses = []
-            called_names = []
-            for tc in tool_calls:
-                func_name = tc.get("name")
-                func_args = tc.get("args", {})
-                
-                desc = next((t["function"].get("description", "") for t in TOOLS if t["function"]["name"] == func_name), "")
-                desc_first = desc.split("。")[0] if desc else ""
-                logger.info(f"🛠️ 调用工具: {func_name} | {desc_first}")
-                logger.info(f"   参数: {func_args}")
-                
-                result = _execute_tool(db, func_name, func_args)
-                called_names.append(func_name)
-                tool_responses.append({
-                    "functionResponse": {
-                        "name": func_name,
-                        "response": result
-                    }
-                })
-            current_messages.append({
-                "role": "user",
-                "content": tool_responses
-            })
+        # 把 assistant 的完整 Content（含 function_call parts）追加进对话
+        contents.append(assistant_content)
 
-            is_intermediate = True  # 已有过工具调用，后续轮次用精简 prompt
+        # 执行工具，构造 functionResponse parts
+        tool_response_parts = []
+        called_names = []
+        for fc in tool_calls:
+            func_name = fc.name
+            func_args = dict(fc.args) if fc.args else {}
 
-            if tool_callback and called_names:
-                await tool_callback(called_names)
+            desc = next((t["function"].get("description", "") for t in TOOLS
+                         if t["function"]["name"] == func_name), "")
+            desc_first = desc.split("。")[0] if desc else ""
+            logger.info(f"🛠️ 调用工具: {func_name} | {desc_first}")
+            logger.info(f"   参数: {func_args}")
 
-        return "\n".join(all_texts) or "（内部错误：工具调用次数过多）"
+            result = _execute_tool(db, func_name, func_args)
+            called_names.append(func_name)
+            tool_response_parts.append(
+                types.Part.from_function_response(name=func_name, response=result)
+            )
+
+        contents.append(types.Content(role="user", parts=tool_response_parts))
+        is_intermediate = True
+
+        if tool_callback and called_names:
+            await tool_callback(called_names)
+
+    return "\n".join(all_texts) or "（内部错误：工具调用次数过多）"
