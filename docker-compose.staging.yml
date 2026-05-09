@@ -7,12 +7,18 @@
 #   mkdir -p data-dev
 #   docker compose -f docker-compose.staging.yml up -d --build
 #
-# Iterate:
-#   docker compose -f docker-compose.staging.yml up -d --build      # pick up code changes
+# Iterate (most changes — fast restart, no rebuild):
+#   docker compose -f docker-compose.staging.yml restart app        # ~5s, picks up host code changes
+#   cd frontend && npm run build                                    # rebuild dist; browser refresh enough
 #   docker compose -f docker-compose.staging.yml logs -f app
 #   docker compose -f docker-compose.staging.yml down               # stop
 #
+# Iterate (dependency changes — full rebuild):
+#   docker compose -f docker-compose.staging.yml up -d --build      # only when requirements.txt / package.json change
+#
 # Notes:
+# - Source dirs are bind-mounted so host edits are visible to the container.
+#   Restart picks them up; no rebuild needed for Python / dist changes.
 # - No litestream service: dev DB is local-only, never replicated to R2.
 # - Compose project name is set explicitly so containers/networks/volumes don't
 #   collide with the default prod project (named after the directory).
@@ -27,6 +33,12 @@ services:
     volumes:
       - ./data-dev:/app/data
       - ./config.dev.json:/app/config.json
+      # Bind-mount source for fast iteration: edit on host, `restart app` picks it up.
+      - ./bot:/app/bot
+      - ./api:/app/api
+      - ./main.py:/app/main.py
+      - ./config.py:/app/config.py
+      - ./frontend/dist:/app/frontend/dist
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8081/api/health"]
