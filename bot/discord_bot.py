@@ -82,6 +82,8 @@ class LifeTrackerBot(commands.Bot):
 
     async def on_typing(self, channel, user, when):
         """记录目标用户在目标频道的 typing 时刻，供随机轮询判断是否让路。"""
+        if not isinstance(channel, discord.DMChannel):
+            return
         if config.ALLOWED_USER_ID and user.id != config.ALLOWED_USER_ID:
             return
         if self.target_channel_id and channel.id != self.target_channel_id:
@@ -102,6 +104,10 @@ class LifeTrackerBot(commands.Bot):
 
         # 只响应指定用户
         if config.ALLOWED_USER_ID and message.author.id != config.ALLOWED_USER_ID:
+            return
+
+        # 只听 DM，不响应任何服务器频道
+        if not isinstance(message.channel, discord.DMChannel):
             return
 
         # 斜杠命令走 interaction，普通消息才到这里
