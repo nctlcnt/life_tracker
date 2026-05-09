@@ -18,6 +18,7 @@ frontend/dist-ssr/
 # Local secrets and data (injected at runtime via volume / env)
 .env
 data/
+data-dev/
 *.db
 *.log
 
@@ -32,3 +33,4 @@ data/
 .github/
 *.md
 config.json
+config.dev.json

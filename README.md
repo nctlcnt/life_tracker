@@ -285,3 +285,66 @@ docker compose -f docker-compose.prod.yml restart
 ```
 
 服务器重启后容器会自动拉起（`restart: unless-stopped`）。
+
+---
+
+## 云上测试环境（可选）
+
+如果服务器上已经 `git clone` 了仓库，可以在同一台机器上跑一个独立的 dev/staging stack 验证改动，不影响 prod。
+
+**前置**：在 [Discord Developer Portal](https://discord.com/developers/applications) 申请第二个 Application & Bot Token，作为测试 bot。理由：同一个 token 不能在两个进程同时运行；用同一只 bot 测试也会让真实聊天和测试输出混在一起。
+
+### 一次性设置
+
+```bash
+cd ~/life-tracker
+git pull                                   # 同步最新源码
+
+# 1. 准备测试 config（独立 token + 独立端口，不和 prod 抢）
+cp config.json config.dev.json
+nano config.dev.json
+```
+
+至少改三处：
+- `discord.token` → 第二个 bot 的 token
+- `discord.allowed_user_id` → 你自己（可与 prod 一致）
+- `server.port` → `8081`
+
+建议改：
+- `ai.presets` 切到便宜模型（Haiku / Gemini Flash 等），避免 dev 聊天烧掉 prod 的 AI 配额
+- 把测试 bot 邀请到独立的 Discord 服务器或单独的频道，不要和 prod bot 同频道
+
+```bash
+# 2. 准备独立数据目录（dev SQLite 不会被 Litestream 同步到 R2）
+mkdir -p data-dev
+```
+
+`config.dev.json` 和 `data-dev/` 都已在 `.gitignore` / `.dockerignore` 中，不会进 git，也不会被打进任何镜像。
+
+### 启停
+
+```bash
+# 启动 / 重新构建（改了源码后用）
+docker compose -f docker-compose.staging.yml up -d --build
+
+# 看日志
+docker compose -f docker-compose.staging.yml logs -f app
+
+# 停止
+docker compose -f docker-compose.staging.yml down
+```
+
+dev stack 通过 compose project name `life-tracker-staging` 与 prod 隔离，互不影响。前端访问 `http://你的IP:8081`。
+
+### 与 prod 的隔离边界
+
+| 资源 | prod | staging |
+|---|---|---|
+| Discord Bot | bot1（`config.json`） | bot2（`config.dev.json`） |
+| 端口 | 8080 | 8081 |
+| 数据库 | `data/life_tracker.db` | `data-dev/life_tracker.db` |
+| Litestream（→ R2 备份） | 跑 | 不跑 |
+| Compose project | 默认（目录名） | `life-tracker-staging` |
+| 镜像来源 | `ghcr.io/...:vX.Y.Z`（不可变） | 本地 `build: .`（每次从源码构建） |
+
+prod 始终走 [发布流程](#在服务器上部署--升级)（tag → CI → 镜像 → `make deploy`），staging 仅用于在合并/打 tag 之前快速验证改动。

@@ -24,6 +24,7 @@ MANIFEST
 
 # Configuration (secrets)
 config.json
+config.dev.json
 
 # Environment (legacy)
 .env
@@ -44,6 +45,7 @@ venv.bak/
 
 # Data directory (runtime files, logs, DB, test flags — all ignored)
 data/
+data-dev/
 
 # Logs
 *.log
