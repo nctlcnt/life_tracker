@@ -5,6 +5,7 @@ import { TimelineEvent } from './components/MultiLaneTimeline';
 import { ProjectOverview } from './components/ProjectOverview';
 import { Dashboard } from './components/Dashboard';
 import { AdminPanel } from './components/AdminPanel';
+import { TraceViewer } from './components/TraceViewer';
 import './components/dashboard.css';
 
 // ── 日期格式化 ─────────────────────────────────────────────────
@@ -17,21 +18,29 @@ function fmtDateStr(d: Date) {
 // ── Tab 类型 ────────────────────────────────────────────────────
 type ViewMode = 'day' | 'week' | 'project';
 
-function isAdminHash(): boolean {
-  return window.location.hash.replace(/^#/, '') === 'admin';
+type Route = 'dashboard' | 'admin' | 'traces';
+
+function routeFromHash(): Route {
+  const h = window.location.hash.replace(/^#/, '');
+  if (h === 'admin') return 'admin';
+  if (h === 'traces') return 'traces';
+  return 'dashboard';
 }
 
-// Top-level router: '#admin' surfaces the hidden admin panel; everything
-// else renders the regular dashboard. Kept off the main nav so it's only
-// reachable by typing the URL.
+// Top-level router: '#admin' surfaces the hidden admin panel, '#traces'
+// surfaces the AI trace viewer; everything else renders the regular
+// dashboard. Both auxiliary surfaces are kept off the main nav and only
+// reachable by typing the URL hash.
 export default function App() {
-  const [isAdmin, setIsAdmin] = useState<boolean>(isAdminHash);
+  const [route, setRoute] = useState<Route>(routeFromHash);
   useEffect(() => {
-    const onHash = () => setIsAdmin(isAdminHash());
+    const onHash = () => setRoute(routeFromHash());
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
-  return isAdmin ? <AdminPanel /> : <DashboardApp />;
+  if (route === 'admin') return <AdminPanel />;
+  if (route === 'traces') return <TraceViewer />;
+  return <DashboardApp />;
 }
 
 function DashboardApp() {

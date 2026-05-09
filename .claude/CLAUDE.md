@@ -78,9 +78,10 @@ Discord ↔ Python 进程 (Bot + AI Router + SQLite + FastAPI) ↔ React 前端
 | `bot/weather.py` | 天气查询模块，使用 tomorrow.io API（需 `weather.api_key`，免费档 500 calls/day），早上时段注入天气数据 |
 | `bot/timezone_state.py` | 进程时区管理：通过 `os.environ['TZ']` + `time.tzset()` 控制本地时间；启动时从 `data/active_tz.json` 读取，运行时通过 `/tz` 切换并持久化 |
 | `bot/test_mode.py` | 测试模式：`python main.py --test` 启动后捕获所有日志和 AI prompt payload 写入 JSONL |
+| `bot/trace.py` | AI 对话 trace 写入：每次 chat / scheduled_action / simple_completion 完整记录 prompt 组成（PromptParts 4 层 block）、消息历史、每轮模型输出（含 `<think>` 原文）、工具调用与结果到 `data/ai_traces/<日期>.jsonl`。用 contextvars 维护当前 trace，引擎之间不传 trace_id；写失败永远不抛。前端 `#traces` 路由查看 |
 | `bot/logger.py` | 集中日志配置，其他模块 `get_logger(__name__)` 统一获取，支持 RotatingFileHandler |
-| `api/server.py` | FastAPI 接口：`/api/timeline`(合并后), `/api/events`, `/api/categories`, `/api/memories`, `/api/reminders`, `/api/todos`, `/api/deadlines`, `/api/projects/heatmap` |
-| `frontend/` | React + Vite + Tailwind 组件化前端：日视图编辑式 Dashboard (`Dashboard`，内嵌 `MultiLaneTimeline`)、周视图 (`WeekView`)、Project Overview (`ProjectOverview`)、通用列表 (`ItemList`) |
+| `api/server.py` | FastAPI 接口：`/api/timeline`(合并后), `/api/events`, `/api/categories`, `/api/memories`, `/api/reminders`, `/api/todos`, `/api/deadlines`, `/api/projects/heatmap`, `/api/traces` (+ `/dates`) |
+| `frontend/` | React + Vite + Tailwind 组件化前端：日视图编辑式 Dashboard (`Dashboard`，内嵌 `MultiLaneTimeline`)、周视图 (`WeekView`)、Project Overview (`ProjectOverview`)、通用列表 (`ItemList`)；隐藏页 `#admin` (AI preset 管理) 与 `#traces` (AI 对话 trace 观测，每轮 think / 工具调用 / prompt 组成可展开) |
 | `scripts/` | 辅助脚本：`cleanup.py`（数据清理）、`dev.sh` / `dev_pull.sh`（本地 api-only 调试 + 从 R2 拉取生产 DB）、`extract_dispatch_samples.py` / `parse_dispatch_labels.py`（dispatch POC 标注工具） |
 
 ### 消息进程与数据流

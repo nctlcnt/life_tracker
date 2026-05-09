@@ -9,6 +9,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from bot.database import Database
 from bot.merge import merge_events
+from bot import trace as ai_trace
 
 app = FastAPI(title="Life Tracker API")
 
@@ -257,6 +258,26 @@ async def get_projects_heatmap(days: int = Query(90, description="统计天数�
     }
 
     return {"projects": projects, "dates": dates, "data": data}
+
+
+# ── AI Trace 观测 ───────────────────────────────────────────────
+
+
+@app.get("/api/traces/dates")
+async def list_trace_dates():
+    """所有有 trace 的日期，最新在前。"""
+    return {"dates": ai_trace.list_dates()}
+
+
+@app.get("/api/traces")
+async def list_traces(
+    date: str = Query(..., description="日期 YYYY-MM-DD"),
+    trigger: str | None = Query(None, description="按触发源过滤：chat/poll/reminder/bedtime/morning/oneshot"),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """读取某天的 trace 列表，最新在前。"""
+    entries = ai_trace.read_day(date, trigger=trigger, limit=limit)
+    return {"traces": entries, "count": len(entries)}
 
 
 @app.get("/api/health")

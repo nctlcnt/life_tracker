@@ -11,6 +11,7 @@ from bot.prompts import build_prompt, PromptParts
 from bot.weather import is_morning, get_weather_brief
 from bot.database import Database
 from bot.logger import get_logger
+from bot import trace
 from config import Preset
 import config
 
@@ -249,12 +250,19 @@ async def simple_completion(prompt: str, call_with_tools_fn, preset: Preset) -> 
     用于天气报告等独立的一次性生成任务。
     """
     messages = [{"role": "user", "content": prompt}]
-    reply = await call_with_tools_fn(
-        None, None, messages,
-        preset=preset,
-        tool_names=set(),  # 空集 → 不传工具
-    )
-    return reply
+    trace.start(trigger="oneshot", model=preset.model, provider=preset.provider,
+                prompt_parts=None, messages=messages)
+    try:
+        reply = await call_with_tools_fn(
+            None, None, messages,
+            preset=preset,
+            tool_names=set(),  # 空集 → 不传工具
+        )
+        trace.finalize(final_text=reply)
+        return reply
+    except Exception as e:
+        trace.finalize(error=f"{type(e).__name__}: {e}")
+        raise
 
 
 async def chat(db: Database, messages: list[dict],
@@ -280,18 +288,25 @@ async def chat(db: Database, messages: list[dict],
     # 构建 PromptParts（静态 + 动态上下文一步到位）
     prompt = _build_prompt(db, "chat", provider=preset.provider, weather=weather)
 
-    # 调用大模型（可能需要多轮 tool calling）
-    reply = await call_with_tools_fn(
-        db, prompt, messages,
-        send_callback=send_callback,
-        tool_callback=tool_callback,
-        preset=preset,
-    )
+    trace.start(trigger="chat", model=preset.model, provider=preset.provider,
+                prompt_parts=prompt, messages=messages)
+    try:
+        # 调用大模型（可能需要多轮 tool calling）
+        reply = await call_with_tools_fn(
+            db, prompt, messages,
+            send_callback=send_callback,
+            tool_callback=tool_callback,
+            preset=preset,
+        )
 
-    # 备份 AI 回复到 DB
-    db.add_message("assistant", reply)
+        # 备份 AI 回复到 DB
+        db.add_message("assistant", reply)
 
-    return reply
+        trace.finalize(final_text=reply)
+        return reply
+    except Exception as e:
+        trace.finalize(error=f"{type(e).__name__}: {e}")
+        raise
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
@@ -333,37 +348,44 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     # 注：tool_names 不再过滤，chat / poll 共用全量 tools，
     # 避免 tools 字段差异导致 prompt cache 前缀 miss。
 
-    if allow_silent:
-        # 逐轮过滤 [SILENT]：中间轮的真实文字立即发送，[SILENT] 静默吞掉。
-        # 修复：旧逻辑把 send_callback=None 传入 _call_with_tools，导致工具轮
-        # 的文字全部攒到最后；而最终拼接结果一旦包含 [SILENT] 就整体丢弃。
-        sent_texts: list[str] = []
+    trace.start(trigger=trigger or "scheduled", model=preset.model, provider=preset.provider,
+                prompt_parts=prompt_parts, messages=messages)
+    final_reply: str | None = None
+    try:
+        if allow_silent:
+            # 逐轮过滤 [SILENT]：中间轮的真实文字立即发送，[SILENT] 静默吞掉。
+            # 修复：旧逻辑把 send_callback=None 传入 _call_with_tools，导致工具轮
+            # 的文字全部攒到最后；而最终拼接结果一旦包含 [SILENT] 就整体丢弃。
+            sent_texts: list[str] = []
 
-        async def _silent_filter(text: str):
-            if "[SILENT]" not in text:
-                sent_texts.append(text)
-                if send_callback:
-                    await send_callback(text)
+            async def _silent_filter(text: str):
+                if "[SILENT]" not in text:
+                    sent_texts.append(text)
+                    if send_callback:
+                        await send_callback(text)
 
-        await call_with_tools_fn(
-            db, prompt_parts, messages,
-            send_callback=_silent_filter,
-            preset=preset,
-        )
+            await call_with_tools_fn(
+                db, prompt_parts, messages,
+                send_callback=_silent_filter,
+                preset=preset,
+            )
 
-        if sent_texts:
-            real_reply = "\n".join(sent_texts)
-            db.add_message("assistant", real_reply)
-            return real_reply
-        return None
+            if sent_texts:
+                final_reply = "\n".join(sent_texts)
+        else:
+            reply = await call_with_tools_fn(
+                db, prompt_parts, messages,
+                send_callback=send_callback,
+                preset=preset,
+            )
 
-    reply = await call_with_tools_fn(
-        db, prompt_parts, messages,
-        send_callback=send_callback,
-        preset=preset,
-    )
+            if reply and "[SILENT]" not in reply:
+                final_reply = reply
 
-    if reply and "[SILENT]" not in reply:
-        db.add_message("assistant", reply)
-        return reply
-    return None
+        if final_reply:
+            db.add_message("assistant", final_reply)
+        trace.finalize(final_text=final_reply)
+        return final_reply
+    except Exception as e:
+        trace.finalize(error=f"{type(e).__name__}: {e}")
+        raise

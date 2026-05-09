@@ -15,7 +15,7 @@ from bot.ai_engine_base import (
     simple_completion as _base_simple_completion,
 )
 from bot.logger import get_logger
-from bot import test_mode
+from bot import test_mode, trace
 from config import Preset
 
 logger = get_logger(__name__)
@@ -117,12 +117,12 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
 
             # 提取并记录 <think> / <thinking> 块
             think_blocks = re.findall(r'<think(?:ing)?>(.*?)</think(?:ing)?>', round_text, flags=re.DOTALL)
-            if think_blocks:
-                think_content = "\n".join(b.strip() for b in think_blocks if b.strip())
-                if think_content:
-                    logger.info(f"🤔 思考:\n{think_content}")
+            think_content = "\n".join(b.strip() for b in think_blocks if b.strip()) if think_blocks else ""
+            if think_content:
+                logger.info(f"🤔 思考:\n{think_content}")
 
             display_text = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', round_text, flags=re.DOTALL).strip()
+            usage_log = data.get("usage")
 
             # 最后一轮（没有 tool_call）
             if not tool_calls:
@@ -132,6 +132,11 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                         await send_callback(display_text)
                     sent_display_texts.add(display_text)
                     all_texts.append(display_text)
+                trace.add_round(
+                    raw_output=round_text, think=think_content, visible_text=display_text,
+                    tool_calls=[], tool_results=[],
+                    usage=usage_log, stop_reason=finish_reason,
+                )
                 return "\n".join(all_texts)
 
             # 中间轮：文字也直接发给用户（每一轮文字 = 给她看的）
@@ -153,6 +158,8 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
 
             # 执行每个 tool
             called_names = []
+            trace_tool_calls = []
+            trace_tool_results = []
             for tc in tool_calls:
                 func = tc.get("function", {})
                 func_name = func.get("name", "")
@@ -163,10 +170,13 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
 
                 result = _execute_tool(db, func_name, func_args)
                 called_names.append(func_name)
+                tc_id = tc.get("id", "")
+                trace_tool_calls.append({"name": func_name, "input": func_args, "id": tc_id})
+                trace_tool_results.append({"name": func_name, "tool_use_id": tc_id, "result": result})
 
                 full_messages.append({
                     "role": "tool",
-                    "tool_call_id": tc.get("id", ""),
+                    "tool_call_id": tc_id,
                     "content": json.dumps(result, ensure_ascii=False)
                 })
 
@@ -176,6 +186,12 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                 "role": "user",
                 "content": build_tool_round_hint(called_names),
             })
+
+            trace.add_round(
+                raw_output=round_text, think=think_content, visible_text=display_text,
+                tool_calls=trace_tool_calls, tool_results=trace_tool_results,
+                usage=usage_log, stop_reason=finish_reason,
+            )
 
             if tool_callback and called_names:
                 await tool_callback(called_names)
