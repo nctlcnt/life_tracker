@@ -1,0 +1,11 @@
+# Override for building from source on the server, bypassing ghcr.io.
+#
+# Usage (combined with prod compose):
+#   docker compose -f docker-compose.prod.yml -f docker-compose.local.yml up -d --build
+#
+# Or via make: `make deploy-local`.
+services:
+  app:
+    image: life-tracker:local
+    build: .
+    pull_policy: never

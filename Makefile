@@ -1,4 +1,4 @@
-.PHONY: dev down build logs release deploy
+.PHONY: dev down build logs release deploy deploy-local
 
 ## ── Local development ────────────────────────────────────────────────────────
 
@@ -41,3 +41,9 @@ deploy:
 	VERSION=$(VERSION) docker compose -f docker-compose.prod.yml pull
 	VERSION=$(VERSION) docker compose -f docker-compose.prod.yml up -d
 	@echo "Deployed $(VERSION)"
+
+# Build the image from the working tree and restart prod — skips ghcr.io entirely.
+# No version tag, no rollback archive. Use for fast iteration on the server.
+deploy-local:
+	docker compose -f docker-compose.prod.yml -f docker-compose.local.yml up -d --build
+	@echo "Deployed local build (life-tracker:local)"
