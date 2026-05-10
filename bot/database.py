@@ -145,6 +145,16 @@ class Database:
         except sqlite3.OperationalError:
             pass
 
+        # 一次性兼容迁移：项目曾经只存在于 events.project_name。
+        # 新版本改为用户手动项目表后，需要把已有历史项目注册进去，避免升级后 Project Overview 变空。
+        conn.execute("""
+            INSERT OR IGNORE INTO projects (name)
+            SELECT DISTINCT project_name
+            FROM events
+            WHERE category = 'Focus'
+              AND project_name IS NOT NULL
+              AND project_name != ''
+        """)
 
         conn.commit()
         conn.close()
