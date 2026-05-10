@@ -24,6 +24,16 @@ Clean, gentle aesthetic with Morandi-inspired muted tones — soft grays, dusty 
 - Issue ID in branch handles the linking — no need to repeat in every commit
 - Delete after merge
 
+## Deploy 端口与环境约定
+本机同时跑 prod 和 dev，**端口归属是固定的**：
+- `8080` = **prod**（`docker-compose.prod.yml`，bot 用 `.env.prod` + 仓库根目录的 `config.json` 里的 prod token / server.port）
+- `8081` = **staging / dev**（`docker-compose.staging.yml`，用 `config.dev.json`）
+
+部署时绝不能把 dev 的 compose 推到 8080，否则会把 prod 的 bot 顶掉、并且让 dev 用了 prod 的 token。规则：
+- `make deploy` / `make deploy-local` 只能跑 prod compose（已带 `--env-file .env.prod`）
+- 想本机起 dev，**显式覆盖端口**（`API_PORT=8081 docker compose up` 或走 staging compose），不要用 8080 默认值
+- bot 使用哪份配置由 compose mount 决定：prod mount `./config.json`，staging mount `./config.dev.json`——别交叉
+
 ## Linear connection
 本项目的 issue 跟踪在 Linear 上
 每次get issue时，使用两个步骤：

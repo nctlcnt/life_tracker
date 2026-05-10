@@ -21,6 +21,7 @@ interface HeatmapResponse {
   projects: string[];
   dates: string[];
   data: Record<string, Record<string, number>>;
+  archived?: string[];
 }
 
 interface WeatherResponse {
@@ -173,15 +174,18 @@ export function Dashboard({
   // ── Date pieces for the rail-date card
   const dateObj = new Date(`${date}T00:00:00`);
 
-  // ── Project compact: top 3 by total
+  // ── Project compact: top 3 by total（已归档不入榜）
   const projectRows = useMemo(() => {
     if (!heatmap) return [];
-    const totals = heatmap.projects.map(p => {
-      const perDay = heatmap.dates.map(d => heatmap.data[p]?.[d] ?? 0);
-      const sum = perDay.reduce((a, b) => a + b, 0);
-      const max = Math.max(...perDay, 1);
-      return { name: p, total: sum, perDay, max };
-    });
+    const archived = new Set(heatmap.archived ?? []);
+    const totals = heatmap.projects
+      .filter(p => !archived.has(p))
+      .map(p => {
+        const perDay = heatmap.dates.map(d => heatmap.data[p]?.[d] ?? 0);
+        const sum = perDay.reduce((a, b) => a + b, 0);
+        const max = Math.max(...perDay, 1);
+        return { name: p, total: sum, perDay, max };
+      });
     return totals
       .filter(r => r.total > 0)
       .sort((a, b) => b.total - a.total)

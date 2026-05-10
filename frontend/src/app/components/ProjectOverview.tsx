@@ -10,6 +10,7 @@ interface HeatmapData {
   projects: string[];
   dates: string[];
   data: Record<string, Record<string, number>>;
+  archived?: string[];
 }
 
 const FOCUS_COLOR = '#94A3B5'; // 烟蓝灰
@@ -36,13 +37,34 @@ function fmtMinutes(minutes: number): string {
 export function ProjectOverview() {
   const [data, setData] = useState<HeatmapData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showArchived, setShowArchived] = useState(false);
+  const [busyName, setBusyName] = useState<string | null>(null);
 
-  useEffect(() => {
+  const reload = () => {
     fetch('/api/projects/heatmap?days=90')
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    reload();
   }, []);
+
+  const toggleArchive = async (name: string, archived: boolean) => {
+    setBusyName(name);
+    try {
+      const url = archived ? '/api/projects/unarchive' : '/api/projects/archive';
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      reload();
+    } finally {
+      setBusyName(null);
+    }
+  };
 
   if (loading) {
     return (
@@ -51,6 +73,12 @@ export function ProjectOverview() {
       </div>
     );
   }
+
+  const archivedSet = new Set<string>(data?.archived ?? []);
+  const visibleProjects = (data?.projects ?? []).filter(
+    p => showArchived || !archivedSet.has(p)
+  );
+  const archivedCount = (data?.projects ?? []).filter(p => archivedSet.has(p)).length;
 
   if (!data || data.projects.length === 0) {
     return (
@@ -74,6 +102,7 @@ export function ProjectOverview() {
   }
 
   // 最大日投入分钟数（用于颜色深度归一化）
+  // 用全量项目算，避免切换"显示已归档"时颜色基准跳动
   let globalMax = 0;
   for (const proj of data.projects) {
     for (const d of data.dates) {
@@ -108,7 +137,18 @@ export function ProjectOverview() {
   return (
     <TooltipProvider delayDuration={80}>
       <div className="flex-1 overflow-auto px-8 py-6">
-        <h2 className="text-sm font-medium text-foreground mb-5">Project Overview</h2>
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-sm font-medium text-foreground">Project Overview</h2>
+          {archivedCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowArchived(s => !s)}
+              className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {showArchived ? `隐藏已归档 (${archivedCount})` : `显示已归档 (${archivedCount})`}
+            </button>
+          )}
+        </div>
 
         <div className="overflow-x-auto">
           <div style={{ minWidth: PROJ_LABEL_W + weeks.length * (CELL_SIZE + CELL_GAP) }}>
@@ -129,18 +169,33 @@ export function ProjectOverview() {
             </div>
 
             {/* 项目行 */}
-            {data.projects.map(proj => {
+            {visibleProjects.map(proj => {
               const totalMinutes = Object.values(data.data[proj] ?? {}).reduce((a, b) => a + b, 0);
+              const isArchived = archivedSet.has(proj);
+              const isBusy = busyName === proj;
               return (
-                <div key={proj} className="flex items-center mb-1.5">
-                  {/* 项目名称 */}
+                <div
+                  key={proj}
+                  className="group flex items-center mb-1.5"
+                  style={{ opacity: isArchived ? 0.45 : 1 }}
+                >
+                  {/* 项目名称 + 归档按钮 */}
                   <div
-                    className="flex-shrink-0 pr-3 text-xs text-foreground truncate text-right"
+                    className="flex-shrink-0 flex items-center justify-end pr-3 text-xs text-foreground"
                     style={{ width: PROJ_LABEL_W }}
                     title={proj}
                   >
-                    <span className="text-[11px]">{proj}</span>
-                    <span className="text-[10px] text-muted-foreground ml-1.5">
+                    <button
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => toggleArchive(proj, isArchived)}
+                      title={isArchived ? '取消归档' : '归档'}
+                      className="text-[10px] text-muted-foreground/60 hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity mr-1.5 px-1 py-0.5 rounded disabled:opacity-30"
+                    >
+                      {isArchived ? '↺' : '×'}
+                    </button>
+                    <span className="text-[11px] truncate">{proj}</span>
+                    <span className="text-[10px] text-muted-foreground ml-1.5 flex-shrink-0">
                       {fmtMinutes(totalMinutes)}
                     </span>
                   </div>

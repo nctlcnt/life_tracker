@@ -38,12 +38,12 @@ release:
 # Usage: make deploy VERSION=v1.0.0
 deploy:
 	@[ -n "$(VERSION)" ] || (echo "Error: VERSION is required  (e.g. make deploy VERSION=v1.0.0)" && exit 1)
-	VERSION=$(VERSION) docker compose -f docker-compose.prod.yml pull
-	VERSION=$(VERSION) docker compose -f docker-compose.prod.yml up -d
+	VERSION=$(VERSION) docker compose --env-file .env.prod -f docker-compose.prod.yml pull
+	VERSION=$(VERSION) docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 	@echo "Deployed $(VERSION)"
 
 # Build the image from the working tree and restart prod — skips ghcr.io entirely.
 # No version tag, no rollback archive. Use for fast iteration on the server.
 deploy-local:
-	docker compose -f docker-compose.prod.yml -f docker-compose.local.yml up -d --build
+	docker compose --env-file .env.prod -f docker-compose.prod.yml -f docker-compose.local.yml up -d --build
 	@echo "Deployed local build (life-tracker:local)"
