@@ -202,9 +202,24 @@ class LifeTrackerBot(commands.Bot):
         if not text or not text.strip():
             return
         if not self.target_channel_id:
+            logger.warning("⚠️ 主动发送跳过：target_channel_id 为空")
             return
         channel = self.get_channel(self.target_channel_id)
-        if channel and isinstance(channel, (discord.TextChannel, discord.DMChannel)):
+        if channel is None:
+            try:
+                channel = await self.fetch_channel(self.target_channel_id)
+            except Exception as e:
+                logger.warning(f"⚠️ 主动发送失败：无法取回频道 {self.target_channel_id}: {e}")
+                return
+
+        if not isinstance(channel, (discord.TextChannel, discord.DMChannel)):
+            logger.warning(
+                f"⚠️ 主动发送失败：频道类型不支持: {type(channel).__name__} ({self.target_channel_id})"
+            )
+            return
+
+        logger.info(f"📨 主动发送到频道 {channel.id}")
+        try:
             await _send_chat_chunks(
                 channel,
                 text,
@@ -213,6 +228,8 @@ class LifeTrackerBot(commands.Bot):
                     channel.id, "Discord typing 主动发送限流"
                 ),
             )
+        except Exception as e:
+            logger.exception(f"❌ 主动发送失败: {e}")
 
     async def _fetch_history_as_messages(
         self, channel, limit: int = 20, exclude_id: int | None = None
@@ -275,6 +292,12 @@ class LifeTrackerBot(commands.Bot):
         if not self.target_channel_id:
             return []
         channel = self.get_channel(self.target_channel_id)
+        if channel is None:
+            try:
+                channel = await self.fetch_channel(self.target_channel_id)
+            except Exception as e:
+                logger.warning(f"⚠️ 拉历史失败：无法取回频道 {self.target_channel_id}: {e}")
+                return []
         if not channel:
             return []
         return await self._fetch_history_as_messages(channel, limit=limit)
@@ -520,6 +543,7 @@ async def _send_chat_chunks(target, text: str, *,
         return
     limit = 2000
     chunks = [text[i:i + limit] for i in range(0, len(text), limit)]
+    logger.info(f"📤 准备发送 {len(chunks)} 段消息到 {type(target).__name__}（{len(text)} 字符）")
     if use_typing:
         typing_cm = target.typing()
         try:
@@ -535,7 +559,9 @@ async def _send_chat_chunks(target, text: str, *,
                     await target.send(chunk)
             finally:
                 await typing_cm.__aexit__(None, None, None)
+            logger.info("✅ 消息发送完成")
             return
 
     for chunk in chunks:
         await target.send(chunk)
+    logger.info("✅ 消息发送完成")
