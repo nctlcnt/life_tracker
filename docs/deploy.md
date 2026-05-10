@@ -2,6 +2,19 @@
 
 线上 life-tracker 跑在一台 VPS 上的 docker compose 里，镜像从 GitHub Container Registry 拉取。本文是**日常升级流程**——首次安装服务器、装 docker、登录 ghcr、配 nginx + HTTPS 等一次性步骤见 [README 的 VPS 部署指南](../README.md#vps-部署指南)。
 
+## 部署纪律：staging first
+
+**任何未发布的工作树改动只能先上 8081 staging 测试，不能直接部署到 8080 prod。**
+
+固定规则：
+
+1. 本地/服务器工作树改动 → `docker compose -f docker-compose.staging.yml up -d --build`
+2. 在 `http://<server>:8081/app/` 验证功能和 API。
+3. 验证通过后，走 release：`make release VERSION=vX.Y.Z`，等 GitHub Actions 推送 GHCR 镜像。
+4. prod 只用 registry release 镜像升级：`make deploy VERSION=vX.Y.Z`。
+
+不要把 `docker-compose.local.yml` 或 `make deploy-local` 用在 prod 日常发布上。它会从当前工作树构建 `life-tracker:local` 并重启 8080，绕过 tag / CI / GHCR，容易把未验证的 dev 代码打到生产。
+
 ## 镜像与版本
 
 `docker-compose.prod.yml` 里 image 字段是：
@@ -37,6 +50,8 @@ cp data/life_tracker.db data/life_tracker.db.bak-$(date +%Y%m%d-%H%M%S)
 ```
 
 ### 2. 切版本
+
+前置条件：对应版本已经在 staging 验证过，并且 GHCR 上已有该 release image。
 
 最简方式（推荐）：用 Makefile
 
