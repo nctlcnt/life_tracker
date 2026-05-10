@@ -214,6 +214,8 @@ async def get_projects_heatmap(days: int = Query(90, description="统计天数�
     """
     Project Overview 热力图数据。
     返回每个项目在最近 N 天里每天的 Focus 时长（分钟）。
+    含已归档项目（projects 字段全量），同时返回 archived 列表，
+    前端按需隐藏/淡化——避免归档动作往返之间的列表错位。
     """
     from datetime import datetime, timedelta
 
@@ -257,7 +259,28 @@ async def get_projects_heatmap(days: int = Query(90, description="统计天数�
         for proj in projects
     }
 
-    return {"projects": projects, "dates": dates, "data": data}
+    archived = db.get_archived_project_names()
+    return {"projects": projects, "dates": dates, "data": data, "archived": archived}
+
+
+@app.post("/api/projects/archive")
+async def archive_project(body: dict):
+    """归档一个项目（按名）。幂等——已归档再调返回 changed=False。"""
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    changed = db.archive_project(name)
+    return {"ok": True, "name": name, "changed": changed}
+
+
+@app.post("/api/projects/unarchive")
+async def unarchive_project(body: dict):
+    """取消归档。"""
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    changed = db.unarchive_project(name)
+    return {"ok": True, "name": name, "changed": changed}
 
 
 # ── AI Trace 观测 ───────────────────────────────────────────────

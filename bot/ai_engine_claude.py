@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from anthropic import AsyncAnthropic
-from bot.tools import TOOLS_ANTHROPIC
+from bot.tools import get_tools, to_anthropic_tools
 from bot.prompts import build_tool_round_hint, PromptParts
 from bot.database import Database
 from bot.ai_provider_error import AIProviderError
@@ -87,10 +87,8 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
     system_blocks = prompt.to_claude_blocks() if prompt else []
     block_prints = _block_fingerprints(system_blocks)
 
-    # 按 tool_names 过滤工具子集
-    tools = TOOLS_ANTHROPIC
-    if tool_names is not None:
-        tools = [t for t in TOOLS_ANTHROPIC if t["name"] in tool_names]
+    # 按 tool_names 过滤工具子集，并转换为 Anthropic schema
+    tools = to_anthropic_tools(get_tools(tool_names))
 
     # tools 字段是 cache 前缀的最前段（顺序：tools → system → messages），
     # 一旦变化下游全部 invalidate，所以打 fingerprint 帮助追踪 chat/poll 一致性
@@ -210,7 +208,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
             trace_tool_calls = []
             trace_tool_results = []
             for tool_use in tool_uses:
-                desc = next((t.get("description", "") for t in TOOLS_ANTHROPIC if t["name"] == tool_use.name), "")
+                desc = next((t.get("description", "") for t in tools if t["name"] == tool_use.name), "")
                 desc_first = desc.split("。")[0] if desc else ""
                 logger.info(f"🛠️ 调用工具: {tool_use.name} | {desc_first}")
                 logger.info(f"   参数: {tool_use.input}")

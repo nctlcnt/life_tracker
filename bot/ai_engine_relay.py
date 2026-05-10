@@ -5,7 +5,7 @@ AI 引擎模块 (中转站版)
 import json
 import httpx
 import re
-from bot.tools import TOOLS
+from bot.tools import get_tools
 from bot.prompts import build_tool_round_hint, PromptParts
 from bot.database import Database
 from bot.ai_provider_error import AIProviderError
@@ -62,9 +62,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
     full_system = prompt.flatten() if prompt else ""
 
     # 按 tool_names 过滤工具子集
-    tools = TOOLS
-    if tool_names is not None:
-        tools = [t for t in TOOLS if t["function"]["name"] in tool_names]
+    tools = get_tools(tool_names)
 
     full_messages = [{"role": "system", "content": full_system}] + list(messages)
     all_texts = []  # 收集发送过的文本

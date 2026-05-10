@@ -9,7 +9,7 @@ import re
 from google import genai
 from google.genai import types
 from google.genai import errors as genai_errors
-from bot.tools import TOOLS
+from bot.tools import TOOLS, get_tools
 from bot.prompts import PromptParts
 from bot.database import Database
 from bot.ai_provider_error import AIProviderError
@@ -74,9 +74,7 @@ def _convert_type(schema):
 
 
 def _build_gemini_tool(tool_names: set | None) -> types.Tool | None:
-    source_tools = TOOLS
-    if tool_names is not None:
-        source_tools = [t for t in TOOLS if t["function"]["name"] in tool_names]
+    source_tools = get_tools(tool_names)
     if not source_tools:
         return None
     decls = [

@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from openai import AsyncOpenAI, OpenAIError
-from bot.tools import TOOLS
+from bot.tools import get_tools
 from bot.prompts import build_tool_round_hint, PromptParts
 from bot.database import Database
 from bot.ai_provider_error import AIProviderError
@@ -101,9 +101,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
     section_prints = _section_fingerprints(prompt)
 
     # 按 tool_names 过滤工具子集
-    tools = TOOLS
-    if tool_names is not None:
-        tools = [t for t in TOOLS if t["function"]["name"] in tool_names]
+    tools = get_tools(tool_names)
 
     tools_hash = hashlib.sha256(
         json.dumps(tools, sort_keys=True).encode("utf-8")
