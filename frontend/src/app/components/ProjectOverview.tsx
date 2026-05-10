@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import type { FormEvent } from 'react';
+import { Archive, Check, Pencil, Plus, RotateCcw, Trash2, X } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
@@ -39,12 +41,50 @@ export function ProjectOverview() {
   const [loading, setLoading] = useState(true);
   const [showArchived, setShowArchived] = useState(false);
   const [busyName, setBusyName] = useState<string | null>(null);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [editingName, setEditingName] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState('');
+  const [error, setError] = useState<string | null>(null);
 
   const reload = () => {
     fetch('/api/projects/heatmap?days=90')
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
+  };
+
+  const requestProject = async (url: string, options: RequestInit) => {
+    const res = await fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.headers ?? {}),
+      },
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      throw new Error(body?.detail || `Request failed: ${res.status}`);
+    }
+  };
+
+  const createProject = async (event: FormEvent) => {
+    event.preventDefault();
+    const name = newProjectName.trim();
+    if (!name) return;
+    setBusyName(name);
+    setError(null);
+    try {
+      await requestProject('/api/projects', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      });
+      setNewProjectName('');
+      reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '创建项目失败');
+    } finally {
+      setBusyName(null);
+    }
   };
 
   useEffect(() => {
@@ -66,6 +106,52 @@ export function ProjectOverview() {
     }
   };
 
+  const beginRename = (name: string) => {
+    setEditingName(name);
+    setEditingValue(name);
+    setError(null);
+  };
+
+  const renameProject = async (oldName: string) => {
+    const name = editingValue.trim();
+    if (!name || name === oldName) {
+      setEditingName(null);
+      return;
+    }
+    setBusyName(oldName);
+    setError(null);
+    try {
+      await requestProject(`/api/projects/${encodeURIComponent(oldName)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name }),
+      });
+      setEditingName(null);
+      reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '重命名项目失败');
+    } finally {
+      setBusyName(null);
+    }
+  };
+
+  const deleteProject = async (name: string) => {
+    if (!window.confirm(`删除项目「${name}」？历史记录不会被删除，但 AI 之后看不到这个项目。`)) {
+      return;
+    }
+    setBusyName(name);
+    setError(null);
+    try {
+      await requestProject(`/api/projects/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+      });
+      reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除项目失败');
+    } finally {
+      setBusyName(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -80,41 +166,20 @@ export function ProjectOverview() {
   );
   const archivedCount = (data?.projects ?? []).filter(p => archivedSet.has(p)).length;
 
-  if (!data || data.projects.length === 0) {
-    return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center p-8">
-        <div className="grid grid-cols-13 gap-1 opacity-20">
-          {Array.from({ length: 91 }).map((_, i) => (
-            <div
-              key={i}
-              className="w-3.5 h-3.5 rounded-sm"
-              style={{ backgroundColor: FOCUS_COLOR }}
-            />
-          ))}
-        </div>
-        <p className="text-sm text-muted-foreground">
-          暂无 Focus 数据
-          <br />
-          <span className="text-xs opacity-60">开始记录后，项目热力图将在这里显示</span>
-        </p>
-      </div>
-    );
-  }
-
   // 最大日投入分钟数（用于颜色深度归一化）
   // 用全量项目算，避免切换"显示已归档"时颜色基准跳动
   let globalMax = 0;
-  for (const proj of data.projects) {
-    for (const d of data.dates) {
-      const v = data.data[proj]?.[d] ?? 0;
+  for (const proj of data?.projects ?? []) {
+    for (const d of data?.dates ?? []) {
+      const v = data?.data[proj]?.[d] ?? 0;
       if (v > globalMax) globalMax = v;
     }
   }
 
   // 按7天分组（每列是一周）
   const weeks: string[][] = [];
-  for (let i = 0; i < data.dates.length; i += 7) {
-    weeks.push(data.dates.slice(i, i + 7));
+  for (let i = 0; i < (data?.dates.length ?? 0); i += 7) {
+    weeks.push((data?.dates ?? []).slice(i, i + 7));
   }
 
   // 月份标签（每月第一天所在的列索引）
@@ -130,26 +195,65 @@ export function ProjectOverview() {
     });
   });
 
-  const PROJ_LABEL_W = 120; // 项目名列宽 px
+  const PROJ_LABEL_W = 220; // 项目名列宽 px
   const CELL_SIZE = 14;     // 格子大小 px
   const CELL_GAP = 2;       // 格子间距 px
 
   return (
     <TooltipProvider delayDuration={80}>
       <div className="flex-1 overflow-auto px-8 py-6">
-        <div className="flex items-center justify-between mb-5">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
           <h2 className="text-sm font-medium text-foreground">Project Overview</h2>
-          {archivedCount > 0 && (
+          <form onSubmit={createProject} className="flex items-center gap-2">
+            <input
+              type="text"
+              value={newProjectName}
+              onChange={event => setNewProjectName(event.target.value)}
+              placeholder="New project"
+              className="h-8 w-44 rounded-md border border-border bg-input-background px-2.5 text-xs outline-none focus:border-border-strong"
+            />
             <button
-              type="button"
-              onClick={() => setShowArchived(s => !s)}
-              className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+              type="submit"
+              disabled={!newProjectName.trim() || busyName === newProjectName.trim()}
+              title="添加项目"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground disabled:opacity-35"
             >
-              {showArchived ? `隐藏已归档 (${archivedCount})` : `显示已归档 (${archivedCount})`}
+              <Plus className="h-3.5 w-3.5" />
             </button>
-          )}
+            {archivedCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowArchived(s => !s)}
+                className="h-8 px-2 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+              >
+                {showArchived ? `隐藏已归档 (${archivedCount})` : `显示已归档 (${archivedCount})`}
+              </button>
+            )}
+          </form>
         </div>
 
+        {error && (
+          <div className="mb-4 text-xs text-destructive">{error}</div>
+        )}
+
+        {!data || data.projects.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-3 text-center p-8">
+            <div className="grid grid-cols-13 gap-1 opacity-20">
+              {Array.from({ length: 91 }).map((_, i) => (
+                <div
+                  key={i}
+                  className="w-3.5 h-3.5 rounded-sm"
+                  style={{ backgroundColor: FOCUS_COLOR }}
+                />
+              ))}
+            </div>
+            <p className="text-sm text-muted-foreground">
+              暂无项目
+              <br />
+              <span className="text-xs opacity-60">先添加项目，AI 才能把 Focus 记录归到项目里</span>
+            </p>
+          </div>
+        ) : (
         <div className="overflow-x-auto">
           <div style={{ minWidth: PROJ_LABEL_W + weeks.length * (CELL_SIZE + CELL_GAP) }}>
             {/* 月份标签行 */}
@@ -181,20 +285,72 @@ export function ProjectOverview() {
                 >
                   {/* 项目名称 + 归档按钮 */}
                   <div
-                    className="flex-shrink-0 flex items-center justify-end pr-3 text-xs text-foreground"
+                    className="flex-shrink-0 flex items-center justify-end gap-1 pr-3 text-xs text-foreground"
                     style={{ width: PROJ_LABEL_W }}
                     title={proj}
                   >
-                    <button
-                      type="button"
-                      disabled={isBusy}
-                      onClick={() => toggleArchive(proj, isArchived)}
-                      title={isArchived ? '取消归档' : '归档'}
-                      className="text-[10px] text-muted-foreground/60 hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity mr-1.5 px-1 py-0.5 rounded disabled:opacity-30"
-                    >
-                      {isArchived ? '↺' : '×'}
-                    </button>
-                    <span className="text-[11px] truncate">{proj}</span>
+                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => toggleArchive(proj, isArchived)}
+                        title={isArchived ? '取消归档' : '归档'}
+                        className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground/70 hover:text-foreground disabled:opacity-30"
+                      >
+                        {isArchived ? <RotateCcw className="h-3 w-3" /> : <Archive className="h-3 w-3" />}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => beginRename(proj)}
+                        title="重命名"
+                        className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground/70 hover:text-foreground disabled:opacity-30"
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => deleteProject(proj)}
+                        title="删除项目"
+                        className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground/70 hover:text-destructive disabled:opacity-30"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
+                    {editingName === proj ? (
+                      <div className="flex min-w-0 flex-1 items-center gap-0.5">
+                        <input
+                          type="text"
+                          value={editingValue}
+                          onChange={event => setEditingValue(event.target.value)}
+                          onKeyDown={event => {
+                            if (event.key === 'Enter') renameProject(proj);
+                            if (event.key === 'Escape') setEditingName(null);
+                          }}
+                          className="h-6 min-w-0 flex-1 rounded border border-border bg-input-background px-1.5 text-[11px] outline-none focus:border-border-strong"
+                          autoFocus
+                        />
+                        <button
+                          type="button"
+                          onClick={() => renameProject(proj)}
+                          title="保存"
+                          className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                        >
+                          <Check className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingName(null)}
+                          title="取消"
+                          className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="min-w-0 flex-1 whitespace-normal break-words text-right text-[11px] leading-tight">{proj}</span>
+                    )}
                     <span className="text-[10px] text-muted-foreground ml-1.5 flex-shrink-0">
                       {fmtMinutes(totalMinutes)}
                     </span>
@@ -244,6 +400,7 @@ export function ProjectOverview() {
             })}
           </div>
         </div>
+        )}
       </div>
     </TooltipProvider>
   );

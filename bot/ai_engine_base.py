@@ -132,15 +132,30 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
         # 只接受 'planned' 或缺省；其他值一律忽略（schema 已限 enum，双重保险）
         if status != "planned":
             status = None
+        category = args.get("category", "uncategorized")
+        project_name = (args.get("project_name") or "").strip() or None
+        if category == "Focus":
+            if not project_name:
+                return {
+                    "success": False,
+                    "message": "Focus 事件必须填写 project_name，且只能使用【现有项目列表】里的项目。",
+                }
+            if not db.project_exists(project_name):
+                return {
+                    "success": False,
+                    "message": f"未知项目: {project_name}。只能使用用户手动建立的项目；不能自行新建项目名。",
+                }
+        else:
+            project_name = None
         event_id = db.add_event(
             start_time=args["start_time"],
             end_time=args.get("end_time"),
             content=args["content"],
-            category=args.get("category", "uncategorized"),
+            category=category,
             notes=args.get("notes"),
             session_id=args.get("session_id"),
             is_parallel=False,
-            project_name=args.get("project_name"),
+            project_name=project_name,
             status=status,
         )
         old_id = args.get("session_id")
@@ -179,7 +194,23 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
         return {"success": True, "events": events, "count": len(events)}
 
     elif tool_name == "update_timeline_event":
-        fields = {k: args[k] for k in ("end_time", "content", "category", "project_name") if k in args}
+        fields = {k: args[k] for k in ("end_time", "content", "category") if k in args}
+        if "project_name" in args:
+            project_name = (args.get("project_name") or "").strip() or None
+            if not project_name or not db.project_exists(project_name):
+                return {
+                    "success": False,
+                    "message": f"未知项目: {project_name}。只能使用用户手动建立的项目；不能自行新建项目名。",
+                }
+            fields["project_name"] = project_name
+        if fields.get("category") == "Focus" and "project_name" not in fields:
+            existing = db.get_event_by_id(args["event_id"])
+            project_name = (existing or {}).get("project_name")
+            if not project_name or not db.project_exists(project_name):
+                return {
+                    "success": False,
+                    "message": "更新为 Focus 事件时必须提供有效 project_name，且只能使用【现有项目列表】里的项目。",
+                }
         # notes 追加模式：新 notes 拼接到已有内容后面
         if "notes" in args and args["notes"]:
             existing = db.get_event_by_id(args["event_id"])

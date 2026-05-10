@@ -151,7 +151,7 @@ TOOLS_SECTION = """
 ## Timeline（log / update / delete / query）
 
 content = 高度概括的标题（动词+宾语），notes = 具体细节+感受。
-project_name 严格优先复用【现有项目列表】，同义即复用。确无匹配再以 'Project-xxx' 新建。
+project_name 只能使用【现有项目列表】里的项目名。列表里没有匹配时，不要自行新建项目名；改记为非 Focus，或在回复里让她先到 Project Overview 手动添加项目。
 
 **新建 vs 更新 vs 删除**：
 - 同一件事延续（"还在学习""学完了"）→ query_timeline → update_timeline_event
@@ -164,7 +164,7 @@ project_name 严格优先复用【现有项目列表】，同义即复用。确�
 
 **Planned event（未来虚 event）**：
 - 她说了一个未来的到场型安排（"明天下午 3 点看牙"、"周五泡澡"、"周六约朋友喝咖啡"）→ log_timeline_event 带 `status="planned"`
-- category 照常按活动性质必填：看牙=Routine，约朋友喝咖啡=Chill，预约学习小组=Focus+project_name
+- category 照常按活动性质必填：看牙=Routine，约朋友喝咖啡=Chill，预约学习小组=Focus+project_name（仅限现有项目）
 - **严格区分**：已发生的事件绝对不加 status；未来安排必须加 `status="planned"`
 - 过了时间怎么办：什么都不做。planned 不会自动转真实事件，也别去补 log 真实版，除非她主动汇报"去了"/"没去"
 - 她说"不去了/取消"→ cancel_planned_event（不是 delete——痕迹保留供她回看）
@@ -347,7 +347,7 @@ LABEL_MEMORIES = "【你现在记着的事】"
 LABEL_ONGOING = "【当前进行中的事件（end_time 为空）】"
 LABEL_DEADLINES = "【待完成的 Deadline】"
 LABEL_WEATHER = "【今日天气】"
-LABEL_PROJECTS = "【现有项目列表（Focus 用，严格优先复用）】"
+LABEL_PROJECTS = "【现有项目列表（Focus 用，只能引用这里已有的项目）】"
 LABEL_PLANNED = "【未来安排（planned events）】"
 LABEL_PENDING_REMINDERS = "【待触发的 Reminder（你自己设的 follow-up 队列）】"
 
@@ -423,7 +423,7 @@ def _format_weather(weather: str | None) -> str:
 
 def _format_projects(projects: list[dict] | None) -> str:
     if not projects:
-        return ""
+        return f"{LABEL_PROJECTS}\n- 无"
     lines = [f"- {p['project_name']}" for p in projects]
     return f"{LABEL_PROJECTS}\n" + "\n".join(lines)
 

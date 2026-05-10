@@ -212,7 +212,7 @@ close
 close
 
 [ACTIONS]
-- log_timeline_event(start=2026-04-29T20:00, content=学习, category=Focus, project=Project-5916)
+- log_timeline_event(start=2026-04-29T20:00, content=学习, category=Focus, project=数据工程)
 - set_reminder(2026-04-29T22:00, 检查复习进度, group=study_0429)
 
 [FACTS_TO_CONVEY]

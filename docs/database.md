@@ -147,7 +147,7 @@
 
 无 SQL 外键约束，关系靠应用层维护：
 
-- `events.project_name` 没有独立 projects 表，所有项目名通过 `SELECT DISTINCT project_name FROM events WHERE category='Focus'` 聚合（`get_all_project_names`）。
+- `events.project_name` 只保存事件引用的项目名；AI 可见项目来自独立的 `projects` 表，由用户手动创建/删除/改名，不再从事件自动反推。
 - `reminders.group_id` 没有独立 groups 表，AI 自由生成字符串作为分组 key。
 - `messages` 与 `events` 完全解耦，AI 从聊天里提取活动后单独写 `events`。
 

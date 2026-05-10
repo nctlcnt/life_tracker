@@ -94,6 +94,14 @@ async def create_event(body: dict):
     if not content:
         raise HTTPException(status_code=400, detail="content required")
     category = body.get("category") or "Routine"
+    project_name = (body.get("project_name") or "").strip() or None
+    if category == "Focus":
+        if not project_name:
+            raise HTTPException(status_code=400, detail="project_name required for Focus events")
+        if not db.project_exists(project_name):
+            raise HTTPException(status_code=400, detail=f"unknown project: {project_name}")
+    else:
+        project_name = None
     start_time = body.get("start_time") or datetime.now().isoformat(timespec="seconds")
     end_time = body.get("end_time") or None
     event_id = db.add_event(
@@ -102,7 +110,7 @@ async def create_event(body: dict):
         content=content,
         category=category,
         notes=body.get("notes"),
-        project_name=body.get("project_name"),
+        project_name=project_name,
     )
     return {"id": event_id}
 
@@ -251,8 +259,15 @@ async def get_projects_heatmap(days: int = Query(90, description="统计天数�
         minutes = max(0, (end_t - start).total_seconds() / 60)
         project_day[proj][day] += minutes
 
-    # 按总时长排序项目（降序）
-    projects = sorted(project_day.keys(), key=lambda p: sum(project_day[p].values()), reverse=True)
+    project_rows = db.get_all_project_names(include_archived=True)
+    managed_projects = [p["project_name"] for p in project_rows]
+
+    # 按总时长排序项目（降序），无历史数据的手动项目也展示。
+    projects = sorted(
+        managed_projects,
+        key=lambda p: sum(project_day[p].values()),
+        reverse=True,
+    )
 
     data = {
         proj: {date: round(project_day[proj].get(date, 0)) for date in dates}
@@ -263,12 +278,60 @@ async def get_projects_heatmap(days: int = Query(90, description="统计天数�
     return {"projects": projects, "dates": dates, "data": data, "archived": archived}
 
 
+@app.get("/api/projects")
+async def list_projects():
+    """手动管理的项目清单。"""
+    projects = db.get_all_project_names(include_archived=True)
+    archived = set(db.get_archived_project_names())
+    return {
+        "projects": [
+            {**p, "archived": p["project_name"] in archived}
+            for p in projects
+        ]
+    }
+
+
+@app.post("/api/projects")
+async def create_project(body: dict):
+    """创建一个项目。AI 只会读取这里建立过的项目。"""
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    changed = db.add_project(name)
+    return {"ok": True, "name": name, "changed": changed}
+
+
+@app.patch("/api/projects/{old_name}")
+async def rename_project(old_name: str, body: dict):
+    """重命名项目，并同步历史事件。"""
+    new_name = (body.get("name") or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="name required")
+    if db.project_exists(new_name):
+        raise HTTPException(status_code=409, detail=f"project already exists: {new_name}")
+    changed = db.rename_project(old_name, new_name)
+    if not changed:
+        raise HTTPException(status_code=404, detail=f"project not found: {old_name}")
+    return {"ok": True, "old_name": old_name, "name": new_name}
+
+
+@app.delete("/api/projects/{name}")
+async def delete_project(name: str):
+    """删除项目清单项，不删除历史事件。"""
+    changed = db.delete_project(name)
+    if not changed:
+        raise HTTPException(status_code=404, detail=f"project not found: {name}")
+    return {"ok": True, "name": name}
+
+
 @app.post("/api/projects/archive")
 async def archive_project(body: dict):
     """归档一个项目（按名）。幂等——已归档再调返回 changed=False。"""
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name required")
+    if not db.project_exists(name):
+        raise HTTPException(status_code=404, detail=f"project not found: {name}")
     changed = db.archive_project(name)
     return {"ok": True, "name": name, "changed": changed}
 

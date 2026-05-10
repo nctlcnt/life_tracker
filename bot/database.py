@@ -88,6 +88,13 @@ class Database:
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
+            -- 手动管理的项目清单。
+            -- AI prompt 只能读取这里的项目，不再从 events.project_name 自动反推/新增。
+            CREATE TABLE IF NOT EXISTS projects (
+                name TEXT PRIMARY KEY,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
             -- 归档项目（手动管理，仅存项目名）
             -- 归档后不会再出现在 AI prompt 的现有项目列表里，
             -- 前端 ProjectOverview 默认隐藏，可切换显示。事件本身不动。
@@ -242,40 +249,105 @@ class Database:
         return [row["category"] for row in rows]
 
     def get_all_project_names(self, include_archived: bool = False) -> list[dict]:
-        """获取所有 Focus 项目名及事件数，按事件数降序。
+        """获取手动创建的项目名及真实 Focus 事件数。
+
         默认排除已归档项目——AI prompt 取动态上下文时不该再看到归档项目，避免它继续被复用。
-        前端需要展示全量（含归档）时传 include_archived=True。"""
+        项目清单来自 projects 表，不从历史事件自动反推，保证 AI 只能看到用户建立的项目。
+        """
         conn = self._get_conn()
         if include_archived:
             rows = conn.execute(
-                "SELECT project_name, COUNT(*) as cnt FROM events "
-                "WHERE category = 'Focus' AND project_name IS NOT NULL AND project_name != '' "
-                "GROUP BY project_name ORDER BY cnt DESC"
+                "SELECT p.name AS project_name, COUNT(e.id) AS cnt "
+                "FROM projects p "
+                "LEFT JOIN events e ON e.project_name = p.name "
+                "AND e.category = 'Focus' AND e.status IS NULL "
+                "GROUP BY p.name ORDER BY cnt DESC, p.created_at DESC"
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT project_name, COUNT(*) as cnt FROM events "
-                "WHERE category = 'Focus' AND project_name IS NOT NULL AND project_name != '' "
-                "AND project_name NOT IN (SELECT project_name FROM archived_projects) "
-                "GROUP BY project_name ORDER BY cnt DESC"
+                "SELECT p.name AS project_name, COUNT(e.id) AS cnt "
+                "FROM projects p "
+                "LEFT JOIN events e ON e.project_name = p.name "
+                "AND e.category = 'Focus' AND e.status IS NULL "
+                "WHERE p.name NOT IN (SELECT project_name FROM archived_projects) "
+                "GROUP BY p.name ORDER BY cnt DESC, p.created_at DESC"
             ).fetchall()
         conn.close()
         return [dict(row) for row in rows]
+
+    def project_exists(self, project_name: str) -> bool:
+        """检查项目是否在手动项目清单中。"""
+        name = (project_name or "").strip()
+        if not name:
+            return False
+        conn = self._get_conn()
+        row = conn.execute("SELECT 1 FROM projects WHERE name = ?", (name,)).fetchone()
+        conn.close()
+        return row is not None
+
+    def add_project(self, project_name: str) -> bool:
+        """创建一个项目，返回是否新增（已存在则 False）。"""
+        name = (project_name or "").strip()
+        if not name:
+            return False
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO projects (name) VALUES (?)",
+            (name,)
+        )
+        conn.commit()
+        changed = cursor.rowcount > 0
+        conn.close()
+        return changed
+
+    def delete_project(self, project_name: str) -> bool:
+        """从手动项目清单删除项目，不删除历史事件。"""
+        name = (project_name or "").strip()
+        if not name:
+            return False
+        conn = self._get_conn()
+        cursor = conn.execute("DELETE FROM projects WHERE name = ?", (name,))
+        conn.execute("DELETE FROM archived_projects WHERE project_name = ?", (name,))
+        conn.commit()
+        changed = cursor.rowcount > 0
+        conn.close()
+        return changed
+
+    def rename_project(self, old_name: str, new_name: str) -> bool:
+        """重命名项目，并同步历史事件与归档状态。"""
+        old = (old_name or "").strip()
+        new = (new_name or "").strip()
+        if not old or not new or old == new:
+            return False
+        conn = self._get_conn()
+        exists = conn.execute("SELECT 1 FROM projects WHERE name = ?", (old,)).fetchone()
+        target_exists = conn.execute("SELECT 1 FROM projects WHERE name = ?", (new,)).fetchone()
+        if not exists or target_exists:
+            conn.close()
+            return False
+        conn.execute("UPDATE projects SET name = ? WHERE name = ?", (new, old))
+        conn.execute("UPDATE events SET project_name = ? WHERE project_name = ?", (new, old))
+        conn.execute("DELETE FROM archived_projects WHERE project_name = ?", (new,))
+        conn.execute("UPDATE archived_projects SET project_name = ? WHERE project_name = ?", (new, old))
+        conn.commit()
+        conn.close()
+        return True
 
     def get_archived_project_names(self) -> list[str]:
         """已归档项目名列表，按归档时间倒序。"""
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT project_name FROM archived_projects ORDER BY archived_at DESC"
+            "SELECT a.project_name FROM archived_projects a "
+            "JOIN projects p ON p.name = a.project_name "
+            "ORDER BY a.archived_at DESC"
         ).fetchall()
         conn.close()
         return [row["project_name"] for row in rows]
 
     def archive_project(self, project_name: str) -> bool:
-        """把项目名加进归档表，返回是否新增（已归档则 False，幂等）。
-        不校验事件里是否真有这个名字——用户手动管理，允许提前/事后写入。"""
+        """把项目名加进归档表，返回是否新增（已归档则 False，幂等）。"""
         name = (project_name or "").strip()
-        if not name:
+        if not name or not self.project_exists(name):
             return False
         conn = self._get_conn()
         cursor = conn.execute(

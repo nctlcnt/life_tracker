@@ -17,7 +17,7 @@ TOOLS = [
             "description": (
                 "记录一条生活轨迹时间轴事件。\n\n"
                 "三分法分类：\n"
-                "- Focus：需要脑力投入的活动，必须填 project_name\n"
+                "- Focus：需要脑力投入的活动，必须填 project_name，且只能使用现有项目列表里的项目\n"
                 "- Routine：日常维护（吃饭、洗澡、家务等）\n"
                 "- Chill：娱乐放松\n\n"
                 "默认记录已发生的事件。当她告诉你一个未来要去/要发生的到场型安排（看牙、泡澡、约饭等），"
@@ -46,7 +46,7 @@ TOOLS = [
                     },
                     "project_name": {
                         "type": "string",
-                        "description": "项目名称，category=Focus 时必填。"
+                        "description": "项目名称，category=Focus 时必填。只能填写【现有项目列表】里已经存在的项目，不要自行创造新项目名。"
                     },
                     "notes": {
                         "type": "string",
@@ -190,7 +190,7 @@ TOOLS = [
                     },
                     "project_name": {
                         "type": "string",
-                        "description": "更新项目名称（category=Focus 时适用）"
+                        "description": "更新项目名称（category=Focus 时适用）。只能填写【现有项目列表】里已经存在的项目，不要自行创造新项目名。"
                     },
                     "notes": {
                         "type": "string",
