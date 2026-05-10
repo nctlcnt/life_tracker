@@ -16,10 +16,6 @@ TOOLS = [
             "name": "log_timeline_event",
             "description": (
                 "记录一条生活轨迹时间轴事件。\n\n"
-                "三分法分类：\n"
-                "- Focus：需要脑力投入的活动，必须填 project_name，且只能使用现有项目列表里的项目\n"
-                "- Routine：日常维护（吃饭、洗澡、家务等）\n"
-                "- Chill：娱乐放松\n\n"
                 "默认记录已发生的事件。当她告诉你一个未来要去/要发生的到场型安排（看牙、泡澡、约饭等），"
                 "也用本工具记录，额外传 status='planned' —— 这会在 timeline 上生成一个 dummy 条目，"
                 "和真实事件并行显示、互不影响。planned 事件过了时间也不自动转真实事件。"
@@ -37,20 +33,23 @@ TOOLS = [
                     },
                     "content": {
                         "type": "string",
-                        "description": "事件标题，高度概括这段时间在做什么。简洁的动词+宾语，例如：看剧、吃午饭、写代码"
+                        "description": "事件标题，高度概括这段时间在做什么。高度概括的标题（动词+宾语），例如：看剧、吃午饭、写代码"
                     },
                     "category": {
                         "type": "string",
                         "enum": ["Focus", "Routine", "Chill"],
-                        "description": "事件分类：Focus / Routine / Chill"
+                        "description": ("三分法分类：\n"
+                "- Focus：需要脑力投入的活动，必须填 project_name，且只能使用现有项目列表里的项目\n"
+                "- Routine：日常维护（吃饭、洗澡、家务等）\n"
+                "- Chill：娱乐放松\n\n"),
                     },
                     "project_name": {
                         "type": "string",
-                        "description": "项目名称，category=Focus 时必填。只能填写【现有项目列表】里已经存在的项目，不要自行创造新项目名。"
+                        "description": "项目名称，category=Focus 时必填。只能填写【现有项目列表】里已经存在的项目，不要自行创造新项目名，改记为非 Focus，或在回复里让她先到 Project Overview 手动添加项目。"
                     },
                     "notes": {
                         "type": "string",
-                        "description": "事件的详细信息、感想、心情或备注。包括具体内容（如剧名、菜名）和用户原话感受。"
+                        "description": "事件的具体细节+感受、感想、心情或备注。包括具体内容（如剧名、菜名）和用户原话感受。"
                     },
                     "session_id": {
                         "type": "integer",
