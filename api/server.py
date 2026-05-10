@@ -17,7 +17,7 @@ app = FastAPI(title="Life Tracker API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # 生产环境应该改为你的前端域名
-    allow_methods=["GET", "POST", "DELETE", "PATCH"],
+    allow_methods=["GET", "POST", "DELETE", "PATCH", "PUT"],
     allow_headers=["*"],
 )
 
@@ -401,6 +401,41 @@ def _preset_view(name: str, p) -> dict:
     }
 
 
+_PROMPT_REQUIRED_PLACEHOLDERS = {
+    "proactive_gemini": {"timestamp"},
+    "proactive_claude": {"timestamp"},
+    "reminder": {"timestamp", "action"},
+    "bedtime": {"timestamp"},
+    "morning": {"timestamp"},
+    "weather_report": {"weather_data"},
+}
+
+
+def _validate_prompt_template(key: str, value: str):
+    import string
+    required = _PROMPT_REQUIRED_PLACEHOLDERS.get(key, set())
+    try:
+        used = {
+            field_name
+            for _, field_name, _, _ in string.Formatter().parse(value)
+            if field_name
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"invalid format braces: {e}")
+    unknown = used - required
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown placeholder(s): {', '.join(sorted(unknown))}",
+        )
+    missing = required - used
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"missing required placeholder(s): {', '.join(sorted(missing))}",
+        )
+
+
 @app.get("/api/admin/presets")
 async def admin_list_presets():
     """列出所有 preset，标记当前 active / fallback。"""
@@ -555,6 +590,56 @@ async def admin_test_preset(body: dict):
             "provider": p.provider,
             "model": p.model,
         }
+
+
+# ── Admin: Prompt 管理 ───────────────────────────────────────────────
+
+
+@app.get("/api/admin/prompts")
+async def admin_list_prompts():
+    """列出可编辑 prompt sections。default 来自代码，override 来自 DB。"""
+    from bot.prompts import PROMPT_SECTION_LABELS, get_prompt_defaults
+    defaults = get_prompt_defaults()
+    override_rows = {row["key"]: row for row in db.list_prompt_overrides()}
+    sections = []
+    for key, label in PROMPT_SECTION_LABELS.items():
+        default_value = defaults[key]
+        row = override_rows.get(key)
+        override_value = row["value"] if row else None
+        sections.append({
+            "key": key,
+            "label": label,
+            "default_value": default_value,
+            "override_value": override_value,
+            "current_value": override_value or default_value,
+            "updated_at": row["updated_at"] if row else None,
+            "overridden": row is not None,
+        })
+    return {"sections": sections}
+
+
+@app.put("/api/admin/prompts/{key}")
+async def admin_save_prompt(key: str, body: dict):
+    """保存单个 prompt section 的覆盖文本。"""
+    from bot.prompts import PROMPT_SECTION_LABELS
+    if key not in PROMPT_SECTION_LABELS:
+        raise HTTPException(status_code=404, detail=f"unknown prompt section: {key}")
+    value = (body.get("value") or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="value required")
+    _validate_prompt_template(key, value)
+    changed = db.set_prompt_override(key, value)
+    return {"ok": True, "key": key, "changed": changed}
+
+
+@app.delete("/api/admin/prompts/{key}")
+async def admin_reset_prompt(key: str):
+    """删除 override，使 prompt section 回到代码默认值。"""
+    from bot.prompts import PROMPT_SECTION_LABELS
+    if key not in PROMPT_SECTION_LABELS:
+        raise HTTPException(status_code=404, detail=f"unknown prompt section: {key}")
+    changed = db.delete_prompt_override(key)
+    return {"ok": True, "key": key, "changed": changed}
 
 
 @app.get("/")

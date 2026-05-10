@@ -10,7 +10,7 @@ from discord.ext import commands
 from datetime import datetime, timezone, timedelta
 from bot.ai_engine import chat, simple_completion
 from bot.weather import get_weather_brief, get_weather_detailed
-from bot.prompts import WEATHER_REPORT_PROMPT
+from bot.prompts import get_prompt_template
 from bot.database import Database
 from bot.tools import SET_TOOL_NAMES
 from bot.logger import get_logger
@@ -518,7 +518,10 @@ def _weather_command(bot: LifeTrackerBot) -> app_commands.Command:
             await interaction.followup.send("天气查询失败了，等会再试试吧")
             return
 
-        prompt = WEATHER_REPORT_PROMPT.format(weather_data=weather_data)
+        prompt = get_prompt_template(
+            "weather_report",
+            bot.db.get_prompt_overrides(),
+        ).format(weather_data=weather_data)
         reply = await simple_completion(prompt)
         await interaction.followup.send(reply)
 

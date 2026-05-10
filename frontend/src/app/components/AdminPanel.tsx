@@ -25,6 +25,20 @@ interface TestResult {
   model: string;
 }
 
+interface PromptSection {
+  key: string;
+  label: string;
+  default_value: string;
+  override_value: string | null;
+  current_value: string;
+  updated_at: string | null;
+  overridden: boolean;
+}
+
+interface PromptsResp {
+  sections: PromptSection[];
+}
+
 interface FormData {
   name: string;
   provider: string;
@@ -71,7 +85,33 @@ async function delJson(url: string) {
   return r.json();
 }
 
+async function putJson(url: string, body: unknown) {
+  const r = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+const PROMPT_HINTS: Record<string, string> = {
+  identity: '人格与角色定位，属于静态 system block。',
+  user_model: '用户画像，属于静态 system block。',
+  system_mechanics: '工具轮次、时间戳、SILENT 等硬规则。',
+  communication: '对话语气和表达风格。',
+  protocols: '状态专项反应。当前代码默认仍会注入这一段。',
+  tools: '跨工具决策和各工具使用策略。',
+  proactive_gemini: 'Gemini 主动轮询模板，必须保留 {timestamp}。',
+  proactive_claude: 'Claude/OpenAI/Relay 主动轮询模板，必须保留 {timestamp}。',
+  reminder: 'Reminder 到点后的跟进模板，必须保留 {timestamp} 和 {action}。',
+  bedtime: '睡前提醒模板，必须保留 {timestamp}。',
+  morning: '早间开启模板；当前仅供后续调用点使用。',
+  weather_report: '天气总结模板，必须保留 {weather_data}。',
+};
+
 export function AdminPanel() {
+  const [tab, setTab] = useState<'presets' | 'prompts'>('presets');
   const [data, setData] = useState<PresetsResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -145,28 +185,39 @@ export function AdminPanel() {
     await load();
   };
 
-  if (err && !data) {
-    return <div className="admin-panel"><div className="admin-msg err">加载失败: {err}</div></div>;
-  }
-  if (!data) {
-    return <div className="admin-panel"><div className="admin-msg">加载中…</div></div>;
-  }
-
   return (
     <div className="admin-panel">
       <header className="admin-header">
-        <h1>Admin · Presets</h1>
+        <div>
+          <h1>Admin</h1>
+          <div className="admin-tabs">
+            <button className={tab === 'presets' ? 'active' : ''}
+                    onClick={() => setTab('presets')}>Presets</button>
+            <button className={tab === 'prompts' ? 'active' : ''}
+                    onClick={() => setTab('prompts')}>Prompts</button>
+          </div>
+        </div>
         <div className="admin-actions">
-          <button className="admin-btn primary" onClick={() => setEditor({ mode: 'add' })}>
-            + Add preset
-          </button>
-          <button className="admin-btn" onClick={load}>Refresh</button>
+          {tab === 'presets' && (
+            <button className="admin-btn primary" onClick={() => setEditor({ mode: 'add' })}>
+              + Add preset
+            </button>
+          )}
+          {tab === 'presets' && <button className="admin-btn" onClick={load}>Refresh</button>}
           <button className="admin-btn" onClick={() => { window.location.hash = ''; }}>
             ← Back
           </button>
         </div>
       </header>
 
+      {tab === 'prompts' ? (
+        <PromptAdmin />
+      ) : !data ? (
+        <div className={`admin-msg ${err ? 'err' : ''}`}>
+          {err ? `加载失败: ${err}` : '加载中…'}
+        </div>
+      ) : (
+        <>
       <div className="admin-summary">
         <span className="badge"><b>Active</b>{data.active ?? '—'}</span>
         <span className="badge"><b>Fallback</b>{data.fallback ?? '—'}</span>
@@ -247,6 +298,133 @@ export function AdminPanel() {
           onSubmit={handleSubmit}
         />
       )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function PromptAdmin() {
+  const [data, setData] = useState<PromptsResp | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string>('');
+  const [draft, setDraft] = useState('');
+  const [showDefault, setShowDefault] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await fetch('/api/admin/prompts');
+      if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+      const j: PromptsResp = await r.json();
+      setData(j);
+      setErr(null);
+      setSelectedKey(prev => prev || j.sections[0]?.key || '');
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const selected = data?.sections.find(s => s.key === selectedKey) ?? data?.sections[0];
+
+  useEffect(() => {
+    if (selected) setDraft(selected.current_value);
+  }, [selected?.key, selected?.current_value]);
+
+  const save = async () => {
+    if (!selected) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      await putJson(`/api/admin/prompts/${encodeURIComponent(selected.key)}`, { value: draft });
+      await load();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const reset = async () => {
+    if (!selected) return;
+    if (!window.confirm(`Reset "${selected.label}" to code default?`)) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      await delJson(`/api/admin/prompts/${encodeURIComponent(selected.key)}`);
+      await load();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (err && !data) return <div className="admin-msg err">加载失败: {err}</div>;
+  if (!data || !selected) return <div className="admin-msg">加载中…</div>;
+
+  const dirty = draft !== selected.current_value;
+  const charCount = draft.length;
+
+  return (
+    <div className="prompt-admin">
+      {err && <div className="admin-msg err">{err}</div>}
+
+      <aside className="prompt-list">
+        {data.sections.map(section => (
+          <button
+            key={section.key}
+            className={section.key === selected.key ? 'active' : ''}
+            onClick={() => setSelectedKey(section.key)}
+          >
+            <span>{section.label}</span>
+            {section.overridden && <b>override</b>}
+          </button>
+        ))}
+      </aside>
+
+      <main className="prompt-editor">
+        <div className="prompt-editor-head">
+          <div>
+            <h2>{selected.label}</h2>
+            <p>{PROMPT_HINTS[selected.key] || selected.key}</p>
+          </div>
+          <div className="prompt-editor-actions">
+            <button className="admin-btn" onClick={load} disabled={saving}>Reload</button>
+            <button className="admin-btn" onClick={() => setShowDefault(v => !v)}>
+              {showDefault ? 'Hide default' : 'Show default'}
+            </button>
+            <button className="admin-btn warn" onClick={reset}
+                    disabled={saving || !selected.overridden}>Reset</button>
+            <button className="admin-btn primary" onClick={save}
+                    disabled={saving || !dirty || !draft.trim()}>
+              {saving ? 'Saving…' : 'Save override'}
+            </button>
+          </div>
+        </div>
+
+        <div className="prompt-meta">
+          <span className={`tag ${selected.overridden ? 'tag-fallback' : 'tag-active'}`}>
+            {selected.overridden ? 'DB override' : 'code default'}
+          </span>
+          <span>{charCount.toLocaleString()} chars</span>
+          {selected.updated_at && <span>updated {selected.updated_at}</span>}
+          {dirty && <span>unsaved changes</span>}
+        </div>
+
+        {showDefault && (
+          <pre className="prompt-default">{selected.default_value}</pre>
+        )}
+
+        <textarea
+          className="prompt-textarea"
+          value={draft}
+          spellCheck={false}
+          onChange={(e) => setDraft(e.target.value)}
+        />
+      </main>
     </div>
   );
 }

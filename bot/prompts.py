@@ -27,6 +27,22 @@ import re
 from dataclasses import dataclass
 
 
+PROMPT_SECTION_LABELS = {
+    "identity": "IDENTITY",
+    "user_model": "USER_MODEL",
+    "system_mechanics": "SYSTEM_MECHANICS",
+    "communication": "COMMUNICATION",
+    "protocols": "PROTOCOLS",
+    "tools": "TOOLS_SECTION",
+    "proactive_gemini": "PROACTIVE_PROMPT_GEMINI",
+    "proactive_claude": "PROACTIVE_PROMPT_CLAUDE",
+    "reminder": "REMINDER_PROMPT",
+    "bedtime": "BEDTIME_PROMPT",
+    "morning": "MORNING_PROMPT",
+    "weather_report": "WEATHER_REPORT_PROMPT",
+}
+
+
 # ══════════════════════════════════════════════════════════════
 # 1. IDENTITY — 人格 + 元指令（纯人格特质，零行为指令）
 # ══════════════════════════════════════════════════════════════
@@ -484,6 +500,7 @@ def build_prompt(
     projects: list[dict] | None = None,
     planned_events: list[dict] | None = None,
     pending_reminders: list[dict] | None = None,
+    overrides: dict[str, str] | None = None,
 ) -> PromptParts:
     """
     一步构建完整的 PromptParts 对象。
@@ -499,14 +516,19 @@ def build_prompt(
     注意：cancelled planned events 不注入——只给前端看，AI 不需要反复感知。
     """
     _ = provider  # 预留参数，暂时未使用
+    sections = get_prompt_defaults()
+    if overrides:
+        for key, value in overrides.items():
+            if key in sections and value and value.strip():
+                sections[key] = value.strip()
     return PromptParts(
         mode=mode,
-        identity=IDENTITY.strip(),
-        user_model=USER_MODEL.strip(),
-        system_mechanics=SYSTEM_MECHANICS.strip(),
-        communication=COMMUNICATION.strip(),
-        protocols=PROTOCOLS.strip(),
-        tools=TOOLS_SECTION.strip(),
+        identity=sections["identity"],
+        user_model=sections["user_model"],
+        system_mechanics=sections["system_mechanics"],
+        communication=sections["communication"],
+        protocols=sections["protocols"],
+        tools=sections["tools"],
         memories=_format_memories(memories),
         deadlines=_format_deadlines(deadlines),
         projects=_format_projects(projects),
@@ -601,12 +623,6 @@ _PROACTIVE_PROMPT_CLAUDE = (
 )
 
 
-def get_proactive_prompt(provider: str) -> str:
-    """按 provider 返回对应的轮询模板。gemini 走 <think> 框架版，其他走选项式版。"""
-    if provider.lower().strip() == "gemini":
-        return _PROACTIVE_PROMPT_GEMINI
-    return _PROACTIVE_PROMPT_CLAUDE
-
 REMINDER_PROMPT = (
     "[约定跟进触发 - {timestamp}]\n"
     "之前你答应过要跟进这件事：{action}\n"
@@ -642,3 +658,46 @@ WEATHER_REPORT_PROMPT = """根据以下天气数据，给出简洁自然的建�
 
 天气数据：
 {weather_data}"""
+
+
+def get_prompt_defaults() -> dict[str, str]:
+    """Return editable prompt sections keyed by stable API names."""
+    return {
+        "identity": IDENTITY.strip(),
+        "user_model": USER_MODEL.strip(),
+        "system_mechanics": SYSTEM_MECHANICS.strip(),
+        "communication": COMMUNICATION.strip(),
+        "protocols": PROTOCOLS.strip(),
+        "tools": TOOLS_SECTION.strip(),
+        "proactive_gemini": _PROACTIVE_PROMPT_GEMINI,
+        "proactive_claude": _PROACTIVE_PROMPT_CLAUDE,
+        "reminder": REMINDER_PROMPT,
+        "bedtime": BEDTIME_PROMPT,
+        "morning": MORNING_PROMPT,
+        "weather_report": WEATHER_REPORT_PROMPT,
+    }
+
+
+def apply_prompt_overrides(overrides: dict[str, str] | None) -> dict[str, str]:
+    """Return default prompt sections with non-empty overrides applied."""
+    sections = get_prompt_defaults()
+    if not overrides:
+        return sections
+    for key, value in overrides.items():
+        if key in sections and value and value.strip():
+            sections[key] = value.strip()
+    return sections
+
+
+def get_prompt_template(key: str, overrides: dict[str, str] | None = None) -> str:
+    """Fetch a single prompt template with optional runtime overrides."""
+    sections = apply_prompt_overrides(overrides)
+    if key not in sections:
+        raise KeyError(key)
+    return sections[key]
+
+
+def get_proactive_prompt(provider: str, overrides: dict[str, str] | None = None) -> str:
+    """按 provider 返回对应的轮询模板。gemini 走 <think> 框架版，其他走选项式版。"""
+    key = "proactive_gemini" if provider.lower().strip() == "gemini" else "proactive_claude"
+    return get_prompt_template(key, overrides)

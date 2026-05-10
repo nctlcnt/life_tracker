@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from bot.ai_engine import scheduled_action
 from bot.database import Database
 from bot.logger import get_logger
-from bot.prompts import get_proactive_prompt, REMINDER_PROMPT, BEDTIME_PROMPT
+from bot.prompts import get_proactive_prompt, get_prompt_template
 import config
 
 logger = get_logger(__name__)
@@ -152,7 +152,11 @@ class Scheduler:
             return
         async with self._ai_lock:
             try:
-                prompt = get_proactive_prompt(config.get_active().provider).format(timestamp=timestamp)
+                overrides = self.db.get_prompt_overrides()
+                prompt = get_proactive_prompt(
+                    config.get_active().provider,
+                    overrides,
+                ).format(timestamp=timestamp)
                 # poll 路径只判断"要不要说话"，历史拉短一点省 token
                 history = await self.fetch_history(limit=8)
                 reply = await scheduled_action(
@@ -172,7 +176,10 @@ class Scheduler:
         """执行睡前提醒"""
         async with self._ai_lock:
             try:
-                prompt = BEDTIME_PROMPT.format(timestamp=timestamp)
+                prompt = get_prompt_template(
+                    "bedtime",
+                    self.db.get_prompt_overrides(),
+                ).format(timestamp=timestamp)
                 history = await self.fetch_history(limit=20)
                 reply = await scheduled_action(
                     self.db, prompt, timestamp, history,
@@ -252,7 +259,10 @@ class Scheduler:
 
             async with self._ai_lock:
                 try:
-                    prompt = REMINDER_PROMPT.format(
+                    prompt = get_prompt_template(
+                        "reminder",
+                        self.db.get_prompt_overrides(),
+                    ).format(
                         timestamp=timestamp, action=context_action
                     )
                     history = await self.fetch_history(limit=20)

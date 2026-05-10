@@ -102,6 +102,14 @@ class Database:
                 project_name TEXT PRIMARY KEY,
                 archived_at TEXT DEFAULT (datetime('now'))
             );
+
+            -- 前端管理的 prompt 覆盖层。
+            -- 代码里的 prompt 仍是默认值；这里只存用户改过的 section。
+            CREATE TABLE IF NOT EXISTS prompt_overrides (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
         """)
         conn.commit()
         # 兼容已有数据库：尝试加列，已存在则忽略
@@ -158,6 +166,56 @@ class Database:
 
         conn.commit()
         conn.close()
+
+    # ============ Prompt 管理 ============
+
+    def get_prompt_overrides(self) -> dict[str, str]:
+        """返回所有前端保存过的 prompt section 覆盖。"""
+        conn = self._get_conn()
+        rows = conn.execute("SELECT key, value FROM prompt_overrides ORDER BY key").fetchall()
+        conn.close()
+        return {row["key"]: row["value"] for row in rows}
+
+    def list_prompt_overrides(self) -> list[dict]:
+        """返回 prompt 覆盖详情，包含更新时间，给 Admin UI 展示。"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT key, value, updated_at FROM prompt_overrides ORDER BY key"
+        ).fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def set_prompt_override(self, key: str, value: str) -> bool:
+        """保存单个 prompt 覆盖。返回是否发生变化。"""
+        k = (key or "").strip()
+        v = (value or "").strip()
+        if not k or not v:
+            return False
+        conn = self._get_conn()
+        current = conn.execute(
+            "SELECT value FROM prompt_overrides WHERE key = ?",
+            (k,)
+        ).fetchone()
+        conn.execute(
+            "INSERT INTO prompt_overrides (key, value, updated_at) VALUES (?, ?, datetime('now')) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+            (k, v)
+        )
+        conn.commit()
+        conn.close()
+        return current is None or current["value"] != v
+
+    def delete_prompt_override(self, key: str) -> bool:
+        """删除单个 prompt 覆盖，使该 section 回到代码默认值。"""
+        k = (key or "").strip()
+        if not k:
+            return False
+        conn = self._get_conn()
+        cursor = conn.execute("DELETE FROM prompt_overrides WHERE key = ?", (k,))
+        conn.commit()
+        changed = cursor.rowcount > 0
+        conn.close()
+        return changed
 
     # ============ 时间轴事件 ============
 
