@@ -77,7 +77,6 @@ def _serialize_prompt(p: PromptParts | None) -> dict | None:
             "ongoing": p.ongoing,
             "pending_reminders": p.pending_reminders,
             "deadlines": p.deadlines,
-            "planned_events": p.planned_events,
             "weather": p.weather,
         },
     }

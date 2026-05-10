@@ -14,12 +14,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "log_timeline_event",
-            "description": (
-                "记录一条生活轨迹时间轴事件。\n\n"
-                "默认记录已发生的事件。当她告诉你一个未来要去/要发生的到场型安排（看牙、泡澡、约饭等），"
-                "也用本工具记录，额外传 status='planned' —— 这会在 timeline 上生成一个 dummy 条目，"
-                "和真实事件并行显示、互不影响。planned 事件过了时间也不自动转真实事件。"
-            ),
+            "description": "记录一条已发生的生活轨迹时间轴事件。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -54,11 +49,6 @@ TOOLS = [
                     "session_id": {
                         "type": "integer",
                         "description": "如果这是在恢复或继续之前的某个被打断的活动，填入之前那条活动记录的 event_id。全新活动可不填。"
-                    },
-                    "status": {
-                        "type": "string",
-                        "enum": ["planned"],
-                        "description": "仅当记录未来的到场型安排（dummy event）时填 'planned'。已发生过的事件不要填这个字段。"
                     },
                 },
                 "required": ["start_time", "content", "category"]
@@ -211,27 +201,6 @@ TOOLS = [
                     "event_id": {
                         "type": "integer",
                         "description": "要删除的事件 ID（从 query_timeline 或 log_timeline_event 返回值中获取）"
-                    }
-                },
-                "required": ["event_id"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "cancel_planned_event",
-            "description": (
-                "取消一个未发生的 planned event（她说不去了/改主意了）。"
-                "事件仍保留在 timeline 上供她回看，但标为 cancelled。"
-                "只对 status='planned' 的 event 生效；真实事件请用 delete_timeline_event。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "event_id": {
-                        "type": "integer",
-                        "description": "要取消的 planned event 的 ID（从【未来安排】清单或 log_timeline_event 返回值中获取）"
                     }
                 },
                 "required": ["event_id"]

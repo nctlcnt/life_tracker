@@ -229,7 +229,6 @@ def build_big_worker_parts(
     ongoing: str = "",
     pending_reminders: str = "",
     deadlines: str = "",
-    planned_events: str = "",
     weather: str = "",
 ) -> PromptParts:
     """
@@ -249,7 +248,6 @@ def build_big_worker_parts(
         ongoing=ongoing,
         pending_reminders=pending_reminders,
         deadlines=deadlines,
-        planned_events=planned_events,
         weather=weather,
     )
 

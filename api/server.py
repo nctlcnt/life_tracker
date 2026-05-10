@@ -35,21 +35,11 @@ async def get_timeline(
     start: str = Query(..., description="起始时间 ISO 8601，如 2026-04-01T00:00:00"),
     end: str = Query(..., description="结束时间 ISO 8601，如 2026-04-07T23:59:59"),
 ):
-    """查询时间范围内的数据：
-    - segments: 真实事件（status IS NULL）的合并时间段
-    - planned_events: 该范围内 status='planned' 的原始 event（不合并）
-    - cancelled_events: 该范围内 status='cancelled' 的原始 event（不合并）
-    前端对三组分别用不同视觉样式叠加渲染。
-    """
+    """查询时间范围内的真实事件，返回合并后的时间段。"""
     raw_events = db.get_events(start, end)
-    actual = [e for e in raw_events if e.get("status") is None]
-    planned = [e for e in raw_events if e.get("status") == "planned"]
-    cancelled = [e for e in raw_events if e.get("status") == "cancelled"]
-    segments = merge_events(actual)
+    segments = merge_events(raw_events)
     return {
         "segments": segments,
-        "planned_events": planned,
-        "cancelled_events": cancelled,
         "count": len(segments),
     }
 
@@ -62,25 +52,6 @@ async def get_events(
     """查询时间范围内的所有原始事件（调试用）"""
     events = db.get_events(start, end)
     return {"events": events, "count": len(events)}
-
-
-@app.delete("/api/events/{event_id}")
-async def delete_event(event_id: int):
-    """硬删一条 event。出于安全考虑，仅允许删除 status 非空的事件
-    （planned / cancelled），真实已发生的事件（status IS NULL）拒绝删除——
-    AI 侧需要删真实事件时走 delete_timeline_event 工具。"""
-    event = db.get_event_by_id(event_id)
-    if not event:
-        raise HTTPException(status_code=404, detail=f"event_id={event_id} not found")
-    if event.get("status") is None:
-        raise HTTPException(
-            status_code=403,
-            detail="Refusing to delete actual event via UI. Only planned/cancelled events can be deleted here."
-        )
-    ok = db.delete_event(event_id)
-    if not ok:
-        raise HTTPException(status_code=500, detail="Delete failed unexpectedly")
-    return {"success": True, "event_id": event_id}
 
 
 @app.post("/api/events")
@@ -243,9 +214,6 @@ async def get_projects_heatmap(days: int = Query(90, description="统计天数�
 
     for ev in events:
         if ev.get("category") != "Focus" or not ev.get("project_name"):
-            continue
-        # 只统计真实事件——planned / cancelled 是 dummy，不算已投入时间
-        if ev.get("status") is not None:
             continue
         proj = ev["project_name"]
         day = ev["start_time"][:10]  # YYYY-MM-DD

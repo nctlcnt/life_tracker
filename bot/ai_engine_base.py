@@ -80,10 +80,6 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
 
     projects = db.get_all_project_names()
 
-    # 未来的 dummy event（status='planned'），注入让 AI 感知安排
-    # cancelled 的不注入——已取消的不需要反复感知，只给前端看
-    planned_events = db.get_planned_events()
-
     # pending reminders 注入 Block 4：让 AI 看到自己已设的 follow-up 队列，
     # 避免被聊天历史带回去重复 set 同一件事。
     pending_reminders = db.list_active_reminders()
@@ -97,7 +93,6 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
         weather=weather,
         deadlines=deadlines or None,
         projects=projects or None,
-        planned_events=planned_events or None,
         pending_reminders=pending_reminders or None,
     )
 
@@ -129,10 +124,6 @@ def _ensure_valid_messages(messages: list[dict]) -> list[dict]:
 def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
     """执行具体的工具调用，返回结果"""
     if tool_name == "log_timeline_event":
-        status = args.get("status")
-        # 只接受 'planned' 或缺省；其他值一律忽略（schema 已限 enum，双重保险）
-        if status != "planned":
-            status = None
         category = args.get("category", "uncategorized")
         project_name = (args.get("project_name") or "").strip() or None
         if category == "Focus":
@@ -157,13 +148,11 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
             session_id=args.get("session_id"),
             is_parallel=False,
             project_name=project_name,
-            status=status,
         )
         old_id = args.get("session_id")
         if old_id:
             db.update_event(old_id, session_id=old_id)
-        msg = "Planned event 已记录" if status == "planned" else "事件已记录"
-        return {"success": True, "event_id": event_id, "status": status, "message": msg}
+        return {"success": True, "event_id": event_id, "message": "事件已记录"}
 
     elif tool_name == "set_reminder":
         reminder_id = db.add_reminder(
@@ -229,14 +218,6 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
         if ok:
             return {"success": True, "message": "事件已删除"}
         return {"success": False, "message": f"未找到 event_id={args['event_id']}"}
-
-    elif tool_name == "cancel_planned_event":
-        event_id = args["event_id"]
-        ok = db.cancel_planned_event(event_id)
-        if ok:
-            return {"success": True, "event_id": event_id, "message": "Planned event 已标记 cancelled"}
-        return {"success": False, "event_id": event_id,
-                "message": f"未找到 status=planned 的 event_id={event_id}（可能已 cancelled、或不是 planned event）"}
 
     elif tool_name == "save_memory":
         memory_id = db.add_memory(args["content"])

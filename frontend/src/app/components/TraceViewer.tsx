@@ -18,7 +18,6 @@ interface PromptParts {
     ongoing: string;
     pending_reminders: string;
     deadlines: string;
-    planned_events: string;
     weather: string;
   };
 }
@@ -162,7 +161,6 @@ function PromptPartsView({ parts }: { parts: PromptParts | null }) {
     { label: 'Block 4 · Ongoing', text: parts.block4_dynamic.ongoing },
     { label: 'Block 4 · Pending Reminders', text: parts.block4_dynamic.pending_reminders },
     { label: 'Block 4 · Deadlines', text: parts.block4_dynamic.deadlines },
-    { label: 'Block 4 · Planned Events', text: parts.block4_dynamic.planned_events },
     { label: 'Block 4 · Weather', text: parts.block4_dynamic.weather },
   ];
   return (

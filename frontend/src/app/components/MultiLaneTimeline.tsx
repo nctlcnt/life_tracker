@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react';
+import { useRef, useEffect, useState } from 'react';
 import {
   Tooltip,
   TooltipContent,
@@ -19,13 +19,8 @@ export interface TimelineEvent {
 
 interface MultiLaneTimelineProps {
   events: TimelineEvent[];
-  plannedEvents?: TimelineEvent[];
-  cancelledEvents?: TimelineEvent[];
   date: string; // YYYY-MM-DD
-  onDeletePlanned?: (eventId: string) => void;
 }
-
-type EventStatus = 'actual' | 'planned' | 'cancelled';
 
 // ── 色彩常量 ──────────────────────────────────────────────────
 const LANE_COLORS: Record<string, string> = {
@@ -72,10 +67,7 @@ function timeToRatio(date: Date, dayBase: Date): number {
 // ── 组件 ─────────────────────────────────────────────────────
 export function MultiLaneTimeline({
   events,
-  plannedEvents = [],
-  cancelledEvents = [],
   date,
-  onDeletePlanned,
 }: MultiLaneTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(0);
@@ -103,18 +95,12 @@ export function MultiLaneTimeline({
     tickHours.push(h);
   }
 
-  // 将所有事件（真实 + planned + cancelled）按 category 分配到泳道
-  type LaneItem = { event: TimelineEvent; status: EventStatus };
-  const laneEvents: Record<string, LaneItem[]> = { Focus: [], Routine: [], Chill: [] };
-  const pushAll = (list: TimelineEvent[], status: EventStatus) => {
-    for (const ev of list) {
-      const lane = LANES.includes(ev.category as any) ? ev.category : null;
-      if (lane && laneEvents[lane]) laneEvents[lane].push({ event: ev, status });
-    }
-  };
-  pushAll(events, 'actual');
-  pushAll(plannedEvents, 'planned');
-  pushAll(cancelledEvents, 'cancelled');
+  // 按 category 分配到泳道
+  const laneEvents: Record<string, TimelineEvent[]> = { Focus: [], Routine: [], Chill: [] };
+  for (const ev of events) {
+    const lane = LANES.includes(ev.category as any) ? ev.category : null;
+    if (lane && laneEvents[lane]) laneEvents[lane].push(ev);
+  }
 
   const tickAreaWidth = 26; // px，左侧时刻标注宽度
 
@@ -195,79 +181,32 @@ export function MultiLaneTimeline({
                 />
 
                 {/* 事件块 */}
-                {height > 0 && laneEvents[lane].map(({ event: ev, status }) => {
+                {height > 0 && laneEvents[lane].map(ev => {
                   const topRatio = timeToRatio(ev.startDate, dayBase);
                   const botRatio = timeToRatio(ev.endDate, dayBase);
                   const h = Math.max((botRatio - topRatio) * height, 3);
                   const color = LANE_COLORS[lane] || LANE_COLORS.uncategorized;
                   const durationMs = ev.endDate.getTime() - ev.startDate.getTime();
 
-                  // 三种状态视觉区分
-                  let blockStyle: CSSProperties;
-                  if (status === 'planned') {
-                    blockStyle = {
-                      top: topRatio * height,
-                      height: h,
-                      backgroundColor: 'transparent',
-                      border: `1px dashed ${color}`,
-                      opacity: 0.7,
-                    };
-                  } else if (status === 'cancelled') {
-                    blockStyle = {
-                      top: topRatio * height,
-                      height: h,
-                      backgroundColor: 'transparent',
-                      border: '1px dashed rgba(120,120,120,0.55)',
-                      opacity: 0.5,
-                    };
-                  } else {
-                    blockStyle = {
-                      top: topRatio * height,
-                      height: h,
-                      backgroundColor: color,
-                      opacity: 0.85,
-                    };
-                  }
-
-                  const statusSuffix =
-                    status === 'planned' ? '（计划）' : status === 'cancelled' ? '（已取消）' : '';
-                  const labelColor =
-                    status === 'actual' ? 'rgba(40,40,40,0.7)' : 'rgba(80,80,80,0.65)';
-                  const labelDecoration = status === 'cancelled' ? 'line-through' : 'none';
-
-                  const deletable = status !== 'actual' && !!onDeletePlanned;
-                  const handleDeleteClick = (e: ReactMouseEvent) => {
-                    e.stopPropagation();
-                    const label = status === 'planned' ? '这个计划' : '这条取消记录';
-                    if (window.confirm(`删除${label}？此操作不可撤销。`)) {
-                      onDeletePlanned?.(ev.id);
-                    }
-                  };
-
                   return (
-                    <Tooltip key={`${status}-${ev.id}`}>
+                    <Tooltip key={ev.id}>
                       <TooltipTrigger asChild>
                         <div
-                          className="group absolute left-0.5 right-0.5 rounded-[2px] cursor-pointer hover:brightness-95 transition-all overflow-hidden"
-                          style={blockStyle}
+                          className="absolute left-0.5 right-0.5 rounded-[2px] cursor-pointer hover:brightness-95 transition-all overflow-hidden"
+                          style={{
+                            top: topRatio * height,
+                            height: h,
+                            backgroundColor: color,
+                            opacity: 0.85,
+                          }}
                         >
                           {h > 18 && (
                             <div
                               className="px-1 text-[8px] leading-tight truncate"
-                              style={{ color: labelColor, paddingTop: 2, textDecoration: labelDecoration }}
+                              style={{ color: 'rgba(40,40,40,0.7)', paddingTop: 2 }}
                             >
                               {ev.project_name || ev.content}
                             </div>
-                          )}
-                          {deletable && (
-                            <button
-                              type="button"
-                              onClick={handleDeleteClick}
-                              className="absolute top-0 right-0 w-3.5 h-3.5 flex items-center justify-center text-[10px] leading-none rounded-bl-[2px] bg-white/80 text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-white hover:text-red-600"
-                              title="删除"
-                            >
-                              ×
-                            </button>
                           )}
                         </div>
                       </TooltipTrigger>
@@ -283,7 +222,7 @@ export function MultiLaneTimeline({
                               style={{ backgroundColor: color }}
                             />
                             <span className="text-xs font-medium leading-snug">
-                              {ev.content}{statusSuffix}
+                              {ev.content}
                             </span>
                           </div>
                           {ev.project_name && (

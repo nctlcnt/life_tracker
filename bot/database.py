@@ -138,8 +138,13 @@ class Database:
         except sqlite3.OperationalError:
             pass
 
+        # Planned event 功能已废弃：先删除遗留的 planned/cancelled 行，再 drop 列。
         try:
-            conn.execute("ALTER TABLE events ADD COLUMN status TEXT")
+            conn.execute("DELETE FROM events WHERE status IS NOT NULL")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE events DROP COLUMN status")
         except sqlite3.OperationalError:
             pass
 
@@ -223,16 +228,13 @@ class Database:
                   content: str, category: str = "uncategorized",
                   notes: Optional[str] = None, session_id: Optional[int] = None,
                   is_parallel: bool = False,
-                  project_name: Optional[str] = None,
-                  status: Optional[str] = None) -> int:
-        """添加一条时间轴事件，返回 event id。
-        status: None = 已发生真实 event；'planned' = 未来 dummy；'cancelled' = 取消的 planned。
-        """
+                  project_name: Optional[str] = None) -> int:
+        """添加一条时间轴事件，返回 event id。"""
         conn = self._get_conn()
         cursor = conn.execute(
-            "INSERT INTO events (start_time, end_time, content, category, notes, session_id, is_parallel, project_name, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (start_time, end_time, content, category, notes, session_id, 1 if is_parallel else 0, project_name, status)
+            "INSERT INTO events (start_time, end_time, content, category, notes, session_id, is_parallel, project_name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (start_time, end_time, content, category, notes, session_id, 1 if is_parallel else 0, project_name)
         )
         conn.commit()
         event_id = cursor.lastrowid
@@ -328,7 +330,7 @@ class Database:
                 "SELECT p.name AS project_name, COUNT(e.id) AS cnt "
                 "FROM projects p "
                 "LEFT JOIN events e ON e.project_name = p.name "
-                "AND e.category = 'Focus' AND e.status IS NULL "
+                "AND e.category = 'Focus' "
                 "GROUP BY p.name ORDER BY cnt DESC, p.created_at DESC"
             ).fetchall()
         else:
@@ -336,7 +338,7 @@ class Database:
                 "SELECT p.name AS project_name, COUNT(e.id) AS cnt "
                 "FROM projects p "
                 "LEFT JOIN events e ON e.project_name = p.name "
-                "AND e.category = 'Focus' AND e.status IS NULL "
+                "AND e.category = 'Focus' "
                 "WHERE p.name NOT IN (SELECT project_name FROM archived_projects) "
                 "GROUP BY p.name ORDER BY cnt DESC, p.created_at DESC"
             ).fetchall()
@@ -443,45 +445,15 @@ class Database:
         return changed
 
     def get_ongoing_events(self, limit: int = 5) -> list[dict]:
-        """获取最近的未结束事件（end_time 为空），按 start_time 倒序。
-        只返回真实 event（status IS NULL），planned event 不算 ongoing。"""
+        """获取最近的未结束事件（end_time 为空），按 start_time 倒序。"""
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT * FROM events WHERE end_time IS NULL AND status IS NULL "
+            "SELECT * FROM events WHERE end_time IS NULL "
             "ORDER BY start_time DESC LIMIT ?",
             (limit,)
         ).fetchall()
         conn.close()
         return [dict(row) for row in rows]
-
-    def get_planned_events(self) -> list[dict]:
-        """获取近期/未来的 planned event（未来 dummy），按 start_time 升序。
-
-        为避免 prompt Block 4 被陈年未 cancel 的 planned 撑爆，只取 start_time >= 24h 前的条目——
-        留出 1 天 grace period，让 AI 在"她今天其实有个 planned"尚未过太久时还能看到。
-        过期更久的 planned 如要查阅走 query_timeline（带 status 字段）。
-        """
-        from datetime import datetime, timedelta
-        cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM events WHERE status = 'planned' AND start_time >= ? ORDER BY start_time ASC",
-            (cutoff,)
-        ).fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
-
-    def cancel_planned_event(self, event_id: int) -> bool:
-        """把 planned event 标记为 cancelled。仅对 status='planned' 生效，返回是否命中。"""
-        conn = self._get_conn()
-        cursor = conn.execute(
-            "UPDATE events SET status = 'cancelled' WHERE id = ? AND status = 'planned'",
-            (event_id,)
-        )
-        conn.commit()
-        affected = cursor.rowcount
-        conn.close()
-        return affected > 0
 
     # ============ 聊天记录 ============
 

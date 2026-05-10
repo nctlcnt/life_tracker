@@ -50,8 +50,6 @@ function DashboardApp() {
   const [currentDate, setCurrentDate] = useState(() => fmtDateStr(new Date()));
 
   const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
-  const [plannedEvents, setPlannedEvents] = useState<TimelineEvent[]>([]);
-  const [cancelledEvents, setCancelledEvents] = useState<TimelineEvent[]>([]);
   const [memories, setMemories] = useState<ListItem[]>([]);
   const [reminders, setReminders] = useState<ListItem[]>([]);
   const [todos, setTodos] = useState<ListItem[]>([]);
@@ -84,7 +82,6 @@ function DashboardApp() {
     const dayStart = new Date(startIso);
     const dayEnd = new Date(endIso);
 
-    // Fetch timeline (segments + planned + cancelled)
     fetch(`/api/timeline?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`)
       .then(res => res.json())
       .then(data => {
@@ -103,25 +100,6 @@ function DashboardApp() {
           };
         });
         setTimelineEvents(events);
-
-        // Planned / cancelled 是未合并的原始 event，可能无 end_time（时间点型）
-        // id 保留真实数字形式，供删除按钮回传后端
-        const toPseudoEvent = (e: any): TimelineEvent => {
-          const rawStart = new Date(e.start_time);
-          // 时间点型（无 end_time）：给一个短时长占位，视觉上还能看到块
-          const rawEnd = e.end_time ? new Date(e.end_time) : new Date(rawStart.getTime() + 30 * 60 * 1000);
-          return {
-            id: String(e.id),
-            content: e.content,
-            category: e.category,
-            startDate: rawStart < dayStart ? dayStart : rawStart,
-            endDate: rawEnd > dayEnd ? dayEnd : rawEnd,
-            notes: e.notes ?? null,
-            project_name: e.project_name ?? null,
-          };
-        };
-        setPlannedEvents((data.planned_events || []).map(toPseudoEvent));
-        setCancelledEvents((data.cancelled_events || []).map(toPseudoEvent));
       })
       .catch(err => console.error('Failed to load timeline:', err));
 
@@ -183,25 +161,6 @@ function DashboardApp() {
       .catch(err => console.error('Failed to load deadlines:', err));
 
   }, [currentDate, viewMode, refreshKey]);
-
-  const handleDeletePlannedEvent = (id: string) => {
-    // 前置乐观更新：planned / cancelled 都可能命中，两个 state 都尝试过滤
-    const prevPlanned = plannedEvents;
-    const prevCancelled = cancelledEvents;
-    setPlannedEvents(list => list.filter(e => e.id !== id));
-    setCancelledEvents(list => list.filter(e => e.id !== id));
-
-    fetch(`/api/events/${id}`, { method: 'DELETE' })
-      .then(res => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      })
-      .catch(err => {
-        console.error('Failed to delete event:', err);
-        // 回滚
-        setPlannedEvents(prevPlanned);
-        setCancelledEvents(prevCancelled);
-      });
-  };
 
   const handleTodoToggle = (id: string) => {
     const prev = todos.find((t) => t.id === id);
@@ -295,13 +254,10 @@ function DashboardApp() {
           <Dashboard
             date={currentDate}
             timelineEvents={timelineEvents}
-            plannedEvents={plannedEvents}
-            cancelledEvents={cancelledEvents}
             todos={todos}
             memories={memories}
             reminders={reminders}
             deadlines={deadlines}
-            onDeletePlanned={handleDeletePlannedEvent}
             onTodoToggle={handleTodoToggle}
             onRefresh={() => setRefreshKey(k => k + 1)}
           />

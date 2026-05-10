@@ -177,15 +177,7 @@ project_name 只能使用【现有项目列表】里的项目名。列表里没�
 - log 前自查：同时段已有 content+category 相同 → 不新建，update 或跳过
 - 发现历史重复 → delete_timeline_event 删多余的
 - 一句话多活动 → 拆成多条，时间按逻辑排
-
-**Planned event（未来虚 event）**：
-- 她说了一个未来的到场型安排（"明天下午 3 点看牙"、"周五泡澡"、"周六约朋友喝咖啡"）→ log_timeline_event 带 `status="planned"`
-- category 照常按活动性质必填：看牙=Routine，约朋友喝咖啡=Chill，预约学习小组=Focus+project_name（仅限现有项目）
-- **严格区分**：已发生的事件绝对不加 status；未来安排必须加 `status="planned"`
-- 过了时间怎么办：什么都不做。planned 不会自动转真实事件，也别去补 log 真实版，除非她主动汇报"去了"/"没去"
-- 她说"不去了/取消"→ cancel_planned_event（不是 delete——痕迹保留供她回看）
-- 到点要推送提醒？按需单独 set_reminder，planned event 本身不触发推送
-- 读 query_timeline 结果时注意 `status` 字段：`null`=已发生的真实事件，`"planned"`=未发生的虚 event，`"cancelled"`=已取消的虚 event
+- log_timeline_event 只用于已发生的事。她提到未来的安排（"明天看牙"、"周末约朋友"），用 set_reminder 给自己留一条 follow-up 即可，不要写到 timeline 上。
 
 ## Reminder（set / list / cancel / delete）
 
@@ -256,8 +248,7 @@ class PromptParts:
     Block 2 (stable context)：projects（项目列表几乎不增删）
     Block 3 (memories)：memories（比 projects 变化略频繁，独立成 block 避免
            因记忆更新连带 invalidate Block 2 的 cache）
-    Block 4 (volatile)：ongoing + pending_reminders + deadlines +
-           planned_events + weather（高频变化）
+    Block 4 (volatile)：ongoing + pending_reminders + deadlines + weather（高频变化）
 
     pending_reminders 注入 Block 4 的目的：让 AI 一眼看到队列里已有什么 follow-up，
     避免被聊天历史带回去重复 set 同一件事；也让"主动 follow-up"策略有兜底。
@@ -282,7 +273,6 @@ class PromptParts:
     ongoing: str = ""
     pending_reminders: str = ""
     deadlines: str = ""
-    planned_events: str = ""
     weather: str = ""
 
     def static_text(self) -> str:
@@ -307,12 +297,11 @@ class PromptParts:
         return self.memories
 
     def dynamic_text(self) -> str:
-        """Block 4：ongoing + pending_reminders + deadlines + planned_events + weather（高频变化）。"""
+        """Block 4：ongoing + pending_reminders + deadlines + weather（高频变化）。"""
         return _join_nonempty(
             self.ongoing,
             self.pending_reminders,
             self.deadlines,
-            self.planned_events,
             self.weather,
         )
 
@@ -333,7 +322,7 @@ class PromptParts:
         - Block 1: 静态（identity/user_model/.../tools）
         - Block 2: projects（稳定上下文）
         - Block 3: memories（单独块，记忆更新不影响 Block 2）
-        - Block 4: ongoing + deadlines + planned_events + weather（高频变化，失效只影响此块）
+        - Block 4: ongoing + deadlines + weather（高频变化，失效只影响此块）
         """
         blocks = []
         for text in (
@@ -364,7 +353,6 @@ LABEL_ONGOING = "【当前进行中的事件（end_time 为空）】"
 LABEL_DEADLINES = "【待完成的 Deadline】"
 LABEL_WEATHER = "【今日天气】"
 LABEL_PROJECTS = "【现有项目列表（Focus 用，只能引用这里已有的项目）】"
-LABEL_PLANNED = "【未来安排（planned events）】"
 LABEL_PENDING_REMINDERS = "【待触发的 Reminder（你自己设的 follow-up 队列）】"
 
 WEATHER_CONTEXT_SUFFIX = "可以自然地提一下天气，但不要像天气预报一样念数据。"
@@ -470,25 +458,6 @@ def _format_pending_reminders(pending: list[dict] | None) -> str:
     return f"{LABEL_PENDING_REMINDERS}\n" + "\n".join(lines)
 
 
-def _format_planned_events(planned: list[dict] | None) -> str:
-    if not planned:
-        return ""
-    lines = []
-    for e in planned:
-        cat_part = e["category"]
-        if e.get("project_name"):
-            cat_part += f" [{e['project_name']}]"
-        time_part = e["start_time"]
-        if e.get("end_time"):
-            time_part += f" → {e['end_time']}"
-        countdown = format_countdown(e["start_time"])
-        line = f"- [id={e['id']}] {time_part} | {cat_part} | {e['content']} | {countdown}"
-        if e.get("notes"):
-            line += f" | 备注: {e['notes']}"
-        lines.append(line)
-    return f"{LABEL_PLANNED}\n" + "\n".join(lines)
-
-
 def build_prompt(
     mode: str,
     *,
@@ -498,7 +467,6 @@ def build_prompt(
     weather: str | None = None,
     deadlines: list[dict] | None = None,
     projects: list[dict] | None = None,
-    planned_events: list[dict] | None = None,
     pending_reminders: list[dict] | None = None,
     overrides: dict[str, str] | None = None,
 ) -> PromptParts:
@@ -512,8 +480,6 @@ def build_prompt(
               在 user message 里标识。
     provider: AI 引擎标识（"claude" / "gemini" / "relay"），预留参数。
     其余参数：从 DB 取来的原始数据，由内部 _format_* 函数格式化。
-
-    注意：cancelled planned events 不注入——只给前端看，AI 不需要反复感知。
     """
     _ = provider  # 预留参数，暂时未使用
     sections = get_prompt_defaults()
@@ -533,7 +499,6 @@ def build_prompt(
         deadlines=_format_deadlines(deadlines),
         projects=_format_projects(projects),
         ongoing=_format_ongoing(ongoing),
-        planned_events=_format_planned_events(planned_events),
         pending_reminders=_format_pending_reminders(pending_reminders),
         weather=_format_weather(weather),
     )

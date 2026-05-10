@@ -6,13 +6,10 @@ import './dashboard.css';
 interface DashboardProps {
   date: string;
   timelineEvents: TimelineEvent[];
-  plannedEvents: TimelineEvent[];
-  cancelledEvents: TimelineEvent[];
   todos: ListItem[];
   memories: ListItem[];
   reminders: ListItem[];
   deadlines: ListItem[];
-  onDeletePlanned: (id: string) => void;
   onTodoToggle: (id: string) => void;
   onRefresh: () => void;
 }
@@ -83,13 +80,10 @@ const fmtClock = (d: Date) =>
 export function Dashboard({
   date,
   timelineEvents,
-  plannedEvents,
-  cancelledEvents,
   todos,
   memories,
   deadlines,
   reminders,
-  onDeletePlanned,
   onTodoToggle,
   onRefresh,
 }: DashboardProps) {
@@ -126,17 +120,13 @@ export function Dashboard({
       .catch(err => console.error('Failed to load weather:', err));
   }, []);
 
-  // ── Today list: combine actual + planned + cancelled, sorted by start
-  const todayItems = useMemo(() => {
-    type Row = TimelineEvent & { _kind: 'actual' | 'planned' | 'cancelled' };
-    const rows: Row[] = [
-      ...timelineEvents.map(e => ({ ...e, _kind: 'actual' as const })),
-      ...plannedEvents.map(e => ({ ...e, _kind: 'planned' as const })),
-      ...cancelledEvents.map(e => ({ ...e, _kind: 'cancelled' as const })),
-    ];
-    rows.sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
-    return rows;
-  }, [timelineEvents, plannedEvents, cancelledEvents]);
+  const todayItems = useMemo(
+    () =>
+      [...timelineEvents].sort(
+        (a, b) => a.startDate.getTime() - b.startDate.getTime()
+      ),
+    [timelineEvents]
+  );
 
   // ── Hero stat: today's actual focus minutes + pending reminder count
   const todayFocusMs = useMemo(
@@ -200,10 +190,7 @@ export function Dashboard({
         <div className="multi-lane-frame">
           <MultiLaneTimeline
             events={timelineEvents}
-            plannedEvents={plannedEvents}
-            cancelledEvents={cancelledEvents}
             date={date}
-            onDeletePlanned={onDeletePlanned}
           />
         </div>
       </aside>
@@ -240,17 +227,8 @@ export function Dashboard({
             <div className="today-list">
               {todayItems.map(ev => {
                 const dur = ev.endDate.getTime() - ev.startDate.getTime();
-                const subPrefix =
-                  ev._kind === 'planned'
-                    ? 'Planned · '
-                    : ev._kind === 'cancelled'
-                      ? 'Cancelled · '
-                      : '';
                 return (
-                  <div
-                    key={`${ev._kind}-${ev.id}`}
-                    className={`today-item${ev._kind !== 'actual' ? ' ' + ev._kind : ''}`}
-                  >
+                  <div key={ev.id} className="today-item">
                     <div className="time">{fmtTimeRange(ev.startDate, ev.endDate)}</div>
                     <div className={`lane-dot ${laneClass(ev.category)}`} />
                     <div className="body">
@@ -267,7 +245,6 @@ export function Dashboard({
                         )}
                       </div>
                       <div className="sub">
-                        {subPrefix}
                         {ev.category} · {fmtDuration(dur)}
                       </div>
                     </div>

@@ -230,14 +230,6 @@
   color: var(--muted-foreground);
   margin-top: 1px;
 }
-.today-item.planned .title {
-  color: var(--muted-foreground);
-  font-style: italic;
-}
-.today-item.cancelled .title {
-  color: var(--muted-foreground);
-  text-decoration: line-through;
-}
 .today-empty {
   padding: 18px 0 4px;
   color: var(--muted-foreground);
