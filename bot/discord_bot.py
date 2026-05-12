@@ -60,7 +60,17 @@ class LifeTrackerBot(commands.Bot):
         logger.warning(f"⚠️ {reason}，进入 5min 冷却，直到 {until.isoformat()}")
 
     async def setup_hook(self):
-        """注册斜杠命令并同步到 Discord"""
+        """注册斜杠命令并同步到 Discord，顺便挂上 interaction 过滤器"""
+        async def _interaction_gate(interaction: discord.Interaction) -> bool:
+            # 单用户限制
+            if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
+                return False
+            # 只在配置的目标频道里响应（DM、其他 channel 一律忽略）
+            if config.CHANNEL_ID and interaction.channel_id != config.CHANNEL_ID:
+                return False
+            return True
+        self.tree.interaction_check = _interaction_gate
+
         self.tree.add_command(_todo_group(self))
         self.tree.add_command(_weather_command(self))
         self.tree.add_command(_model_command(self))
@@ -71,22 +81,18 @@ class LifeTrackerBot(commands.Bot):
 
     async def on_ready(self):
         logger.info(f"✅ Discord Bot 已上线: {self.user}")
-        # 从 DB 恢复上次的目标频道，让 scheduler 在冷启动也能主动发消息
-        saved = self.db.get_state("target_channel_id")
-        if saved:
-            try:
-                self.target_channel_id = int(saved)
-                logger.info(f"📍 恢复目标频道: {saved}")
-            except ValueError:
-                logger.warning(f"⚠️ DB 里的 target_channel_id 不是数字: {saved!r}")
+        # 目标频道由 config 静态指定（prod / dev 各自的 config.json 隔离）
+        self.target_channel_id = config.CHANNEL_ID or None
+        if self.target_channel_id:
+            logger.info(f"📍 目标频道: {self.target_channel_id}")
+        else:
+            logger.warning("⚠️ 未配置 discord.channel_id，bot 不会响应任何消息")
 
     async def on_typing(self, channel, user, when):
         """记录目标用户在目标频道的 typing 时刻，供随机轮询判断是否让路。"""
-        if not isinstance(channel, discord.DMChannel):
+        if not self.target_channel_id or channel.id != self.target_channel_id:
             return
         if config.ALLOWED_USER_ID and user.id != config.ALLOWED_USER_ID:
-            return
-        if self.target_channel_id and channel.id != self.target_channel_id:
             return
         self.last_typing_at = when
 
@@ -102,12 +108,12 @@ class LifeTrackerBot(commands.Bot):
         if message.author == self.user:
             return
 
-        # 只响应指定用户
+        # 只响应指定用户（其他 bot / 另一个环境的自己 / 其他人都会在这里被挡掉）
         if config.ALLOWED_USER_ID and message.author.id != config.ALLOWED_USER_ID:
             return
 
-        # 只听 DM，不响应任何服务器频道
-        if not isinstance(message.channel, discord.DMChannel):
+        # 只在配置的目标频道里响应；DM 和其他频道一律忽略
+        if not self.target_channel_id or message.channel.id != self.target_channel_id:
             return
 
         # 斜杠命令走 interaction，普通消息才到这里
@@ -116,12 +122,6 @@ class LifeTrackerBot(commands.Bot):
             return
 
         logger.info(f"📨 收到消息: {message.author} ({message.author.id}): {message.content}")
-
-        # 记住频道 ID，用于主动发消息 + 定时调度拉历史
-        # 切换到新频道时持久化到 DB，重启后 on_ready 能恢复
-        if self.target_channel_id != message.channel.id:
-            self.target_channel_id = message.channel.id
-            self.db.set_state("target_channel_id", str(message.channel.id))
 
         # 获取当前时间戳
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")

@@ -72,7 +72,6 @@ class Database:
             );
 
             -- 应用状态（进程无关的小型 kv，重启后恢复）
-            -- 目前存：target_channel_id（最近一次活跃的 Discord 频道，用于冷启动主动消息）
             CREATE TABLE IF NOT EXISTS app_state (
                 key TEXT PRIMARY KEY,
                 value TEXT,
