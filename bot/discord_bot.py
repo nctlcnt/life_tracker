@@ -32,7 +32,6 @@ class LifeTrackerBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
         self.db = db
-        self.target_channel_id: int | None = None
         self.last_typing_at: datetime | None = None  # 目标用户最近 typing 时刻（UTC aware）
         # typing 被 429 限流后的冷却截止时间（按 channel_id），命中时直接跳过 typing 不再撞 API
         self._typing_cooldown_until: dict[int, datetime] = {}
@@ -70,23 +69,13 @@ class LifeTrackerBot(commands.Bot):
         logger.info("✅ 斜杠命令已同步")
 
     async def on_ready(self):
-        logger.info(f"✅ Discord Bot 已上线: {self.user}")
-        # 从 DB 恢复上次的目标频道，让 scheduler 在冷启动也能主动发消息
-        saved = self.db.get_state("target_channel_id")
-        if saved:
-            try:
-                self.target_channel_id = int(saved)
-                logger.info(f"📍 恢复目标频道: {saved}")
-            except ValueError:
-                logger.warning(f"⚠️ DB 里的 target_channel_id 不是数字: {saved!r}")
+        logger.info(f"✅ Discord Bot 已上线: {self.user} → channel {config.CHANNEL_ID}")
 
     async def on_typing(self, channel, user, when):
         """记录目标用户在目标频道的 typing 时刻，供随机轮询判断是否让路。"""
-        if not isinstance(channel, discord.DMChannel):
+        if channel.id != config.CHANNEL_ID:
             return
         if config.ALLOWED_USER_ID and user.id != config.ALLOWED_USER_ID:
-            return
-        if self.target_channel_id and channel.id != self.target_channel_id:
             return
         self.last_typing_at = when
 
@@ -106,8 +95,8 @@ class LifeTrackerBot(commands.Bot):
         if config.ALLOWED_USER_ID and message.author.id != config.ALLOWED_USER_ID:
             return
 
-        # 只听 DM，不响应任何服务器频道
-        if not isinstance(message.channel, discord.DMChannel):
+        # 只响应配置里指定的 channel（prod / staging 各自配置不同 id，多 bot 共存不会串台）
+        if message.channel.id != config.CHANNEL_ID:
             return
 
         # 斜杠命令走 interaction，普通消息才到这里
@@ -116,12 +105,6 @@ class LifeTrackerBot(commands.Bot):
             return
 
         logger.info(f"📨 收到消息: {message.author} ({message.author.id}): {message.content}")
-
-        # 记住频道 ID，用于主动发消息 + 定时调度拉历史
-        # 切换到新频道时持久化到 DB，重启后 on_ready 能恢复
-        if self.target_channel_id != message.channel.id:
-            self.target_channel_id = message.channel.id
-            self.db.set_state("target_channel_id", str(message.channel.id))
 
         # 获取当前时间戳
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -201,20 +184,17 @@ class LifeTrackerBot(commands.Bot):
         """主动发送消息（由定时器触发）"""
         if not text or not text.strip():
             return
-        if not self.target_channel_id:
-            logger.warning("⚠️ 主动发送跳过：target_channel_id 为空")
-            return
-        channel = self.get_channel(self.target_channel_id)
+        channel = self.get_channel(config.CHANNEL_ID)
         if channel is None:
             try:
-                channel = await self.fetch_channel(self.target_channel_id)
+                channel = await self.fetch_channel(config.CHANNEL_ID)
             except Exception as e:
-                logger.warning(f"⚠️ 主动发送失败：无法取回频道 {self.target_channel_id}: {e}")
+                logger.warning(f"⚠️ 主动发送失败：无法取回频道 {config.CHANNEL_ID}: {e}")
                 return
 
-        if not isinstance(channel, (discord.TextChannel, discord.DMChannel)):
+        if not isinstance(channel, discord.TextChannel):
             logger.warning(
-                f"⚠️ 主动发送失败：频道类型不支持: {type(channel).__name__} ({self.target_channel_id})"
+                f"⚠️ 主动发送失败：频道类型不支持: {type(channel).__name__} ({config.CHANNEL_ID})"
             )
             return
 
@@ -285,18 +265,13 @@ class LifeTrackerBot(commands.Bot):
             return []
 
     async def fetch_history_for_scheduler(self, limit: int = 20) -> list[dict]:
-        """
-        给 Scheduler 的历史拉取入口：用记忆中的 target_channel_id 定位频道。
-        Bot 启动后没人聊过任何消息的话，target_channel_id 还没设置，返回空历史。
-        """
-        if not self.target_channel_id:
-            return []
-        channel = self.get_channel(self.target_channel_id)
+        """给 Scheduler 的历史拉取入口：从配置里指定的 channel 取历史。"""
+        channel = self.get_channel(config.CHANNEL_ID)
         if channel is None:
             try:
-                channel = await self.fetch_channel(self.target_channel_id)
+                channel = await self.fetch_channel(config.CHANNEL_ID)
             except Exception as e:
-                logger.warning(f"⚠️ 拉历史失败：无法取回频道 {self.target_channel_id}: {e}")
+                logger.warning(f"⚠️ 拉历史失败：无法取回频道 {config.CHANNEL_ID}: {e}")
                 return []
         if not channel:
             return []

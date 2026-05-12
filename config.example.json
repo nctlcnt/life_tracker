@@ -1,7 +1,8 @@
 {
   "discord": {
     "token": "",
-    "allowed_user_id": 0
+    "allowed_user_id": 0,
+    "channel_id": 0
   },
   "ai": {
     "default_preset": "claude-opus",

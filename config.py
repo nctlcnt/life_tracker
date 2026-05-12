@@ -31,6 +31,7 @@ if not API_ONLY_MODE:
     _REQUIRED_PATHS: list[tuple[str, ...]] = [
         ("discord", "token"),
         ("discord", "allowed_user_id"),
+        ("discord", "channel_id"),
         ("ai", "presets"),
         ("ai", "default_preset"),
     ]
@@ -49,6 +50,8 @@ if not API_ONLY_MODE:
 # ── Discord ────────────────────────────────────────────────────────────
 DISCORD_TOKEN: str = _cfg.get("discord", {}).get("token", "")
 ALLOWED_USER_ID: int = int(_cfg.get("discord", {}).get("allowed_user_id", 0) or 0)
+# Bot 只在这个 channel 里听消息、推主动消息。prod / staging 各自配置不同 id。
+CHANNEL_ID: int = int(_cfg.get("discord", {}).get("channel_id", 0) or 0)
 
 # ── AI Presets ─────────────────────────────────────────────────────────
 # config.json 里维护一张 presets 表，每条 preset 是一套 { provider, api_key, base_url, model }
