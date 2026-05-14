@@ -290,6 +290,8 @@ DB_PATH: str = os.path.join(os.path.dirname(__file__), "data", "life_tracker.db"
 _weather = _cfg.get("weather", {})
 WEATHER_API_KEY: str = _weather.get("api_key", "")
 WEATHER_LOCATION: str = _weather.get("location", "-33.8688,151.2093")  # 默认悉尼
+# Google Geocoding API key（/weather <address> 用，留空则按地址查天气会失败）
+WEATHER_GEOCODING_API_KEY: str = _weather.get("geocoding_api_key", "")
 
 # ── 日志 ───────────────────────────────────────────────────────────────
 _log = _cfg.get("log", {})

@@ -46,7 +46,8 @@
   "timezone": "Australia/Sydney",
   "weather": {
     "api_key": "",
-    "location": "-33.8688,151.2093"
+    "location": "-33.8688,151.2093",
+    "geocoding_api_key": ""
   },
   "poll": {
     "min_seconds": 60,

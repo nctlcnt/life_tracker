@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timezone, timedelta
 from bot.ai_engine import chat, simple_completion
-from bot.weather import get_weather_brief, get_weather_detailed
+from bot.weather import get_weather_brief, get_weather_detailed, geocode_address
 from bot.prompts import get_prompt_template
 from bot.database import Database
 from bot.tools import SET_TOOL_NAMES
@@ -481,14 +481,35 @@ def _tz_command(bot: LifeTrackerBot) -> app_commands.Command:
 
 def _weather_command(bot: LifeTrackerBot) -> app_commands.Command:
     """创建 /weather 命令"""
-    @app_commands.command(name="weather", description="查看今日天气和穿衣建议")
-    async def weather(interaction: discord.Interaction):
+    @app_commands.command(name="weather", description="查看今日天气和穿衣建议；可选传入地址")
+    @app_commands.describe(address="要查询的地址（留空=默认地点）")
+    async def weather(interaction: discord.Interaction, address: str | None = None):
         if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
             return
 
         await interaction.response.defer()
 
-        weather_data = await get_weather_detailed()
+        location: str | None = None
+        location_label: str | None = None
+        geocode_header: str | None = None
+        if address:
+            geo = await geocode_address(address)
+            if not geo:
+                await interaction.followup.send(
+                    f"没找到这个地址：`{address}`，换个写法再试试"
+                )
+                return
+            location, location_label = geo
+            geocode_header = (
+                f"📍 `{address}` →\n"
+                f"   {location_label}\n"
+                f"   ({location})"
+            )
+
+        weather_data = await get_weather_detailed(
+            location=location,
+            location_label=location_label,
+        )
         if not weather_data:
             await interaction.followup.send("天气查询失败了，等会再试试吧")
             return
@@ -498,6 +519,8 @@ def _weather_command(bot: LifeTrackerBot) -> app_commands.Command:
             bot.db.get_prompt_overrides(),
         ).format(weather_data=weather_data)
         reply = await simple_completion(prompt)
+        if geocode_header:
+            reply = f"{geocode_header}\n\n{reply}"
         await interaction.followup.send(reply)
 
     return weather

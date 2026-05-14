@@ -14,6 +14,7 @@ logger = get_logger(__name__)
 
 LOCATION_LABEL = "悉尼"
 TOMORROW_API = "https://api.tomorrow.io/v4/weather/forecast"
+GEOCODE_API = "https://maps.googleapis.com/maps/api/geocode/json"
 
 # 早上时段：6:00 - 10:00，在此期间注入天气数据
 MORNING_START = 6
@@ -64,17 +65,21 @@ def _fmt_hourly(slot: dict) -> str:
     return f"  {t.strftime('%H:%M')}  {desc}  {temp}°C（体感{feels}°C）  雨{rain}%  UV{uv}"
 
 
-async def _fetch_forecast() -> dict | None:
-    """抓取 tomorrow.io forecast（hourly + daily 一次拿齐），失败返 None。"""
+async def _fetch_forecast(location: str | None = None) -> dict | None:
+    """抓取 tomorrow.io forecast（hourly + daily 一次拿齐），失败返 None。
+
+    location: "lat,lon" 字符串；不传则用默认 config.WEATHER_LOCATION。
+    """
     if not config.WEATHER_API_KEY:
         logger.info("⚠️ 未配置 weather.api_key，跳过天气查询")
         return None
+    loc = location or config.WEATHER_LOCATION
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
             resp = await client.get(
                 TOMORROW_API,
                 params={
-                    "location": config.WEATHER_LOCATION,
+                    "location": loc,
                     "apikey": config.WEATHER_API_KEY,
                     "units": "metric",
                 },
@@ -87,6 +92,44 @@ async def _fetch_forecast() -> dict | None:
             return resp.json()
     except Exception as e:
         logger.warning(f"⚠️ 天气查询失败: {e}")
+        return None
+
+
+async def geocode_address(address: str) -> tuple[str, str] | None:
+    """
+    用 Google Geocoding API 把自由文本地址转成 (lat,lon, formatted_address)。
+    失败返回 None。
+    """
+    if not config.WEATHER_GEOCODING_API_KEY:
+        logger.info("⚠️ 未配置 weather.geocoding_api_key，无法解析地址")
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(
+                GEOCODE_API,
+                params={
+                    "address": address,
+                    "key": config.WEATHER_GEOCODING_API_KEY,
+                },
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    f"⚠️ Google Geocoding 返回 {resp.status_code}: {resp.text[:200]}"
+                )
+                return None
+            data = resp.json()
+            status = data.get("status")
+            if status != "OK" or not data.get("results"):
+                logger.warning(
+                    f"⚠️ Google Geocoding 无结果 status={status} address={address!r}"
+                )
+                return None
+            top = data["results"][0]
+            loc = top["geometry"]["location"]
+            formatted = top.get("formatted_address", address)
+            return f"{loc['lat']},{loc['lng']}", formatted
+    except Exception as e:
+        logger.warning(f"⚠️ 地址解析失败: {e}")
         return None
 
 
@@ -169,17 +212,23 @@ async def get_weather_brief() -> str | None:
         return None
 
 
-async def get_weather_detailed() -> str | None:
+async def get_weather_detailed(
+    location: str | None = None,
+    location_label: str | None = None,
+) -> str | None:
     """
     获取详细天气数据供 /weather 指令使用：
     - 当前实况
     - 今日剩余时段（每 3 小时取一格）
     - 明日预报（每 3 小时取一格）
 
+    location: 可选 "lat,lon"，不传走默认。
+    location_label: 可选地点名（用于在输出顶部加一行【地点】）。
+
     注：tomorrow.io forecast 不返回过去数据，"过去几小时"段已去除。
     失败返回 None。
     """
-    data = await _fetch_forecast()
+    data = await _fetch_forecast(location)
     if not data:
         return None
     try:
@@ -200,11 +249,15 @@ async def get_weather_detailed() -> str | None:
         desc = _desc(current.get("weatherCode"))
         wind_kmh = round(current.get("windSpeed", 0) * 3.6)  # m/s → km/h
 
-        lines = [
+        lines: list[str] = []
+        if location_label:
+            lines.append(f"【地点】{location_label}")
+            lines.append("")
+        lines.extend([
             f"【当前实况】{now.strftime('%H:%M')}",
             f"  {desc}  {temp}°C（体感{feels}°C）  湿度{humidity}%  风速{wind_kmh}km/h  UV{uv}",
             "",
-        ]
+        ])
 
         # ── 今日剩余（每 3 小时取一格：0/3/6/9/12/15/18/21）──────
         today_date = now.date()
