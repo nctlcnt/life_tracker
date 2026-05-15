@@ -42,5 +42,3 @@ Clean, gentle aesthetic with Morandi-inspired muted tones — soft grays, dusty 
 评论列表里面是需求变更记录，和一些讨论，甚至有时会有新的需求冒出来，比description更活跃，所以需要单独拿，并且评估和implement。
 
 如果推送改动的comment，不要说技术细节，用自然语言描述改动的scope、内容和原因，方便非技术人员理解。
-
-先看 Linear Operating Manual，或者在 Linear 里搜索这个标题，依据里面的规范来管理 issue 和 comment。
