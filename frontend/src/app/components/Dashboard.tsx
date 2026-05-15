@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, Fragment } from 'react';
-import { MultiLaneTimeline, TimelineEvent } from './MultiLaneTimeline';
+import { TimelineEvent } from './MultiLaneTimeline';
 import { ListItem } from './ItemList';
 import './dashboard.css';
 
@@ -7,7 +7,6 @@ interface DashboardProps {
   date: string;
   timelineEvents: TimelineEvent[];
   todos: ListItem[];
-  memories: ListItem[];
   reminders: ListItem[];
   deadlines: ListItem[];
   onTodoToggle: (id: string) => void;
@@ -32,11 +31,8 @@ interface WeatherResponse {
 
 type ModalKind = 'event' | 'todo' | 'note' | null;
 
-const fmtTimeRange = (s: Date, e: Date) => {
-  const f = (d: Date) =>
-    `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  return `${f(s)} — ${f(e)}`;
-};
+const fmtClock = (d: Date) =>
+  `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
 const fmtDuration = (ms: number) => {
   const totalMin = Math.max(0, Math.round(ms / 60000));
@@ -47,13 +43,24 @@ const fmtDuration = (ms: number) => {
   return `${h}h ${m}m`;
 };
 
-const laneClass = (cat: string) =>
-  cat === 'Focus' ? 'ld-focus' : cat === 'Chill' ? 'ld-chill' : 'ld-rtn';
+const fmtGap = (ms: number) => `${fmtDuration(ms)} later`;
+
+const catClass = (cat: string) =>
+  cat === 'Focus' ? 'focus' : cat === 'Chill' ? 'chill' : 'rtn';
+
+const catLabel = (cat: string) =>
+  cat === 'Focus' ? 'Focus' : cat === 'Chill' ? 'Chill' : 'Routine';
 
 const fmtMonthDay = (d: Date) =>
-  `${d.toLocaleString('en-US', { month: 'long' })} ${d.getDate()}`;
+  `${d.toLocaleString('en-US', { month: 'long' })} ${d.getDate()}`;
 
 const fmtWeekday = (d: Date) => d.toLocaleString('en-US', { weekday: 'long' });
+
+const fmtShortWeekday = (d: Date) =>
+  d.toLocaleString('en-US', { weekday: 'short' });
+
+const fmtShortMonthDay = (d: Date) =>
+  `${d.toLocaleString('en-US', { month: 'short' })} ${d.getDate()}`;
 
 const fmtMinutes = (m: number) => {
   const h = Math.floor(m / 60);
@@ -63,25 +70,24 @@ const fmtMinutes = (m: number) => {
   return `${h}h ${mm}m`;
 };
 
-const fmtUntil = (due: Date) => {
+const fmtUntilDays = (due: Date) => {
   const ms = due.getTime() - Date.now();
   if (ms < 0) return 'overdue';
   const min = Math.round(ms / 60000);
-  if (min < 1) return 'now';
   if (min < 60) return `in ${min}m`;
   const h = Math.round(min / 60);
   if (h < 24) return `in ${h}h`;
-  return `in ${Math.round(h / 24)}d`;
+  const d = Math.round(h / 24);
+  return `in ${d} day${d === 1 ? '' : 's'}`;
 };
 
-const fmtClock = (d: Date) =>
-  `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+const GAP_THRESHOLD_MS = 30 * 60 * 1000;
+const NOW_WINDOW_MS = 5 * 60 * 1000;
 
 export function Dashboard({
   date,
   timelineEvents,
   todos,
-  memories,
   deadlines,
   reminders,
   onTodoToggle,
@@ -90,7 +96,6 @@ export function Dashboard({
   const [heatmap, setHeatmap] = useState<HeatmapResponse | null>(null);
   const [weather, setWeather] = useState<WeatherResponse | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
-  const [showAllMemories, setShowAllMemories] = useState(false);
 
   // Snapshot of uncompleted todo IDs at last data refresh. Single toggles
   // (which only flip `completed` on the same IDs) won't update this set, so
@@ -140,7 +145,7 @@ export function Dashboard({
     r => (r.description ?? '').includes('pending')
   ).length;
 
-  // ── Deadlines: split into next + upcoming
+  // ── Deadlines: split into next + rest
   const sortedDeadlines = useMemo(
     () =>
       [...deadlines].sort(
@@ -148,18 +153,43 @@ export function Dashboard({
       ),
     [deadlines]
   );
-  const [showAllDates, setShowAllDates] = useState(false);
-  const visibleDeadlines = showAllDates ? sortedDeadlines : sortedDeadlines.slice(0, 3);
-  const hasMoreDates = sortedDeadlines.length > 3;
+  const nextDeadline = sortedDeadlines[0];
+  const restDeadlines = sortedDeadlines.slice(1);
 
-  // ── Next pending reminders (next 1–2) shown subtly under "Next deadline"
-  const nextReminders = useMemo(
-    () =>
-      reminders
-        .filter(r => (r.description ?? '').includes('pending') && r.dueDate)
-        .slice(0, 2),
-    [reminders]
-  );
+  // ── Upcoming list = remaining deadlines + pending reminders, merged by date
+  const upcoming = useMemo(() => {
+    type UpItem = {
+      key: string;
+      title: string;
+      date: Date;
+      kind: 'deadline' | 'reminder';
+      countdown?: string;
+    };
+    const fromDeadlines: UpItem[] = restDeadlines
+      .filter(d => d.dueDate)
+      .map(d => ({
+        key: `d-${d.id}`,
+        title: d.title,
+        date: d.dueDate!,
+        kind: 'deadline',
+        countdown: d.countdown,
+      }));
+    const fromReminders: UpItem[] = reminders
+      .filter(r => (r.description ?? '').includes('pending') && r.dueDate)
+      .map(r => ({
+        key: `r-${r.id}`,
+        title: r.title,
+        date: r.dueDate!,
+        kind: 'reminder',
+      }));
+    return [...fromDeadlines, ...fromReminders].sort(
+      (a, b) => a.date.getTime() - b.date.getTime()
+    );
+  }, [restDeadlines, reminders]);
+
+  const [showAllUpcoming, setShowAllUpcoming] = useState(false);
+  const visibleUpcoming = showAllUpcoming ? upcoming : upcoming.slice(0, 3);
+  const hasMoreUpcoming = upcoming.length > 3;
 
   // ── Date pieces for the rail-date card
   const dateObj = new Date(`${date}T00:00:00`);
@@ -182,19 +212,17 @@ export function Dashboard({
       .slice(0, 3);
   }, [heatmap]);
 
+  // ── Mark the last event as "now" if it's still active / just ended.
+  const nowIdx = useMemo(() => {
+    if (todayItems.length === 0) return -1;
+    const last = todayItems[todayItems.length - 1];
+    return last.endDate.getTime() >= Date.now() - NOW_WINDOW_MS
+      ? todayItems.length - 1
+      : -1;
+  }, [todayItems]);
+
   return (
     <div className="dash-grid">
-      {/* ── Left rail ──────────────────────────────────────── */}
-      <aside className="rail-rhythm">
-        <div className="rhythm-title">Today&apos;s Rhythm</div>
-        <div className="multi-lane-frame">
-          <MultiLaneTimeline
-            events={timelineEvents}
-            date={date}
-          />
-        </div>
-      </aside>
-
       {/* ── Center column ──────────────────────────────────── */}
       <main className="col-center">
         <div className="hero">
@@ -216,47 +244,133 @@ export function Dashboard({
           </p>
         </div>
 
-        {/* TODAY */}
+        {/* TODAY — event log */}
         <section className="dash-card">
           <h3 className="h-section">
-            Today <span className="count">{todayItems.length} events</span>
+            Today <span className="count">{todayItems.length} logs</span>
           </h3>
           {todayItems.length === 0 ? (
             <div className="today-empty">No events yet today.</div>
           ) : (
-            <div className="today-list">
-              {todayItems.map(ev => {
-                const dur = ev.endDate.getTime() - ev.startDate.getTime();
+            <div className="today-log">
+              {todayItems.map((ev, idx) => {
+                const prev = idx > 0 ? todayItems[idx - 1] : null;
+                const gapMs = prev ? ev.startDate.getTime() - prev.endDate.getTime() : 0;
+                const showGap = gapMs > GAP_THRESHOLD_MS;
+                const isNow = idx === nowIdx;
+                const cls = isNow ? 'now' : catClass(ev.category);
                 return (
-                  <div key={ev.id} className="today-item">
-                    <div className="time">{fmtTimeRange(ev.startDate, ev.endDate)}</div>
-                    <div className={`lane-dot ${laneClass(ev.category)}`} />
-                    <div className="body">
-                      <div className="title">
-                        {ev.project_name ? (
-                          <>
-                            <span style={{ color: 'var(--muted-foreground)' }}>
-                              {ev.project_name} ·{' '}
-                            </span>
-                            {ev.content}
-                          </>
-                        ) : (
-                          ev.content
-                        )}
+                  <Fragment key={ev.id}>
+                    {showGap && (
+                      <div className="gap-row">
+                        <div className="gap-rail" />
+                        <div className="gap-label">{fmtGap(gapMs)}</div>
                       </div>
-                      <div className="sub">
-                        {ev.category} · {fmtDuration(dur)}
+                    )}
+                    <div className="log-row">
+                      <div className="ts">{fmtClock(ev.startDate)}</div>
+                      <div className="rail"><span className={`dot ${cls}`} /></div>
+                      <div className="content">
+                        <div className="title">{ev.content}</div>
+                        <div className="meta">
+                          <span className={`cat ${catClass(ev.category)}`}>
+                            {catLabel(ev.category)}
+                          </span>
+                          {ev.project_name && <> · {ev.project_name}</>}
+                          {isNow && <> · now</>}
+                        </div>
+                        {ev.notes && <div className="note">{ev.notes}</div>}
                       </div>
                     </div>
-                  </div>
+                  </Fragment>
                 );
               })}
             </div>
           )}
         </section>
 
-        {/* TODOS */}
-        <section className="dash-card">
+        {/* Action bar */}
+        <div className="actionbar">
+          <button type="button" onClick={() => setModal('event')}>
+            <svg viewBox="0 0 16 16" fill="none">
+              <path d="M8 14V2M2 8h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            New event
+          </button>
+          <button type="button" onClick={() => setModal('todo')}>
+            <svg viewBox="0 0 16 16" fill="none">
+              <rect x="3" y="3" width="10" height="10" rx="1" stroke="currentColor" strokeWidth="1.5" />
+              <path d="M8 6v4M6 8h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            New todo
+          </button>
+          <button type="button" onClick={() => setModal('note')}>
+            <svg viewBox="0 0 16 16" fill="none">
+              <path d="M3 4h10M3 8h10M3 12h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            Quick note
+          </button>
+        </div>
+      </main>
+
+      {/* ── Right rail ─────────────────────────────────────── */}
+      <aside className="rail-right">
+        {/* 1. Weather */}
+        <div className="weather">
+          <div className="top">
+            <svg viewBox="0 0 32 32" fill="none">
+              <circle cx="16" cy="16" r="5.5" stroke="currentColor" strokeWidth="1.5" />
+              <g stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                <path d="M16 4v3" />
+                <path d="M16 25v3" />
+                <path d="M4 16h3" />
+                <path d="M25 16h3" />
+                <path d="M7.5 7.5l2 2" />
+                <path d="M22.5 22.5l2 2" />
+                <path d="M24.5 7.5l-2 2" />
+                <path d="M9.5 22.5l-2 2" />
+              </g>
+            </svg>
+            <div className="meta">
+              <div className="when">
+                {fmtWeekday(dateObj)},<br />
+                {fmtMonthDay(dateObj)}
+              </div>
+              <div className="temp">
+                {weather?.available && weather.temp != null
+                  ? `${weather.temp}° · ${weather.condition ?? ''}`
+                  : '—° · —'}
+              </div>
+            </div>
+          </div>
+          {weather?.available && weather.min_temp != null && weather.max_temp != null && (
+            <a href="#" onClick={e => e.preventDefault()}>
+              {weather.min_temp}° / {weather.max_temp}° · {weather.location ?? ''}
+            </a>
+          )}
+        </div>
+
+        {/* 2. Next deadline */}
+        {nextDeadline?.dueDate && (
+          <div className="deadline next">
+            <p className="label">Next deadline</p>
+            <p className="when">
+              {fmtWeekday(nextDeadline.dueDate)}<br />
+              {fmtMonthDay(nextDeadline.dueDate)} · {fmtClock(nextDeadline.dueDate)}
+            </p>
+            <p
+              className={`countdown${
+                (nextDeadline.countdown ?? '').includes('⚠️') ? ' warn' : ''
+              }`}
+            >
+              {nextDeadline.countdown ? `${nextDeadline.countdown} · ` : ''}
+              {nextDeadline.title}
+            </p>
+          </div>
+        )}
+
+        {/* 3. Todo */}
+        <div className="dash-card">
           <h3 className="h-section">
             To-do{' '}
             <span className="count">
@@ -293,168 +407,48 @@ export function Dashboard({
               </div>
             ))
           )}
-        </section>
-
-        {/* MEMORIES */}
-        <section className="dash-card">
-          <h3 className="h-section">
-            Memory{' '}
-            <span className="count">
-              {showAllMemories ? `all ${memories.length}` : 'recent'}
-            </span>
-          </h3>
-          {memories.length === 0 ? (
-            <div className="today-empty">No memories yet.</div>
-          ) : (
-            <>
-              {(showAllMemories ? memories : memories.slice(0, 6)).map(m => (
-                <div key={m.id} className="mem-item">
-                  <div className="quote">{m.title}</div>
-                  {m.description && <div className="src">{m.description}</div>}
-                </div>
-              ))}
-              {memories.length > 6 && (
-                <button
-                  type="button"
-                  className="mem-toggle"
-                  onClick={() => setShowAllMemories(s => !s)}
-                >
-                  {showAllMemories
-                    ? 'Show less ↑'
-                    : `Show all ${memories.length} ↓`}
-                </button>
-              )}
-            </>
-          )}
-        </section>
-
-        {/* Action bar */}
-        <div className="actionbar">
-          <button type="button" onClick={() => setModal('event')}>
-            <svg viewBox="0 0 16 16" fill="none">
-              <path d="M8 14V2M2 8h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-            New event
-          </button>
-          <button type="button" onClick={() => setModal('todo')}>
-            <svg viewBox="0 0 16 16" fill="none">
-              <rect x="3" y="3" width="10" height="10" rx="1" stroke="currentColor" strokeWidth="1.5" />
-              <path d="M8 6v4M6 8h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-            New todo
-          </button>
-          <button type="button" onClick={() => setModal('note')}>
-            <svg viewBox="0 0 16 16" fill="none">
-              <path d="M3 4h10M3 8h10M3 12h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-            Quick note
-          </button>
         </div>
-      </main>
 
-      {/* ── Right rail ─────────────────────────────────────── */}
-      <aside className="rail-right">
-        {/* Weather / date */}
-        <div className="weather">
-          <div className="top">
-            <svg viewBox="0 0 32 32" fill="none">
-              <circle cx="16" cy="16" r="5.5" stroke="currentColor" strokeWidth="1.5" />
-              <g stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                <path d="M16 4v3" />
-                <path d="M16 25v3" />
-                <path d="M4 16h3" />
-                <path d="M25 16h3" />
-                <path d="M7.5 7.5l2 2" />
-                <path d="M22.5 22.5l2 2" />
-                <path d="M24.5 7.5l-2 2" />
-                <path d="M9.5 22.5l-2 2" />
-              </g>
-            </svg>
-            <div className="meta">
-              <div className="when">
-                {fmtWeekday(dateObj)},<br />
-                {fmtMonthDay(dateObj)}
-              </div>
-              <div className="temp">
-                {weather?.available && weather.temp != null
-                  ? `${weather.temp}° · ${weather.condition ?? ''}`
-                  : '—° · —'}
-              </div>
-            </div>
+        {/* 4. Upcoming reminders */}
+        {upcoming.length > 0 && (
+          <div className="dash-card">
+            <h3 className="h-section">
+              Upcoming reminders <span className="count">{upcoming.length}</span>
+            </h3>
+            {visibleUpcoming.map(u => {
+              const isWarn = (u.countdown ?? '').includes('⚠️');
+              return (
+                <div key={u.key} className="reminder-item">
+                  <div className="rm-date">
+                    {fmtShortWeekday(u.date)} · {fmtShortMonthDay(u.date)}
+                  </div>
+                  <div className={`rm-count${isWarn ? ' warn' : ''}`}>
+                    {fmtUntilDays(u.date)}
+                  </div>
+                  <div className="rm-title">
+                    {u.title}
+                    {u.kind === 'reminder' && (
+                      <span style={{ color: 'var(--muted-foreground)' }}>
+                        {' · '}
+                        {fmtClock(u.date)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {hasMoreUpcoming && (
+              <button
+                className="more-dates"
+                onClick={() => setShowAllUpcoming(s => !s)}
+              >
+                {showAllUpcoming ? 'Show less ↑' : 'More ↓'}
+              </button>
+            )}
           </div>
-          {weather?.available && weather.min_temp != null && weather.max_temp != null && (
-            <a href="#" onClick={e => e.preventDefault()}>
-              {weather.min_temp}° / {weather.max_temp}° · {weather.location ?? ''}
-            </a>
-          )}
-        </div>
-
-        {/* Reminder bell icon + body — extracted so we can render standalone when there are no deadlines */}
-        {(() => {
-          const reminderCards = nextReminders.map(r => (
-            <div key={`r-${r.id}`} className="reminder-item">
-              <svg className="bell" viewBox="0 0 16 16" fill="none">
-                <path
-                  d="M8 2v1M5 5a3 3 0 016 0v3l1.5 2h-9L5 8V5zM6.5 12.5a1.5 1.5 0 003 0"
-                  stroke="currentColor"
-                  strokeWidth="1.3"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              <div className="body">
-                <div className="title">{r.title}</div>
-                <div className="countdown">
-                  {r.dueDate ? `${fmtUntil(r.dueDate)} · ${fmtClock(r.dueDate)}` : ''}
-                </div>
-              </div>
-            </div>
-          ));
-
-          if (visibleDeadlines.length === 0) {
-            return reminderCards;
-          }
-
-          return visibleDeadlines.map((d, idx) => {
-            const isNext = idx === 0;
-            const isWarn = (d.countdown ?? '').includes('⚠️');
-            const dueLabel = d.dueDate
-              ? `${fmtWeekday(d.dueDate)}\n${fmtMonthDay(d.dueDate)}`
-              : '';
-            const card = (
-              <div key={`d-${d.id}`} className={`deadline${isNext ? ' next' : ''}`}>
-                <p className="label">{isNext ? 'Next deadline' : 'Upcoming'}</p>
-                <p className="when">
-                  {dueLabel.split('\n').map((line, i) => (
-                    <span key={i}>
-                      {line}
-                      {i === 0 && <br />}
-                    </span>
-                  ))}
-                </p>
-                <p className={`countdown${isWarn ? ' warn' : ''}`}>
-                  {d.countdown ? `${d.countdown} · ` : ''}
-                  {d.title}
-                </p>
-              </div>
-            );
-            if (!isNext || reminderCards.length === 0) return card;
-            return (
-              <Fragment key={`d-block-${d.id}`}>
-                {card}
-                {reminderCards}
-              </Fragment>
-            );
-          });
-        })()}
-
-        {hasMoreDates && (
-          <button className="more-dates" onClick={() => setShowAllDates(s => !s)}>
-            {showAllDates ? 'Show less ↑' : 'More dates ↓'}
-          </button>
         )}
 
-        {/* Project compact */}
+        {/* 5. Projects */}
         {projectRows.length > 0 && (
           <div className="pj-card">
             <h3 className="h-section" style={{ marginBottom: 6 }}>
