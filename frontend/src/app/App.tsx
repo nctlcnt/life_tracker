@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ListItem } from './components/ItemList';
 import { WeekView, getMonday } from './components/WeekView';
-import { TimelineEvent } from './components/MultiLaneTimeline';
+import { MultiLaneTimeline, TimelineEvent } from './components/MultiLaneTimeline';
 import { ProjectOverview } from './components/ProjectOverview';
 import { Dashboard } from './components/Dashboard';
 import { AdminPanel } from './components/AdminPanel';
@@ -16,7 +16,7 @@ function fmtDateStr(d: Date) {
 }
 
 // ── Tab 类型 ────────────────────────────────────────────────────
-type ViewMode = 'day' | 'week' | 'project';
+type ViewMode = 'day' | 'week' | 'project' | 'rhythm' | 'memory';
 
 type Route = 'dashboard' | 'admin' | 'traces';
 
@@ -75,90 +75,98 @@ function DashboardApp() {
   const headerDayNameEn = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][selectedDateObj.getDay()];
 
   useEffect(() => {
-    if (viewMode !== 'day') return;
+    // Day + Rhythm both need timeline; Day additionally needs todos /
+    // reminders / deadlines for the right rail. Memory only needs memories.
+    // Week / Project skip this entirely.
+    const needsTimeline = viewMode === 'day' || viewMode === 'rhythm';
+    const needsDayLists = viewMode === 'day';
+    const needsMemories = viewMode === 'memory';
+    if (!needsTimeline && !needsDayLists && !needsMemories) return;
 
     const startIso = `${currentDate}T00:00:00`;
     const endIso = `${currentDate}T23:59:59`;
     const dayStart = new Date(startIso);
     const dayEnd = new Date(endIso);
 
-    fetch(`/api/timeline?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`)
-      .then(res => res.json())
-      .then(data => {
-        const segments = data.segments || [];
-        const events: TimelineEvent[] = segments.map((s: any, idx: number) => {
-          const rawStart = new Date(s.start_time);
-          const rawEnd = s.end_time ? new Date(s.end_time) : new Date();
-          return {
-            id: String(s.event_ids?.[0] ?? `s-${idx}`),
-            content: s.content,
-            category: s.category,
-            startDate: rawStart < dayStart ? dayStart : rawStart,
-            endDate: rawEnd > dayEnd ? dayEnd : rawEnd,
-            notes: s.notes ?? null,
-            project_name: s.project_name ?? null,
-          };
-        });
-        setTimelineEvents(events);
-      })
-      .catch(err => console.error('Failed to load timeline:', err));
+    if (needsTimeline) {
+      fetch(`/api/timeline?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`)
+        .then(res => res.json())
+        .then(data => {
+          const segments = data.segments || [];
+          const events: TimelineEvent[] = segments.map((s: any, idx: number) => {
+            const rawStart = new Date(s.start_time);
+            const rawEnd = s.end_time ? new Date(s.end_time) : new Date();
+            return {
+              id: String(s.event_ids?.[0] ?? `s-${idx}`),
+              content: s.content,
+              category: s.category,
+              startDate: rawStart < dayStart ? dayStart : rawStart,
+              endDate: rawEnd > dayEnd ? dayEnd : rawEnd,
+              notes: s.notes ?? null,
+              project_name: s.project_name ?? null,
+            };
+          });
+          setTimelineEvents(events);
+        })
+        .catch(err => console.error('Failed to load timeline:', err));
+    }
 
-    // Fetch Memories
-    fetch('/api/memories')
-      .then(res => res.json())
-      .then(data => {
-        setMemories(data.map((m: any) => ({
-          id: String(m.id),
-          title: m.content,
-          description: `来源: ${m.source === 'user' ? '用户' : 'AI'}`,
-        })));
-      })
-      .catch(err => console.error('Failed to load memories:', err));
+    if (needsMemories) {
+      fetch('/api/memories')
+        .then(res => res.json())
+        .then(data => {
+          setMemories(data.map((m: any) => ({
+            id: String(m.id),
+            title: m.content,
+            description: `来源: ${m.source === 'user' ? '用户' : 'AI'}`,
+          })));
+        })
+        .catch(err => console.error('Failed to load memories:', err));
+    }
 
-    // Fetch Reminders
-    fetch('/api/reminders')
-      .then(res => res.json())
-      .then(data => {
-        const sorted = [...data].sort((a: any, b: any) => {
-          const aIsPending = a.status === 'pending' ? 0 : 1;
-          const bIsPending = b.status === 'pending' ? 0 : 1;
-          if (aIsPending !== bIsPending) return aIsPending - bIsPending;
-          return new Date(a.trigger_time).getTime() - new Date(b.trigger_time).getTime();
-        });
-        setReminders(sorted.map((r: any) => ({
-          id: String(r.id),
-          title: r.action,
-          description: `状态: ${r.status}`,
-          dueDate: new Date(r.trigger_time),
-          priority: r.priority || 'medium',
-        })));
-      })
-      .catch(err => console.error('Failed to load reminders:', err));
+    if (needsDayLists) {
+      fetch('/api/reminders')
+        .then(res => res.json())
+        .then(data => {
+          const sorted = [...data].sort((a: any, b: any) => {
+            const aIsPending = a.status === 'pending' ? 0 : 1;
+            const bIsPending = b.status === 'pending' ? 0 : 1;
+            if (aIsPending !== bIsPending) return aIsPending - bIsPending;
+            return new Date(a.trigger_time).getTime() - new Date(b.trigger_time).getTime();
+          });
+          setReminders(sorted.map((r: any) => ({
+            id: String(r.id),
+            title: r.action,
+            description: `状态: ${r.status}`,
+            dueDate: new Date(r.trigger_time),
+            priority: r.priority || 'medium',
+          })));
+        })
+        .catch(err => console.error('Failed to load reminders:', err));
 
-    // Fetch Todos
-    fetch('/api/todos?all=true')
-      .then(res => res.json())
-      .then(data => {
-        setTodos((data.todos || []).map((t: any) => ({
-          id: String(t.id),
-          title: t.content,
-          completed: t.done === 1 || t.done === true,
-        })));
-      })
-      .catch(err => console.error('Failed to load todos:', err));
+      fetch('/api/todos?all=true')
+        .then(res => res.json())
+        .then(data => {
+          setTodos((data.todos || []).map((t: any) => ({
+            id: String(t.id),
+            title: t.content,
+            completed: t.done === 1 || t.done === true,
+          })));
+        })
+        .catch(err => console.error('Failed to load todos:', err));
 
-    // Fetch Deadlines
-    fetch('/api/deadlines')
-      .then(res => res.json())
-      .then(data => {
-        setDeadlines((data.deadlines || []).map((d: any) => ({
-          id: String(d.id),
-          title: d.title,
-          dueDate: new Date(d.due_time),
-          countdown: d.countdown,
-        })));
-      })
-      .catch(err => console.error('Failed to load deadlines:', err));
+      fetch('/api/deadlines')
+        .then(res => res.json())
+        .then(data => {
+          setDeadlines((data.deadlines || []).map((d: any) => ({
+            id: String(d.id),
+            title: d.title,
+            dueDate: new Date(d.due_time),
+            countdown: d.countdown,
+          })));
+        })
+        .catch(err => console.error('Failed to load deadlines:', err));
+    }
 
   }, [currentDate, viewMode, refreshKey]);
 
@@ -197,7 +205,11 @@ function DashboardApp() {
     day: 'Day',
     week: 'Week',
     project: 'Projects',
+    rhythm: 'Rhythm',
+    memory: 'Memory',
   };
+  const tabOrder: ViewMode[] = ['day', 'week', 'project', 'rhythm', 'memory'];
+  const showDateNav = viewMode === 'day' || viewMode === 'rhythm';
 
   return (
     <div className="dash size-full bg-background overflow-hidden flex flex-col text-foreground">
@@ -209,7 +221,7 @@ function DashboardApp() {
         </div>
 
         <div className="dash-tabs" role="tablist">
-          {(['day', 'week', 'project'] as ViewMode[]).map(mode => (
+          {tabOrder.map(mode => (
             <button
               key={mode}
               onClick={() => setViewMode(mode)}
@@ -220,7 +232,7 @@ function DashboardApp() {
           ))}
         </div>
 
-        {viewMode === 'day' && (
+        {showDateNav && (
           <div className="dash-nav">
             <button className="arrow" onClick={() => shiftDate(-1)} title="prev">‹</button>
             <input
@@ -249,13 +261,27 @@ function DashboardApp() {
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <ProjectOverview />
         </div>
+      ) : viewMode === 'rhythm' ? (
+        <div className="flex-1 min-h-0 overflow-auto">
+          <div className="rhythm-page">
+            <div className="rhythm-card">
+              <div className="rhythm-title">Today&apos;s Rhythm</div>
+              <div className="multi-lane-frame">
+                <MultiLaneTimeline events={timelineEvents} date={currentDate} />
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : viewMode === 'memory' ? (
+        <div className="flex-1 min-h-0 overflow-auto">
+          <MemoryPage memories={memories} />
+        </div>
       ) : (
         <div className="flex-1 min-h-0 overflow-auto">
           <Dashboard
             date={currentDate}
             timelineEvents={timelineEvents}
             todos={todos}
-            memories={memories}
             reminders={reminders}
             deadlines={deadlines}
             onTodoToggle={handleTodoToggle}
@@ -267,6 +293,46 @@ function DashboardApp() {
       <footer className="dash-footer">
         {appVersion ? `Life Tracker · ${appVersion}` : 'Life Tracker'}
       </footer>
+    </div>
+  );
+}
+
+// ── Memory tab: editorial reading column of saved notes/quotes ──
+function MemoryPage({ memories }: { memories: ListItem[] }) {
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? memories : memories.slice(0, 12);
+  return (
+    <div className="memory-page">
+      <div className="hero">
+        <p className="eyebrow">Memory</p>
+        <h1>Saved notes.</h1>
+        <p className="welcome">
+          {memories.length === 0
+            ? 'Nothing saved yet.'
+            : `${memories.length} item${memories.length === 1 ? '' : 's'} you wanted to remember.`}
+        </p>
+      </div>
+      {memories.length === 0 ? (
+        <div className="memory-empty">Quick notes will show up here.</div>
+      ) : (
+        <div className="mem-col">
+          {visible.map(m => (
+            <div key={m.id} className="mem-item">
+              <div className="quote">{m.title}</div>
+              {m.description && <div className="src">{m.description}</div>}
+            </div>
+          ))}
+          {memories.length > 12 && (
+            <button
+              type="button"
+              className="mem-toggle"
+              onClick={() => setShowAll(s => !s)}
+            >
+              {showAll ? 'Show less ↑' : `Show all ${memories.length} ↓`}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
