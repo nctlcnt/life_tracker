@@ -18,6 +18,7 @@ interface HeatmapResponse {
   dates: string[];
   data: Record<string, Record<string, number>>;
   archived?: string[];
+  metric?: 'check_ins';
 }
 
 interface WeatherResponse {
@@ -62,13 +63,7 @@ const fmtShortWeekday = (d: Date) =>
 const fmtShortMonthDay = (d: Date) =>
   `${d.toLocaleString('en-US', { month: 'short' })} ${d.getDate()}`;
 
-const fmtMinutes = (m: number) => {
-  const h = Math.floor(m / 60);
-  const mm = Math.round(m % 60);
-  if (h === 0) return `${mm}m`;
-  if (mm === 0) return `${h}h`;
-  return `${h}h ${mm}m`;
-};
+const fmtCheckIns = (count: number) => `${count} check-in${count === 1 ? '' : 's'}`;
 
 const fmtUntilDays = (due: Date) => {
   const ms = due.getTime() - Date.now();
@@ -194,7 +189,7 @@ export function Dashboard({
   // ── Date pieces for the rail-date card
   const dateObj = new Date(`${date}T00:00:00`);
 
-  // ── Project compact: top 3 by total（已归档不入榜）
+  // ── Project compact: top 3 by check-ins（已归档不入榜）
   const projectRows = useMemo(() => {
     if (!heatmap) return [];
     const archived = new Set(heatmap.archived ?? []);
@@ -457,13 +452,13 @@ export function Dashboard({
             {projectRows.map(p => (
               <div key={p.name} className="pj-row">
                 <span className="name">{p.name}</span>
-                <span className="hrs">{fmtMinutes(p.total)}</span>
+                <span className="hrs">{fmtCheckIns(p.total)}</span>
                 <div className="pj-bar">
-                  {p.perDay.map((m, i) => (
+                  {p.perDay.map((count, i) => (
                     <div
                       key={i}
                       className="cell"
-                      style={{ opacity: m === 0 ? 0.08 : Math.max(0.15, Math.min(1, m / p.max)) }}
+                      style={{ opacity: count === 0 ? 0.08 : Math.max(0.15, Math.min(1, count / p.max)) }}
                     />
                   ))}
                 </div>

@@ -192,7 +192,7 @@ async def get_weather():
 async def get_projects_heatmap(days: int = Query(90, description="统计天数，默认90天")):
     """
     Project Overview 热力图数据。
-    返回每个项目在最近 N 天里每天的 Focus 时长（分钟）。
+    返回每个项目在最近 N 天里每天的 Focus check-in 次数。
     含已归档项目（projects 字段全量），同时返回 archived 列表，
     前端按需隐藏/淡化——避免归档动作往返之间的列表错位。
     """
@@ -208,29 +208,25 @@ async def get_projects_heatmap(days: int = Query(90, description="统计天数�
     # 构建日期列表（YYYY-MM-DD，最近 days 天）
     dates = [(start_dt + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
 
-    # 按 project_name 和日期聚合 Focus 时长
+    # 按 project_name 和日期聚合 Focus check-in 次数。
+    # GitHub contributions 的核心语义是"当天发生了几次贡献"；
+    # 这里每条 Focus event 视为一次项目 check-in。
+    # 图片附件（LT-78）只是 event 的产出证据，不单独增加热度；
+    # 如果未来图片上传流程创建了新的 Focus event，那条 event 会自然计入一次。
     from collections import defaultdict
-    project_day: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    project_day: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
     for ev in events:
         if ev.get("category") != "Focus" or not ev.get("project_name"):
             continue
         proj = ev["project_name"]
         day = ev["start_time"][:10]  # YYYY-MM-DD
-        start = datetime.fromisoformat(ev["start_time"])
-        if ev.get("end_time"):
-            end_t = datetime.fromisoformat(ev["end_time"])
-        else:
-            # 使用与 start 时区一致的 now，避免 naive/aware 相减报错
-            tz = start.tzinfo
-            end_t = datetime.now(tz=tz) if tz else datetime.now()
-        minutes = max(0, (end_t - start).total_seconds() / 60)
-        project_day[proj][day] += minutes
+        project_day[proj][day] += 1
 
     project_rows = db.get_all_project_names(include_archived=True)
     managed_projects = [p["project_name"] for p in project_rows]
 
-    # 按总时长排序项目（降序），无历史数据的手动项目也展示。
+    # 按总 check-in 次数排序项目（降序），无历史数据的手动项目也展示。
     projects = sorted(
         managed_projects,
         key=lambda p: sum(project_day[p].values()),
@@ -243,7 +239,13 @@ async def get_projects_heatmap(days: int = Query(90, description="统计天数�
     }
 
     archived = db.get_archived_project_names()
-    return {"projects": projects, "dates": dates, "data": data, "archived": archived}
+    return {
+        "projects": projects,
+        "dates": dates,
+        "data": data,
+        "archived": archived,
+        "metric": "check_ins",
+    }
 
 
 @app.get("/api/projects")

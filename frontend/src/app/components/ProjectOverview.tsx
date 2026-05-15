@@ -13,14 +13,15 @@ interface HeatmapData {
   dates: string[];
   data: Record<string, Record<string, number>>;
   archived?: string[];
+  metric?: 'check_ins';
 }
 
 const FOCUS_COLOR = '#94A3B5'; // 烟蓝灰
 
-function minutesToOpacity(minutes: number, maxMinutes: number): number {
-  if (minutes <= 0 || maxMinutes <= 0) return 0;
-  // 使用对数曲线，让少量时间也有可见度，大量时间趋近于1
-  return Math.min(1, 0.12 + 0.88 * Math.sqrt(minutes / maxMinutes));
+function countToOpacity(count: number, maxCount: number): number {
+  if (count <= 0 || maxCount <= 0) return 0;
+  // 类 GitHub 热力图：少量 check-in 也可见，高频逐渐加深。
+  return Math.min(1, 0.18 + 0.82 * Math.sqrt(count / maxCount));
 }
 
 function fmtDate(dateStr: string): string {
@@ -28,12 +29,8 @@ function fmtDate(dateStr: string): string {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-function fmtMinutes(minutes: number): string {
-  const h = Math.floor(minutes / 60);
-  const m = Math.round(minutes % 60);
-  if (h === 0) return `${m}分钟`;
-  if (m === 0) return `${h}小时`;
-  return `${h}小时${m}分钟`;
+function fmtCheckIns(count: number): string {
+  return `${count}次`;
 }
 
 export function ProjectOverview() {
@@ -166,7 +163,7 @@ export function ProjectOverview() {
   );
   const archivedCount = (data?.projects ?? []).filter(p => archivedSet.has(p)).length;
 
-  // 最大日投入分钟数（用于颜色深度归一化）
+  // 最大日 check-in 次数（用于颜色深度归一化）
   // 用全量项目算，避免切换"显示已归档"时颜色基准跳动
   let globalMax = 0;
   for (const proj of data?.projects ?? []) {
@@ -274,7 +271,7 @@ export function ProjectOverview() {
 
             {/* 项目行 */}
             {visibleProjects.map(proj => {
-              const totalMinutes = Object.values(data.data[proj] ?? {}).reduce((a, b) => a + b, 0);
+              const totalCheckIns = Object.values(data.data[proj] ?? {}).reduce((a, b) => a + b, 0);
               const isArchived = archivedSet.has(proj);
               const isBusy = busyName === proj;
               return (
@@ -352,7 +349,7 @@ export function ProjectOverview() {
                       <span className="min-w-0 flex-1 whitespace-normal break-words text-right text-[11px] leading-tight">{proj}</span>
                     )}
                     <span className="text-[10px] text-muted-foreground ml-1.5 flex-shrink-0">
-                      {fmtMinutes(totalMinutes)}
+                      {fmtCheckIns(totalCheckIns)}
                     </span>
                   </div>
 
@@ -361,8 +358,8 @@ export function ProjectOverview() {
                     {weeks.map((week, wi) => (
                       <div key={wi} className="flex flex-col" style={{ gap: CELL_GAP }}>
                         {week.map(dateStr => {
-                          const minutes = data.data[proj]?.[dateStr] ?? 0;
-                          const opacity = minutesToOpacity(minutes, globalMax);
+                          const count = data.data[proj]?.[dateStr] ?? 0;
+                          const opacity = countToOpacity(count, globalMax);
                           return (
                             <Tooltip key={dateStr}>
                               <TooltipTrigger asChild>
@@ -372,12 +369,12 @@ export function ProjectOverview() {
                                     width: CELL_SIZE,
                                     height: CELL_SIZE,
                                     backgroundColor: FOCUS_COLOR,
-                                    opacity: minutes > 0 ? opacity : 0.06,
+                                    opacity: count > 0 ? opacity : 0.06,
                                     marginRight: CELL_GAP,
                                   }}
                                 />
                               </TooltipTrigger>
-                              {minutes > 0 && (
+                              {count > 0 && (
                                 <TooltipContent
                                   side="top"
                                   sideOffset={4}
@@ -385,7 +382,7 @@ export function ProjectOverview() {
                                 >
                                   <div className="text-[11px]">
                                     <span className="text-muted-foreground">{fmtDate(dateStr)} · </span>
-                                    {fmtMinutes(minutes)}
+                                    {fmtCheckIns(count)} check-in
                                   </div>
                                 </TooltipContent>
                               )}
