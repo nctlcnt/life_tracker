@@ -95,15 +95,15 @@ function DashboardApp() {
           const segments = data.segments || [];
           const events: TimelineEvent[] = segments.map((s: any, idx: number) => {
             const rawStart = new Date(s.start_time);
-            const rawEnd = s.end_time ? new Date(s.end_time) : new Date();
             return {
               id: String(s.event_ids?.[0] ?? `s-${idx}`),
               content: s.content,
               category: s.category,
               startDate: rawStart < dayStart ? dayStart : rawStart,
-              endDate: rawEnd > dayEnd ? dayEnd : rawEnd,
+              endDate: rawStart < dayStart ? dayStart : rawStart,
               notes: s.notes ?? null,
               project_name: s.project_name ?? null,
+              attachments: s.attachments ?? [],
             };
           });
           setTimelineEvents(events);

@@ -77,8 +77,6 @@ const fmtUntilDays = (due: Date) => {
 };
 
 const GAP_THRESHOLD_MS = 30 * 60 * 1000;
-const NOW_WINDOW_MS = 5 * 60 * 1000;
-
 export function Dashboard({
   date,
   timelineEvents,
@@ -128,14 +126,7 @@ export function Dashboard({
     [timelineEvents]
   );
 
-  // ── Hero stat: today's actual focus minutes + pending reminder count
-  const todayFocusMs = useMemo(
-    () =>
-      timelineEvents
-        .filter(e => e.category === 'Focus')
-        .reduce((sum, e) => sum + (e.endDate.getTime() - e.startDate.getTime()), 0),
-    [timelineEvents]
-  );
+  const todayFocusCount = timelineEvents.filter(e => e.category === 'Focus').length;
   const pendingReminderCount = reminders.filter(
     r => (r.description ?? '').includes('pending')
   ).length;
@@ -207,15 +198,6 @@ export function Dashboard({
       .slice(0, 3);
   }, [heatmap]);
 
-  // ── Mark the last event as "now" if it's still active / just ended.
-  const nowIdx = useMemo(() => {
-    if (todayItems.length === 0) return -1;
-    const last = todayItems[todayItems.length - 1];
-    return last.endDate.getTime() >= Date.now() - NOW_WINDOW_MS
-      ? todayItems.length - 1
-      : -1;
-  }, [todayItems]);
-
   return (
     <div className="dash-grid">
       {/* ── Center column ──────────────────────────────────── */}
@@ -224,9 +206,9 @@ export function Dashboard({
           <p className="eyebrow">Dashboard</p>
           <h1>Welcome back.</h1>
           <p className="welcome">
-            {todayFocusMs > 0 ? (
+            {todayFocusCount > 0 ? (
               <>
-                You logged <b>{fmtDuration(todayFocusMs)} of Focus</b> today.
+                You logged <b>{todayFocusCount} Focus check-in{todayFocusCount === 1 ? '' : 's'}</b> today.
               </>
             ) : (
               <>No Focus blocks logged yet today.</>
@@ -250,10 +232,8 @@ export function Dashboard({
             <div className="today-log">
               {todayItems.map((ev, idx) => {
                 const prev = idx > 0 ? todayItems[idx - 1] : null;
-                const gapMs = prev ? ev.startDate.getTime() - prev.endDate.getTime() : 0;
+                const gapMs = prev ? ev.startDate.getTime() - prev.startDate.getTime() : 0;
                 const showGap = gapMs > GAP_THRESHOLD_MS;
-                const isNow = idx === nowIdx;
-                const cls = isNow ? 'now' : catClass(ev.category);
                 return (
                   <Fragment key={ev.id}>
                     {showGap && (
@@ -264,7 +244,7 @@ export function Dashboard({
                     )}
                     <div className="log-row">
                       <div className="ts">{fmtClock(ev.startDate)}</div>
-                      <div className="rail"><span className={`dot ${cls}`} /></div>
+                      <div className="rail"><span className={`dot ${catClass(ev.category)}`} /></div>
                       <div className="content">
                         <div className="title">{ev.content}</div>
                         <div className="meta">
@@ -272,9 +252,29 @@ export function Dashboard({
                             {catLabel(ev.category)}
                           </span>
                           {ev.project_name && <> · {ev.project_name}</>}
-                          {isNow && <> · now</>}
                         </div>
                         {ev.notes && <div className="note">{ev.notes}</div>}
+                        {ev.attachments && ev.attachments.length > 0 && (
+                          <div className={`event-media-grid count-${Math.min(ev.attachments.length, 4)}`}>
+                            {ev.attachments.slice(0, 4).map((att, attIdx) => (
+                              <a
+                                key={att.id}
+                                className="event-media"
+                                href={att.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                title={att.original_filename ?? 'Open image'}
+                              >
+                                <img src={att.thumbnail_url} alt="" loading="lazy" />
+                                {attIdx === 3 && ev.attachments!.length > 4 && (
+                                  <span className="event-media-more">
+                                    +{ev.attachments!.length - 4}
+                                  </span>
+                                )}
+                              </a>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </Fragment>

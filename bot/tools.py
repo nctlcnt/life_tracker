@@ -24,7 +24,7 @@ TOOLS = [
                     },
                     "end_time": {
                         "type": "string",
-                        "description": "事件结束时间，ISO 8601 格式。如果事件还在进行中，可以不填"
+                        "description": "兼容旧数据字段；新事件按时刻点记录，通常不要填写"
                     },
                     "content": {
                         "type": "string",
@@ -48,7 +48,7 @@ TOOLS = [
                     },
                     "session_id": {
                         "type": "integer",
-                        "description": "如果这是在恢复或继续之前的某个被打断的活动，填入之前那条活动记录的 event_id。全新活动可不填。"
+                        "description": "兼容旧数据字段；新事件通常不要填写。"
                     },
                 },
                 "required": ["start_time", "content", "category"]
@@ -210,6 +210,27 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "attach_recent_image_to_event",
+            "description": "把最近收到但尚未挂入 event 的图片附件保存并挂到指定 timeline event。适用于用户说“上一张图必须入库/把刚才图片加到这条 event”。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_id": {
+                        "type": "integer",
+                        "description": "要挂图片的 timeline event ID"
+                    },
+                    "image_hash": {
+                        "type": "string",
+                        "description": "可选。图片 SHA-256 hash；如果不填，默认使用最近一张未入库图片"
+                    }
+                },
+                "required": ["event_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "save_memory",
             "description": "记住一条信息。上限 20 条，满了自动清理最旧的。",
             "parameters": {
@@ -324,6 +345,7 @@ TOOLS = [
 # 新建类工具：只有这些操作才触发 ✅ reaction（update/delete/query 均不触发）
 SET_TOOL_NAMES = {
     "log_timeline_event",
+    "attach_recent_image_to_event",
     "set_reminder",
     "save_memory",
     "add_deadline",

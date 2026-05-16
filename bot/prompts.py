@@ -140,7 +140,7 @@ COMMUNICATION = """<communication_style>
 PROTOCOLS = """
 ## 基本反应模式
 
-- **查阅日程先于情绪安抚（核心决策）**：当她表达"不想做/明天再说"或自我批评时，**绝对不要立刻自动安慰**。必须先看一眼【待完成的 Deadline】和进行中的事件。
+- **查阅日程先于情绪安抚（核心决策）**：当她表达"不想做/明天再说"或自我批评时，**绝对不要立刻自动安慰**。必须先看一眼【待完成的 Deadline】。
   - 如果近期有冲突/任务很紧，用朋友的口吻点出来："但那个后天交，明明明后天都满，今天能搞就搞了呗"。
   - 如果确实没冲突，才顺着她说："那就明天呗"。
 - 她说的事件 → 对事件本身感兴趣，不是"好的已记录"
@@ -170,10 +170,10 @@ content = 高度概括的标题（动词+宾语），notes = 具体细节+感受
 project_name 只能使用【现有项目列表】里的项目名。列表里没有匹配时，不要自行新建项目名；改记为非 Focus，或在回复里让她先到 Project Overview 手动添加项目。
 
 **新建 vs 更新 vs 删除**：
-- 同一件事延续（"还在学习""学完了"）→ query_timeline → update_timeline_event
-- 新活动 → 先看【当前进行中的事件】有没有未结束的旧事件：
-  - 切换（"不看了，去洗澡"）→ update 旧事件 end_time → log 新的
-  - 并行（"边看剧边打扫"）→ 保留旧事件 ongoing，直接 log 新的
+- Timeline event 是一个时刻点，不是持续时间段；不要维护“进行中”状态，也不要为了结束活动去补 end_time。
+- 用户说刚做了/正在做/做完了某件已发生的事 → 需要记录就 log_timeline_event，start_time 用消息时间或她明确说的时间。
+- 修正上一条或补充细节 → query_timeline 找到目标后 update_timeline_event。
+- 用户要求“把上一张/刚才那张图片入库/挂到 event” → 先确定目标 event_id，然后调用 attach_recent_image_to_event；如果她给了图片 hash 前缀，也可用 image_hash。
 - log 前自查：同时段已有 content+category 相同 → 不新建，update 或跳过
 - 发现历史重复 → delete_timeline_event 删多余的
 - 一句话多活动 → 拆成多条，时间按逻辑排
@@ -248,7 +248,7 @@ class PromptParts:
     Block 2 (stable context)：projects（项目列表几乎不增删）
     Block 3 (memories)：memories（比 projects 变化略频繁，独立成 block 避免
            因记忆更新连带 invalidate Block 2 的 cache）
-    Block 4 (volatile)：ongoing + pending_reminders + deadlines + weather（高频变化）
+    Block 4 (volatile)：ongoing + pending_reminders + pending_media + deadlines + weather（高频变化）
 
     pending_reminders 注入 Block 4 的目的：让 AI 一眼看到队列里已有什么 follow-up，
     避免被聊天历史带回去重复 set 同一件事；也让"主动 follow-up"策略有兜底。
@@ -272,6 +272,7 @@ class PromptParts:
     # 动态层
     ongoing: str = ""
     pending_reminders: str = ""
+    pending_media: str = ""
     deadlines: str = ""
     weather: str = ""
 
@@ -301,6 +302,7 @@ class PromptParts:
         return _join_nonempty(
             self.ongoing,
             self.pending_reminders,
+            self.pending_media,
             self.deadlines,
             self.weather,
         )
@@ -354,6 +356,7 @@ LABEL_DEADLINES = "【待完成的 Deadline】"
 LABEL_WEATHER = "【今日天气】"
 LABEL_PROJECTS = "【现有项目列表（Focus 用，只能引用这里已有的项目）】"
 LABEL_PENDING_REMINDERS = "【待触发的 Reminder（你自己设的 follow-up 队列）】"
+LABEL_PENDING_MEDIA = "【最近未入库图片】"
 
 WEATHER_CONTEXT_SUFFIX = "可以自然地提一下天气，但不要像天气预报一样念数据。"
 
@@ -458,6 +461,24 @@ def _format_pending_reminders(pending: list[dict] | None) -> str:
     return f"{LABEL_PENDING_REMINDERS}\n" + "\n".join(lines)
 
 
+def _format_pending_media(pending: list[dict] | None) -> str:
+    if not pending:
+        return ""
+    lines = []
+    for item in pending:
+        h = (item.get("content_hash") or "")[:12]
+        created_at = item.get("created_at") or "unknown-time"
+        source_message_id = item.get("source_message_id") or "unknown-message"
+        name = item.get("original_filename") or "image"
+        line = f"- [hash={h}] {created_at} | message_id={source_message_id} | {name}"
+        lines.append(line)
+    return (
+        f"{LABEL_PENDING_MEDIA}\n"
+        + "\n".join(lines)
+        + "\n用户说上一张/刚才那张图片要入库时，先确定 event_id，再调用 attach_recent_image_to_event；未指定 hash 时默认用最近一张。"
+    )
+
+
 def build_prompt(
     mode: str,
     *,
@@ -468,6 +489,7 @@ def build_prompt(
     deadlines: list[dict] | None = None,
     projects: list[dict] | None = None,
     pending_reminders: list[dict] | None = None,
+    pending_media: list[dict] | None = None,
     overrides: dict[str, str] | None = None,
 ) -> PromptParts:
     """
@@ -500,6 +522,7 @@ def build_prompt(
         projects=_format_projects(projects),
         ongoing=_format_ongoing(ongoing),
         pending_reminders=_format_pending_reminders(pending_reminders),
+        pending_media=_format_pending_media(pending_media),
         weather=_format_weather(weather),
     )
 

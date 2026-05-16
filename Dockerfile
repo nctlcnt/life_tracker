@@ -22,9 +22,10 @@ ENV APP_VERSION=${APP_VERSION}
 
 WORKDIR /app
 
-# curl is needed for HEALTHCHECK; tzdata supplies IANA zone files for runtime TZ switching
+# curl is needed for HEALTHCHECK; tzdata supplies IANA zone files for runtime TZ switching.
+# libheif1 supports HEIC/HEIF decode for phone photos handled by pillow-heif.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl tzdata \
+    && apt-get install -y --no-install-recommends curl tzdata libheif1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps (cached layer)

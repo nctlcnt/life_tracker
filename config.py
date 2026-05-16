@@ -285,6 +285,22 @@ TIMEZONE: str = _cfg.get("timezone", "Australia/Sydney")
 # ── 数据库 ─────────────────────────────────────────────────────────────
 DB_PATH: str = os.path.join(os.path.dirname(__file__), "data", "life_tracker.db")
 
+# ── 媒体附件 ───────────────────────────────────────────────────────────
+_media = _cfg.get("media", {})
+MEDIA_PROVIDER: str = _media.get("provider", "r2")
+MEDIA_BUCKET: str = _media.get("bucket", "")
+MEDIA_ENDPOINT: str = _media.get("endpoint", "")
+MEDIA_ACCESS_KEY_ID: str = (
+    os.environ.get("MEDIA_ACCESS_KEY_ID")
+    or _media.get("access_key_id", "")
+)
+MEDIA_SECRET_ACCESS_KEY: str = (
+    os.environ.get("MEDIA_SECRET_ACCESS_KEY")
+    or _media.get("secret_access_key", "")
+)
+MEDIA_PUBLIC_BASE_URL: str = _media.get("public_base_url", "")
+MEDIA_MAX_UPLOAD_MB: int = int(_media.get("max_upload_mb", 10) or 10)
+
 # ── 天气 ───────────────────────────────────────────────────────────────
 # tomorrow.io API；api_key 空时天气模块会静默降级（返回 None，不影响主流程）
 _weather = _cfg.get("weather", {})

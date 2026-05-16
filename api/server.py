@@ -3,13 +3,13 @@ FastAPI 接口模块
 给前端提供数据
 """
 import os
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from bot.database import Database
-from bot.merge import merge_events
 from bot import trace as ai_trace
+from bot import media
 
 app = FastAPI(title="Life Tracker API")
 
@@ -30,14 +30,31 @@ def set_database(database: Database):
     db = database
 
 
+def _with_attachment_views(events: list[dict]) -> list[dict]:
+    event_ids = [int(ev["id"]) for ev in events if ev.get("id") is not None]
+    grouped = db.get_attachments_for_events(event_ids)
+    result = []
+    for ev in events:
+        row = dict(ev)
+        row["attachments"] = [
+            media.attachment_view(att)
+            for att in grouped.get(int(row["id"]), [])
+        ]
+        result.append(row)
+    return result
+
+
 @app.get("/api/timeline")
 async def get_timeline(
     start: str = Query(..., description="起始时间 ISO 8601，如 2026-04-01T00:00:00"),
     end: str = Query(..., description="结束时间 ISO 8601，如 2026-04-07T23:59:59"),
 ):
-    """查询时间范围内的真实事件，返回合并后的时间段。"""
-    raw_events = db.get_events(start, end)
-    segments = merge_events(raw_events)
+    """查询时间范围内的事件点。segments 字段保留给旧前端契约使用。"""
+    events = db.get_events(start, end)
+    segments = _with_attachment_views(events)
+    for ev in segments:
+        ev["event_ids"] = [ev["id"]]
+        ev["check_in_count"] = 1
     return {
         "segments": segments,
         "count": len(segments),
@@ -51,6 +68,7 @@ async def get_events(
 ):
     """查询时间范围内的所有原始事件（调试用）"""
     events = db.get_events(start, end)
+    events = _with_attachment_views(events)
     return {"events": events, "count": len(events)}
 
 
@@ -58,7 +76,7 @@ async def get_events(
 async def create_event(body: dict):
     """手动新建一条 timeline event（仪表板 New event 模态框入口）。
     body: {content, category?, start_time?, end_time?, project_name?, notes?}
-    缺省: category=Routine, start_time=now ISO, end_time=null（进行中）。
+    缺省: category=Routine, start_time=now ISO。event 按时刻点处理。
     """
     from datetime import datetime
     content = (body.get("content") or "").strip()
@@ -74,16 +92,67 @@ async def create_event(body: dict):
     else:
         project_name = None
     start_time = body.get("start_time") or datetime.now().isoformat(timespec="seconds")
-    end_time = body.get("end_time") or None
     event_id = db.add_event(
         start_time=start_time,
-        end_time=end_time,
+        end_time=body.get("end_time") or start_time,
         content=content,
         category=category,
         notes=body.get("notes"),
         project_name=project_name,
     )
     return {"id": event_id}
+
+
+@app.get("/api/events/{event_id}/attachments")
+async def list_event_attachments(event_id: int):
+    if not db.get_event_by_id(event_id):
+        raise HTTPException(status_code=404, detail=f"event not found: {event_id}")
+    return {
+        "attachments": [
+            media.attachment_view(row)
+            for row in db.get_event_attachments(event_id)
+        ]
+    }
+
+
+@app.post("/api/events/{event_id}/attachments")
+async def upload_event_attachment(event_id: int, file: UploadFile = File(...)):
+    if not db.get_event_by_id(event_id):
+        raise HTTPException(status_code=404, detail=f"event not found: {event_id}")
+    try:
+        data = await file.read()
+        stored = media.store_image(
+            event_id,
+            data,
+            filename=file.filename,
+            content_type=file.content_type,
+        )
+        attachment_id = db.add_event_attachment(
+            event_id,
+            bucket=stored.bucket,
+            object_key=stored.object_key,
+            thumbnail_key=stored.thumbnail_key,
+            mime_type=stored.mime_type,
+            width=stored.width,
+            height=stored.height,
+            size_bytes=stored.size_bytes,
+            original_filename=stored.original_filename,
+            source="web",
+        )
+    except media.MediaError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"attachment upload failed: {e}")
+    row = db.get_attachment_by_id(attachment_id)
+    return {"attachment": media.attachment_view(row)}
+
+
+@app.delete("/api/event-attachments/{attachment_id}")
+async def delete_event_attachment(attachment_id: int):
+    changed = db.delete_event_attachment(attachment_id)
+    if not changed:
+        raise HTTPException(status_code=404, detail=f"attachment not found: {attachment_id}")
+    return {"ok": True}
 
 
 @app.get("/api/categories")

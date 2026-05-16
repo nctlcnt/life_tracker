@@ -192,6 +192,6 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
             )
 
             if tool_callback and called_names:
-                await tool_callback(called_names)
+                await tool_callback(called_names, trace_tool_results)
 
     return "\n".join(all_texts) or "（内部错误：工具调用次数过多）"

@@ -11,7 +11,7 @@ from bot.prompts import build_prompt, PromptParts
 from bot.weather import is_morning, get_weather_brief
 from bot.database import Database
 from bot.logger import get_logger
-from bot import trace
+from bot import media, trace
 from config import Preset
 import config
 
@@ -72,8 +72,6 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
     provider: AI 引擎标识，透传给 build_prompt（预留 provider-specific prompt 扩展）
     """
     memories = db.get_all_memories()
-    ongoing = db.get_ongoing_events(limit=5)
-
     # Deadline：先自动过期，再取 active
     db.expire_past_deadlines()
     deadlines = db.get_active_deadlines()
@@ -83,17 +81,19 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
     # pending reminders 注入 Block 4：让 AI 看到自己已设的 follow-up 队列，
     # 避免被聊天历史带回去重复 set 同一件事。
     pending_reminders = db.list_active_reminders()
+    pending_media = db.get_pending_media(limit=3)
 
     return build_prompt(
         mode,
         provider=provider,
         overrides=db.get_prompt_overrides(),
         memories=memories or None,
-        ongoing=ongoing or None,
+        ongoing=None,
         weather=weather,
         deadlines=deadlines or None,
         projects=projects or None,
         pending_reminders=pending_reminders or None,
+        pending_media=pending_media or None,
     )
 
 
@@ -114,11 +114,32 @@ def _ensure_valid_messages(messages: list[dict]) -> list[dict]:
     merged = []
     for msg in messages:
         if merged and merged[-1]["role"] == msg["role"]:
-            merged[-1]["content"] += "\n" + msg["content"]
+            merged[-1]["content"] = _merge_message_content(
+                merged[-1].get("content", ""),
+                msg.get("content", ""),
+            )
         else:
             merged.append(msg.copy())
 
     return merged
+
+
+def _merge_message_content(left, right):
+    if isinstance(left, str) and isinstance(right, str):
+        return left + "\n" + right
+
+    parts = []
+    if isinstance(left, list):
+        parts.extend(left)
+    elif left:
+        parts.append({"type": "text", "text": str(left)})
+
+    if isinstance(right, list):
+        parts.extend(right)
+    elif right:
+        parts.append({"type": "text", "text": str(right)})
+
+    return parts
 
 
 def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
@@ -141,7 +162,7 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
             project_name = None
         event_id = db.add_event(
             start_time=args["start_time"],
-            end_time=args.get("end_time"),
+            end_time=args["start_time"],
             content=args["content"],
             category=category,
             notes=args.get("notes"),
@@ -218,6 +239,48 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
         if ok:
             return {"success": True, "message": "事件已删除"}
         return {"success": False, "message": f"未找到 event_id={args['event_id']}"}
+
+    elif tool_name == "attach_recent_image_to_event":
+        event_id = int(args["event_id"])
+        event = db.get_event_by_id(event_id)
+        if not event:
+            return {"success": False, "message": f"未找到 event_id={event_id}"}
+        rows = db.get_pending_media(
+            content_hash=(args.get("image_hash") or None),
+            include_linked=False,
+            limit=1,
+        )
+        if not rows:
+            return {"success": False, "message": "没有找到未入库的图片缓存"}
+        row = rows[0]
+        data = media.load_pending_image(row["content_hash"])
+        stored = media.store_image(
+            event_id,
+            data,
+            filename=row.get("original_filename"),
+            content_type=row.get("mime_type"),
+        )
+        attachment_id = db.add_event_attachment(
+            event_id,
+            bucket=stored.bucket,
+            object_key=stored.object_key,
+            thumbnail_key=stored.thumbnail_key,
+            mime_type=stored.mime_type,
+            width=stored.width,
+            height=stored.height,
+            size_bytes=stored.size_bytes,
+            original_filename=stored.original_filename,
+            source=row.get("source") or "discord",
+            source_message_id=row.get("source_message_id"),
+        )
+        db.mark_pending_media_linked(row["content_hash"], event_id=event_id, attachment_id=attachment_id)
+        return {
+            "success": True,
+            "event_id": event_id,
+            "attachment_id": attachment_id,
+            "image_hash": row["content_hash"],
+            "message": "图片已挂入 event",
+        }
 
     elif tool_name == "save_memory":
         memory_id = db.add_memory(args["content"])

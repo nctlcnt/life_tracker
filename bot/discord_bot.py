@@ -14,16 +14,39 @@ from bot.prompts import get_prompt_template
 from bot.database import Database
 from bot.tools import SET_TOOL_NAMES
 from bot.logger import get_logger
+from bot import media
 import config
+from config import Preset
 
 logger = get_logger(__name__)
 _TYPING_COOLDOWN = timedelta(minutes=5)
+_IMAGE_CONTENT_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+}
 
 
 def _is_rate_limited_error(exc: Exception) -> bool:
     return isinstance(exc, discord.RateLimited) or (
         isinstance(exc, discord.HTTPException) and exc.status == 429
     )
+
+
+def _preset_supports_image_input(preset: Preset | None) -> bool:
+    if not preset:
+        return False
+    provider = (preset.provider or "").lower().strip()
+    if provider not in {"openai", "relay"}:
+        return False
+    model = (preset.model or "").lower()
+    return any(prefix in model for prefix in ("gpt-4o", "gpt-4.1", "gpt-5"))
+
+
+def _active_model_supports_image_input() -> bool:
+    return _preset_supports_image_input(config.get_active())
 
 
 class LifeTrackerBot(commands.Bot):
@@ -105,6 +128,19 @@ class LifeTrackerBot(commands.Bot):
             return
 
         logger.info(f"📨 收到消息: {message.author} ({message.author.id}): {message.content}")
+        image_attachments = [
+            a for a in message.attachments
+            if (a.content_type or "").split(";")[0].lower() in _IMAGE_CONTENT_TYPES
+        ]
+        pending_images = await self._cache_image_attachments(message, image_attachments)
+        if image_attachments and not message.content.strip():
+            ref_event_id = self._resolve_attachment_event_id(message, [])
+            if ref_event_id:
+                await self._handle_image_attachments(message, image_attachments, [ref_event_id], pending_images)
+                return
+            if not _active_model_supports_image_input():
+                await message.channel.send("当前 AI preset 还不能看图。切到 OpenAI/GPT-5.5 后我就能自动判断图片 event。")
+                return
 
         # 获取当前时间戳
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -123,6 +159,7 @@ class LifeTrackerBot(commands.Bot):
 
         # 当前用户消息（带时间戳前缀，和历史消息格式一致）
         current_content = f"[{timestamp}] {content_to_send}"
+        current_message = self._build_current_ai_message(current_content, image_attachments, pending_images)
 
         # 备份到 DB（messages 表只作备份，AI 上下文走 Discord 历史）
         self.db.add_message("user", current_content)
@@ -131,11 +168,11 @@ class LifeTrackerBot(commands.Bot):
         history = await self._fetch_history_as_messages(
             message.channel, limit=20, exclude_id=message.id
         )
-        ai_messages = history + [{"role": "user", "content": current_content}]
+        ai_messages = history + [current_message]
 
         try:
             async def send_reply(text):
-                await _send_chat_chunks(
+                sent_messages = await _send_chat_chunks(
                     message.channel,
                     text,
                     use_typing=not self._is_typing_cooling_down(message.channel.id),
@@ -143,10 +180,49 @@ class LifeTrackerBot(commands.Bot):
                         message.channel.id, "Discord typing 发送限流"
                     ),
                 )
+                sent_reply_message_ids.extend(str(m.id) for m in sent_messages)
 
             tool_called_flag = False
-            async def on_tool_call(tool_names: list[str]):
+            created_event_ids: list[int] = []
+            attachment_event_ids: list[int] = []
+            sent_reply_message_ids: list[str] = []
+
+            async def on_tool_call(tool_names: list[str], tool_results: list[dict] | None = None):
                 nonlocal tool_called_flag
+                for item in tool_results or []:
+                    result = item.get("result") or {}
+                    if item.get("name") == "log_timeline_event" and result.get("success") and result.get("event_id"):
+                        event_id = int(result["event_id"])
+                        created_event_ids.append(event_id)
+                        attachment_event_ids.append(event_id)
+                        self.db.add_event_source(
+                            event_id,
+                            message_id=str(message.id),
+                            channel_id=str(message.channel.id),
+                            role="user",
+                            relation="created_by",
+                        )
+                    elif item.get("name") == "update_timeline_event" and result.get("success"):
+                        input_args = item.get("input") or {}
+                        event_id = input_args.get("event_id")
+                        if event_id is not None:
+                            attachment_event_ids.append(int(event_id))
+                            self.db.add_event_source(
+                                int(event_id),
+                                message_id=str(message.id),
+                                channel_id=str(message.channel.id),
+                                role="user",
+                                relation="updated_by",
+                            )
+                    elif item.get("name") == "attach_recent_image_to_event" and result.get("success"):
+                        event_id = int(result["event_id"])
+                        self.db.add_event_source(
+                            event_id,
+                            message_id=str(message.id),
+                            channel_id=str(message.channel.id),
+                            role="user",
+                            relation="attached_image_by",
+                        )
                 if not tool_called_flag and any(n in SET_TOOL_NAMES for n in tool_names):
                     tool_called_flag = True
                     try:
@@ -171,14 +247,181 @@ class LifeTrackerBot(commands.Bot):
                         await chat(self.db, ai_messages, send_callback=send_reply, tool_callback=on_tool_call)
                     finally:
                         await typing_cm.__aexit__(None, None, None)
+            if created_event_ids:
+                event_id = created_event_ids[-1]
+                for reply_message_id in sent_reply_message_ids:
+                    self.db.add_event_source(
+                        event_id,
+                        message_id=reply_message_id,
+                        channel_id=str(message.channel.id),
+                        role="bot",
+                        relation="confirmed_by",
+                    )
         except Exception as e:
             error_msg = f"❌ {type(e).__name__}: {e}"
             logger.exception(error_msg)
             await message.channel.send(error_msg[:2000])
         finally:
+            if image_attachments:
+                if attachment_event_ids:
+                    await self._handle_image_attachments(
+                        message, image_attachments, attachment_event_ids, pending_images
+                    )
+                elif not message.content.strip():
+                    await message.channel.send("看了图，但我没判断出需要记录成 event。")
             # cache 钱已付，通知 scheduler 重置 poll 基准（45-55min 内不再轮询）
             if self.on_ai_call_done:
                 self.on_ai_call_done()
+
+    async def _handle_image_attachments(
+        self,
+        message: discord.Message,
+        attachments: list[discord.Attachment],
+        created_event_ids: list[int],
+        pending_images: list[dict] | None = None,
+    ) -> None:
+        event_id = self._resolve_attachment_event_id(message, created_event_ids)
+        if not event_id:
+            await message.channel.send(
+                "我收到了图片，但还不知道要挂到哪条 event。可以引用那条记录/确认消息再发一次图。"
+            )
+            return
+
+        ok_count = 0
+        errors = []
+        pending_by_index = {int(p.get("index", -1)): p for p in (pending_images or [])}
+        for idx, attachment in enumerate(attachments):
+            try:
+                pending = pending_by_index.get(idx)
+                data = media.load_pending_image(pending["content_hash"]) if pending else await attachment.read()
+                stored = media.store_image(
+                    event_id,
+                    data,
+                    filename=attachment.filename,
+                    content_type=attachment.content_type,
+                )
+                attachment_id = self.db.add_event_attachment(
+                    event_id,
+                    bucket=stored.bucket,
+                    object_key=stored.object_key,
+                    thumbnail_key=stored.thumbnail_key,
+                    mime_type=stored.mime_type,
+                    width=stored.width,
+                    height=stored.height,
+                    size_bytes=stored.size_bytes,
+                    original_filename=stored.original_filename,
+                    source="discord",
+                    source_message_id=str(message.id),
+                    sort_order=idx,
+                )
+                self.db.add_event_source(
+                    event_id,
+                    message_id=str(message.id),
+                    channel_id=str(message.channel.id),
+                    role="user",
+                    relation="attachment_reply",
+                )
+                logger.info(f"🖼️ 图片附件已保存: attachment_id={attachment_id} event_id={event_id}")
+                if pending:
+                    self.db.mark_pending_media_linked(
+                        pending["content_hash"],
+                        event_id=event_id,
+                        attachment_id=attachment_id,
+                    )
+                ok_count += 1
+            except media.MediaError as e:
+                errors.append(str(e))
+            except Exception as e:
+                logger.exception(f"❌ 图片附件保存失败: {e}")
+                errors.append(f"{type(e).__name__}: {e}")
+
+        if ok_count:
+            try:
+                await message.add_reaction("🖼️")
+            except Exception:
+                pass
+        if errors:
+            await message.channel.send(("图片保存失败: " + "; ".join(errors))[:2000])
+
+    def _resolve_attachment_event_id(
+        self,
+        message: discord.Message,
+        created_event_ids: list[int],
+    ) -> int | None:
+        if message.reference and message.reference.message_id:
+            event_id = self.db.get_event_id_for_source_message(str(message.reference.message_id))
+            if event_id:
+                return event_id
+            event_id = self.db.get_attachment_event_id_for_source_message(
+                str(message.reference.message_id)
+            )
+            if event_id:
+                return event_id
+
+        if created_event_ids:
+            return created_event_ids[-1]
+        return None
+
+    def _build_current_ai_message(
+        self,
+        current_content: str,
+        image_attachments: list[discord.Attachment],
+        pending_images: list[dict] | None = None,
+    ) -> dict:
+        if not image_attachments:
+            return {"role": "user", "content": current_content}
+        if not _active_model_supports_image_input():
+            text = current_content.strip()
+            text += "\n用户还附带了图片，但当前 AI preset 不能读取图片内容。只能根据文字判断是否需要记录 event。"
+            return {"role": "user", "content": text}
+        text = current_content.strip()
+        if text.endswith("]"):
+            text += " 用户只发了图片。请直接看图判断是否值得记录 timeline event；值得记录就调用 log_timeline_event，不值得记录就简短回复即可。"
+        else:
+            text += "\n用户还附带了图片。请结合文字和图片判断是否需要记录 timeline event；值得记录就调用 log_timeline_event。"
+        if pending_images:
+            hashes = ", ".join(p["content_hash"][:12] for p in pending_images)
+            text += f"\n图片已暂存，hash 前缀: {hashes}。如果之后用户要求把刚才图片入库，可调用 attach_recent_image_to_event。"
+        content = [{"type": "text", "text": text}]
+        for attachment in image_attachments:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": attachment.url},
+            })
+        return {"role": "user", "content": content}
+
+    async def _cache_image_attachments(
+        self,
+        message: discord.Message,
+        attachments: list[discord.Attachment],
+    ) -> list[dict]:
+        cached = []
+        for idx, attachment in enumerate(attachments):
+            try:
+                data = await attachment.read()
+                item = media.cache_pending_image(data)
+                self.db.add_pending_media(
+                    content_hash=item.content_hash,
+                    cache_path=item.path,
+                    size_bytes=item.size_bytes,
+                    source_message_id=str(message.id),
+                    channel_id=str(message.channel.id),
+                    original_filename=attachment.filename,
+                    mime_type=attachment.content_type,
+                )
+                cached.append({
+                    "index": idx,
+                    "content_hash": item.content_hash,
+                    "cache_path": item.path,
+                    "size_bytes": item.size_bytes,
+                })
+                logger.info(
+                    f"🧩 图片已暂存: hash={item.content_hash[:12]} "
+                    f"message_id={message.id} size={item.size_bytes}"
+                )
+            except Exception as e:
+                logger.exception(f"❌ 图片暂存失败: {e}")
+        return cached
 
     async def send_proactive_message(self, text: str):
         """主动发送消息（由定时器触发）"""
@@ -531,19 +774,20 @@ _RE_TS_PREFIX = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]\s*")
 
 async def _send_chat_chunks(target, text: str, *,
                             use_typing: bool = True,
-                            on_typing_rate_limited=None) -> None:
+                            on_typing_rate_limited=None) -> list[discord.Message]:
     """
     一次性发送整段 AI 回复，仅在超过 Discord 2000 字符上限时按长度兜底切分。
     发送期间保留 typing indicator。
     target: 任何支持 .send() 和 .typing() 的 Discord 通道对象
     """
     if "[SILENT]" in text:
-        return
+        return []
     text = _RE_TS_PREFIX.sub("", text).strip()
     if not text:
-        return
+        return []
     limit = 2000
     chunks = [text[i:i + limit] for i in range(0, len(text), limit)]
+    sent_messages: list[discord.Message] = []
     logger.info(f"📤 准备发送 {len(chunks)} 段消息到 {type(target).__name__}（{len(text)} 字符）")
     if use_typing:
         typing_cm = target.typing()
@@ -557,12 +801,13 @@ async def _send_chat_chunks(target, text: str, *,
         else:
             try:
                 for chunk in chunks:
-                    await target.send(chunk)
+                    sent_messages.append(await target.send(chunk))
             finally:
                 await typing_cm.__aexit__(None, None, None)
             logger.info("✅ 消息发送完成")
-            return
+            return sent_messages
 
     for chunk in chunks:
-        await target.send(chunk)
+        sent_messages.append(await target.send(chunk))
     logger.info("✅ 消息发送完成")
+    return sent_messages

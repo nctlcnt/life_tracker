@@ -28,7 +28,7 @@ class Database:
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 start_time TEXT NOT NULL,          -- ISO 8601 格式
-                end_time TEXT,                      -- ISO 8601 格式，可为空（进行中）
+                end_time TEXT,                      -- 兼容旧数据；新事件按 start_time 时刻点处理
                 content TEXT NOT NULL,              -- 事件描述
                 category TEXT DEFAULT 'uncategorized', -- 分类
                 created_at TEXT DEFAULT (datetime('now'))
@@ -109,6 +109,65 @@ class Database:
                 value TEXT NOT NULL,
                 updated_at TEXT DEFAULT (datetime('now'))
             );
+
+            -- Event 图片/媒体附件元数据。对象内容存 R2/S3，DB 只保存 key 与派生信息。
+            CREATE TABLE IF NOT EXISTS event_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id INTEGER NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'image',
+                storage_provider TEXT NOT NULL DEFAULT 'r2',
+                bucket TEXT NOT NULL,
+                object_key TEXT NOT NULL,
+                thumbnail_key TEXT,
+                mime_type TEXT NOT NULL,
+                width INTEGER,
+                height INTEGER,
+                size_bytes INTEGER,
+                original_filename TEXT,
+                source TEXT NOT NULL DEFAULT 'discord',
+                source_message_id TEXT,
+                sort_order INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now')),
+                deleted_at TEXT
+            );
+
+            -- Discord message 与 event 的显式映射，用于“引用某条消息补图”。
+            CREATE TABLE IF NOT EXISTS event_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id INTEGER NOT NULL,
+                source TEXT NOT NULL DEFAULT 'discord',
+                channel_id TEXT,
+                message_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                relation TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            -- 最近收到但可能尚未挂入 event 的图片缓存索引。
+            CREATE TABLE IF NOT EXISTS pending_media (
+                content_hash TEXT PRIMARY KEY,
+                source TEXT NOT NULL DEFAULT 'discord',
+                source_message_id TEXT,
+                channel_id TEXT,
+                original_filename TEXT,
+                mime_type TEXT,
+                size_bytes INTEGER,
+                cache_path TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                linked_event_id INTEGER,
+                attachment_id INTEGER,
+                created_at TEXT DEFAULT (datetime('now')),
+                linked_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_event_attachments_event_id
+                ON event_attachments(event_id, deleted_at, sort_order, id);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_event_sources_discord_message
+                ON event_sources(source, message_id);
+
+            CREATE INDEX IF NOT EXISTS idx_pending_media_status_created
+                ON pending_media(status, created_at);
         """)
         conn.commit()
         # 兼容已有数据库：尝试加列，已存在则忽略
@@ -307,6 +366,311 @@ class Database:
         row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
         conn.close()
         return dict(row) if row else None
+
+    # ============ Event 附件 / 外部来源 ============
+
+    def add_event_attachment(
+        self,
+        event_id: int,
+        *,
+        bucket: str,
+        object_key: str,
+        thumbnail_key: Optional[str],
+        mime_type: str,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        size_bytes: Optional[int] = None,
+        original_filename: Optional[str] = None,
+        source: str = "discord",
+        source_message_id: Optional[str] = None,
+        sort_order: int = 0,
+        storage_provider: str = "r2",
+        kind: str = "image",
+    ) -> int:
+        """保存 event 附件元数据，返回 attachment id。"""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """
+            INSERT INTO event_attachments (
+                event_id, kind, storage_provider, bucket, object_key,
+                thumbnail_key, mime_type, width, height, size_bytes,
+                original_filename, source, source_message_id, sort_order
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id, kind, storage_provider, bucket, object_key,
+                thumbnail_key, mime_type, width, height, size_bytes,
+                original_filename, source, source_message_id, sort_order,
+            ),
+        )
+        conn.commit()
+        attachment_id = cursor.lastrowid
+        conn.close()
+        return attachment_id
+
+    def get_event_attachments(self, event_id: int) -> list[dict]:
+        """返回单个 event 的未删除附件。"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            """
+            SELECT * FROM event_attachments
+            WHERE event_id = ? AND deleted_at IS NULL
+            ORDER BY sort_order, id
+            """,
+            (event_id,),
+        ).fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def get_attachments_for_events(self, event_ids: list[int]) -> dict[int, list[dict]]:
+        """批量返回 event_id -> attachments。"""
+        ids = [int(i) for i in event_ids if i is not None]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        conn = self._get_conn()
+        rows = conn.execute(
+            f"""
+            SELECT * FROM event_attachments
+            WHERE event_id IN ({placeholders}) AND deleted_at IS NULL
+            ORDER BY event_id, sort_order, id
+            """,
+            ids,
+        ).fetchall()
+        conn.close()
+        grouped: dict[int, list[dict]] = {i: [] for i in ids}
+        for row in rows:
+            item = dict(row)
+            grouped.setdefault(item["event_id"], []).append(item)
+        return grouped
+
+    def get_attachment_by_id(self, attachment_id: int) -> Optional[dict]:
+        """根据 ID 获取未删除附件。"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM event_attachments WHERE id = ? AND deleted_at IS NULL",
+            (attachment_id,),
+        ).fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def delete_event_attachment(self, attachment_id: int) -> bool:
+        """软删除附件元数据。对象清理可由调用方另行处理。"""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE event_attachments SET deleted_at = datetime('now') "
+            "WHERE id = ? AND deleted_at IS NULL",
+            (attachment_id,),
+        )
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
+    def add_pending_media(
+        self,
+        *,
+        content_hash: str,
+        cache_path: str,
+        size_bytes: int,
+        source_message_id: Optional[str] = None,
+        channel_id: Optional[str] = None,
+        original_filename: Optional[str] = None,
+        mime_type: Optional[str] = None,
+        source: str = "discord",
+    ) -> bool:
+        """记录收到的图片缓存。返回是否新增。
+
+        同一张图重复发送时 hash 不变；这时把索引刷新成最新消息并重新标记
+        pending，避免旧的 linked 状态让“上一张图”找不到。
+        """
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO pending_media (
+                content_hash, source, source_message_id, channel_id,
+                original_filename, mime_type, size_bytes, cache_path
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                content_hash, source, source_message_id, channel_id,
+                original_filename, mime_type, size_bytes, cache_path,
+            ),
+        )
+        if cursor.rowcount == 0:
+            conn.execute(
+                """
+                UPDATE pending_media
+                SET source = ?,
+                    source_message_id = ?,
+                    channel_id = ?,
+                    original_filename = ?,
+                    mime_type = ?,
+                    size_bytes = ?,
+                    cache_path = ?,
+                    status = 'pending',
+                    linked_event_id = NULL,
+                    attachment_id = NULL,
+                    created_at = datetime('now'),
+                    linked_at = NULL
+                WHERE content_hash = ?
+                """,
+                (
+                    source, source_message_id, channel_id,
+                    original_filename, mime_type, size_bytes, cache_path,
+                    content_hash,
+                ),
+            )
+        conn.commit()
+        changed = cursor.rowcount > 0
+        conn.close()
+        return changed
+
+    def get_pending_media(
+        self,
+        *,
+        content_hash: Optional[str] = None,
+        source_message_id: Optional[str] = None,
+        include_linked: bool = False,
+        limit: int = 5,
+    ) -> list[dict]:
+        """查找最近图片缓存。可按完整 hash、hash 前缀或 Discord message_id 过滤。"""
+        where = []
+        params: list = []
+        if content_hash:
+            normalized_hash = content_hash.strip().lower()
+            if len(normalized_hash) < 64:
+                where.append("content_hash LIKE ?")
+                params.append(f"{normalized_hash}%")
+            else:
+                where.append("content_hash = ?")
+                params.append(normalized_hash)
+        if source_message_id:
+            where.append("source_message_id = ?")
+            params.append(source_message_id)
+        if not include_linked:
+            where.append("status != 'linked'")
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        conn = self._get_conn()
+        rows = conn.execute(
+            f"""
+            SELECT * FROM pending_media
+            {clause}
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            params + [limit],
+        ).fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def mark_pending_media_linked(
+        self,
+        content_hash: str,
+        *,
+        event_id: int,
+        attachment_id: int,
+    ) -> bool:
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """
+            UPDATE pending_media
+            SET status = 'linked', linked_event_id = ?, attachment_id = ?, linked_at = datetime('now')
+            WHERE content_hash = ?
+            """,
+            (event_id, attachment_id, content_hash),
+        )
+        conn.commit()
+        changed = cursor.rowcount > 0
+        conn.close()
+        return changed
+
+    def add_event_source(
+        self,
+        event_id: int,
+        *,
+        message_id: str,
+        channel_id: Optional[str] = None,
+        role: str,
+        relation: str,
+        source: str = "discord",
+    ) -> bool:
+        """记录外部 message -> event 映射。返回是否新增。"""
+        mid = str(message_id or "").strip()
+        if not mid:
+            return False
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO event_sources (
+                event_id, source, channel_id, message_id, role, relation
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (event_id, source, str(channel_id) if channel_id else None, mid, role, relation),
+        )
+        conn.commit()
+        changed = cursor.rowcount > 0
+        conn.close()
+        return changed
+
+    def get_event_id_for_source_message(
+        self,
+        message_id: str,
+        *,
+        source: str = "discord",
+    ) -> Optional[int]:
+        """通过 Discord message_id 查 event_id。"""
+        mid = str(message_id or "").strip()
+        if not mid:
+            return None
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT event_id FROM event_sources WHERE source = ? AND message_id = ?",
+            (source, mid),
+        ).fetchone()
+        conn.close()
+        return int(row["event_id"]) if row else None
+
+    def get_attachment_event_id_for_source_message(
+        self,
+        message_id: str,
+        *,
+        source: str = "discord",
+    ) -> Optional[int]:
+        """通过附件来源消息查 event_id。用于同一图片消息后续继续补图。"""
+        mid = str(message_id or "").strip()
+        if not mid:
+            return None
+        conn = self._get_conn()
+        row = conn.execute(
+            """
+            SELECT event_id FROM event_attachments
+            WHERE source = ? AND source_message_id = ? AND deleted_at IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (source, mid),
+        ).fetchone()
+        conn.close()
+        return int(row["event_id"]) if row else None
+
+    def get_events_in_window(self, start: str, end: str, limit: int = 10) -> list[dict]:
+        """返回时间窗内事件，按新到旧排序。"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            """
+            SELECT * FROM events
+            WHERE start_time >= ? AND start_time <= ?
+            ORDER BY start_time DESC, id DESC
+            LIMIT ?
+            """,
+            (start, end, limit),
+        ).fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
 
     def get_all_categories(self) -> list[str]:
         """获取所有已有的分类"""

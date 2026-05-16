@@ -15,6 +15,18 @@ export interface TimelineEvent {
   endDate: Date;
   notes?: string | null;
   project_name?: string | null;
+  attachments?: EventAttachment[];
+}
+
+export interface EventAttachment {
+  id: number;
+  kind: string;
+  mime_type?: string | null;
+  width?: number | null;
+  height?: number | null;
+  thumbnail_url: string;
+  url: string;
+  original_filename?: string | null;
 }
 
 interface MultiLaneTimelineProps {
@@ -44,15 +56,6 @@ const LANE_LABELS: Record<string, string> = {
 // ── 工具函数 ──────────────────────────────────────────────────
 const fmtTime = (d: Date) =>
   d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
-
-const fmtDuration = (ms: number) => {
-  const totalMin = Math.max(0, Math.round(ms / 60000));
-  const h = Math.floor(totalMin / 60);
-  const m = totalMin % 60;
-  if (h === 0) return `${m}分`;
-  if (m === 0) return `${h}h`;
-  return `${h}h${m}m`;
-};
 
 // 时间轴：显示范围 06:00 - 翌日 02:00（20小时，覆盖绝大多数生活节奏）
 const DAY_START_HOUR = 6;   // 06:00
@@ -183,31 +186,21 @@ export function MultiLaneTimeline({
                 {/* 事件块 */}
                 {height > 0 && laneEvents[lane].map(ev => {
                   const topRatio = timeToRatio(ev.startDate, dayBase);
-                  const botRatio = timeToRatio(ev.endDate, dayBase);
-                  const h = Math.max((botRatio - topRatio) * height, 3);
+                  const h = 8;
                   const color = LANE_COLORS[lane] || LANE_COLORS.uncategorized;
-                  const durationMs = ev.endDate.getTime() - ev.startDate.getTime();
 
                   return (
                     <Tooltip key={ev.id}>
                       <TooltipTrigger asChild>
                         <div
-                          className="absolute left-0.5 right-0.5 rounded-[2px] cursor-pointer hover:brightness-95 transition-all overflow-hidden"
+                          className="absolute left-1 right-1 rounded-full cursor-pointer hover:brightness-95 transition-all overflow-hidden"
                           style={{
-                            top: topRatio * height,
+                            top: topRatio * height - h / 2,
                             height: h,
                             backgroundColor: color,
                             opacity: 0.85,
                           }}
                         >
-                          {h > 18 && (
-                            <div
-                              className="px-1 text-[8px] leading-tight truncate"
-                              style={{ color: 'rgba(40,40,40,0.7)', paddingTop: 2 }}
-                            >
-                              {ev.project_name || ev.content}
-                            </div>
-                          )}
                         </div>
                       </TooltipTrigger>
                       <TooltipContent
@@ -234,9 +227,7 @@ export function MultiLaneTimeline({
                             </div>
                           )}
                           <div className="text-[10px] text-muted-foreground pl-3.5 tabular-nums">
-                            {fmtTime(ev.startDate)} — {fmtTime(ev.endDate)}
-                            <span className="mx-1 opacity-50">·</span>
-                            {fmtDuration(durationMs)}
+                            {fmtTime(ev.startDate)}
                           </div>
                         </div>
                       </TooltipContent>
