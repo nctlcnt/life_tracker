@@ -4,7 +4,7 @@
 这是保证 AI 输出结构化数据的关键
 
 ⚠️ 这里只放**工具 schema**（工具是什么、参数格式）和工具名子集。
-所有使用策略（什么时候调、跨工具决策逻辑）集中在 `bot/prompts.py::TOOLS_SECTION`。
+所有使用策略（什么时候调、跨工具决策逻辑）集中在 DB 的 `tools` prompt section。
 """
 
 # Canonical tool schema. OpenAI / Relay 直接使用；Claude / Gemini 从这里转换。

@@ -28,11 +28,10 @@ interface TestResult {
 interface PromptSection {
   key: string;
   label: string;
-  default_value: string;
-  override_value: string | null;
+  value: string;
   current_value: string;
   updated_at: string | null;
-  overridden: boolean;
+  empty: boolean;
 }
 
 interface PromptsResp {
@@ -308,7 +307,6 @@ function PromptAdmin() {
   const [data, setData] = useState<PromptsResp | null>(null);
   const [selectedKey, setSelectedKey] = useState<string>('');
   const [draft, setDraft] = useState('');
-  const [showDefault, setShowDefault] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -347,21 +345,6 @@ function PromptAdmin() {
     }
   };
 
-  const reset = async () => {
-    if (!selected) return;
-    if (!window.confirm(`Reset "${selected.label}" to code default?`)) return;
-    setSaving(true);
-    setErr(null);
-    try {
-      await delJson(`/api/admin/prompts/${encodeURIComponent(selected.key)}`);
-      await load();
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
   if (err && !data) return <div className="admin-msg err">加载失败: {err}</div>;
   if (!data || !selected) return <div className="admin-msg">加载中…</div>;
 
@@ -380,7 +363,7 @@ function PromptAdmin() {
             onClick={() => setSelectedKey(section.key)}
           >
             <span>{section.label}</span>
-            {section.overridden && <b>override</b>}
+            {section.empty && <b>empty</b>}
           </button>
         ))}
       </aside>
@@ -393,30 +376,21 @@ function PromptAdmin() {
           </div>
           <div className="prompt-editor-actions">
             <button className="admin-btn" onClick={load} disabled={saving}>Reload</button>
-            <button className="admin-btn" onClick={() => setShowDefault(v => !v)}>
-              {showDefault ? 'Hide default' : 'Show default'}
-            </button>
-            <button className="admin-btn warn" onClick={reset}
-                    disabled={saving || !selected.overridden}>Reset</button>
             <button className="admin-btn primary" onClick={save}
                     disabled={saving || !dirty || !draft.trim()}>
-              {saving ? 'Saving…' : 'Save override'}
+              {saving ? 'Saving…' : 'Save'}
             </button>
           </div>
         </div>
 
         <div className="prompt-meta">
-          <span className={`tag ${selected.overridden ? 'tag-fallback' : 'tag-active'}`}>
-            {selected.overridden ? 'DB override' : 'code default'}
+          <span className={`tag ${selected.empty ? 'tag-fallback' : 'tag-active'}`}>
+            {selected.empty ? 'empty' : 'DB managed'}
           </span>
           <span>{charCount.toLocaleString()} chars</span>
           {selected.updated_at && <span>updated {selected.updated_at}</span>}
           {dirty && <span>unsaved changes</span>}
         </div>
-
-        {showDefault && (
-          <pre className="prompt-default">{selected.default_value}</pre>
-        )}
 
         <textarea
           className="prompt-textarea"

@@ -121,8 +121,15 @@ class Database:
                 archived_at TEXT DEFAULT (datetime('now'))
             );
 
-            -- 前端管理的 prompt 覆盖层。
-            -- 代码里的 prompt 仍是默认值；这里只存用户改过的 section。
+            -- 前端管理的 prompt 正文。prompt 内容不再放进 Git。
+            CREATE TABLE IF NOT EXISTS prompt_sections (
+                key TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                value TEXT NOT NULL DEFAULT '',
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+
+            -- 旧版 prompt 覆盖层，保留用于一次性迁移兼容。
             CREATE TABLE IF NOT EXISTS prompt_overrides (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
@@ -187,58 +194,86 @@ class Database:
               AND project_name != ''
         """)
 
+        from bot.prompts import PROMPT_SECTION_LABELS
+        for key, label in PROMPT_SECTION_LABELS.items():
+            conn.execute(
+                """
+                INSERT INTO prompt_sections (key, label, value, updated_at)
+                VALUES (?, ?, '', datetime('now'))
+                ON CONFLICT(key) DO UPDATE SET label = excluded.label
+                """,
+                (key, label),
+            )
+        # 兼容旧版 DB override：如果 prompt_sections 仍为空，用旧 override 补进去。
+        conn.execute("""
+            UPDATE prompt_sections
+            SET value = (
+                SELECT prompt_overrides.value
+                FROM prompt_overrides
+                WHERE prompt_overrides.key = prompt_sections.key
+            ),
+            updated_at = COALESCE((
+                SELECT prompt_overrides.updated_at
+                FROM prompt_overrides
+                WHERE prompt_overrides.key = prompt_sections.key
+            ), datetime('now'))
+            WHERE value = ''
+              AND EXISTS (
+                SELECT 1
+                FROM prompt_overrides
+                WHERE prompt_overrides.key = prompt_sections.key
+              )
+        """)
+
         conn.commit()
         conn.close()
 
     # ============ Prompt 管理 ============
 
-    def get_prompt_overrides(self) -> dict[str, str]:
-        """返回所有前端保存过的 prompt section 覆盖。"""
+    def get_prompt_sections(self) -> dict[str, str]:
+        """返回所有 DB 管理的 prompt sections。"""
         conn = self._get_conn()
-        rows = conn.execute("SELECT key, value FROM prompt_overrides ORDER BY key").fetchall()
+        rows = conn.execute("SELECT key, value FROM prompt_sections ORDER BY key").fetchall()
         conn.close()
         return {row["key"]: row["value"] for row in rows}
 
-    def list_prompt_overrides(self) -> list[dict]:
-        """返回 prompt 覆盖详情，包含更新时间，给 Admin UI 展示。"""
+    def list_prompt_sections(self) -> list[dict]:
+        """返回 prompt sections，包含更新时间，给 Admin UI 展示。"""
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT key, value, updated_at FROM prompt_overrides ORDER BY key"
+            "SELECT key, label, value, updated_at FROM prompt_sections ORDER BY key"
         ).fetchall()
         conn.close()
         return [dict(row) for row in rows]
 
-    def set_prompt_override(self, key: str, value: str) -> bool:
-        """保存单个 prompt 覆盖。返回是否发生变化。"""
+    def set_prompt_section(self, key: str, value: str) -> bool:
+        """保存单个 prompt section。返回是否发生变化。"""
         k = (key or "").strip()
         v = (value or "").strip()
-        if not k or not v:
+        if not k:
             return False
+        from bot.prompts import PROMPT_SECTION_LABELS
+        if k not in PROMPT_SECTION_LABELS:
+            raise ValueError(f"unknown prompt section: {k}")
         conn = self._get_conn()
         current = conn.execute(
-            "SELECT value FROM prompt_overrides WHERE key = ?",
+            "SELECT value FROM prompt_sections WHERE key = ?",
             (k,)
         ).fetchone()
         conn.execute(
-            "INSERT INTO prompt_overrides (key, value, updated_at) VALUES (?, ?, datetime('now')) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
-            (k, v)
+            """
+            INSERT INTO prompt_sections (key, label, value, updated_at)
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(key) DO UPDATE SET
+                label = excluded.label,
+                value = excluded.value,
+                updated_at = datetime('now')
+            """,
+            (k, PROMPT_SECTION_LABELS[k], v)
         )
         conn.commit()
         conn.close()
         return current is None or current["value"] != v
-
-    def delete_prompt_override(self, key: str) -> bool:
-        """删除单个 prompt 覆盖，使该 section 回到代码默认值。"""
-        k = (key or "").strip()
-        if not k:
-            return False
-        conn = self._get_conn()
-        cursor = conn.execute("DELETE FROM prompt_overrides WHERE key = ?", (k,))
-        conn.commit()
-        changed = cursor.rowcount > 0
-        conn.close()
-        return changed
 
     # ============ 时间轴事件 ============
 

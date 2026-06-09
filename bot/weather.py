@@ -297,6 +297,4 @@ async def get_weather_detailed(
         return None
 
 
-# WEATHER_REPORT_PROMPT 已迁到 bot/prompts.py 与其它 prompt 集中管理
-# 历史的直接导入路径 `from bot.weather import WEATHER_REPORT_PROMPT` 改为
-# `from bot.prompts import WEATHER_REPORT_PROMPT`。
+# Weather report prompt text is managed in the local prompt_sections table.

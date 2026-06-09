@@ -152,10 +152,10 @@ class Scheduler:
             return
         async with self._ai_lock:
             try:
-                overrides = self.db.get_prompt_overrides()
+                sections = self.db.get_prompt_sections()
                 prompt = get_proactive_prompt(
                     config.get_active().provider,
-                    overrides,
+                    sections,
                 ).format(timestamp=timestamp)
                 # poll 路径只判断"要不要说话"，历史拉短一点省 token
                 history = await self.fetch_history(limit=8)
@@ -178,7 +178,7 @@ class Scheduler:
             try:
                 prompt = get_prompt_template(
                     "bedtime",
-                    self.db.get_prompt_overrides(),
+                    self.db.get_prompt_sections(),
                 ).format(timestamp=timestamp)
                 history = await self.fetch_history(limit=20)
                 reply = await scheduled_action(
@@ -261,7 +261,7 @@ class Scheduler:
                 try:
                     prompt = get_prompt_template(
                         "reminder",
-                        self.db.get_prompt_overrides(),
+                        self.db.get_prompt_sections(),
                     ).format(
                         timestamp=timestamp, action=context_action
                     )

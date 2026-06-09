@@ -567,30 +567,27 @@ async def admin_test_preset(body: dict):
 
 @app.get("/api/admin/prompts")
 async def admin_list_prompts():
-    """列出可编辑 prompt sections。default 来自代码，override 来自 DB。"""
-    from bot.prompts import PROMPT_SECTION_LABELS, get_prompt_defaults
-    defaults = get_prompt_defaults()
-    override_rows = {row["key"]: row for row in db.list_prompt_overrides()}
+    """列出可编辑 prompt sections。正文来自 DB，不提交到 Git。"""
+    from bot.prompts import PROMPT_SECTION_LABELS
+    rows = {row["key"]: row for row in db.list_prompt_sections()}
     sections = []
     for key, label in PROMPT_SECTION_LABELS.items():
-        default_value = defaults[key]
-        row = override_rows.get(key)
-        override_value = row["value"] if row else None
+        row = rows.get(key)
+        value = row["value"] if row else ""
         sections.append({
             "key": key,
-            "label": label,
-            "default_value": default_value,
-            "override_value": override_value,
-            "current_value": override_value or default_value,
+            "label": row["label"] if row else label,
+            "value": value,
+            "current_value": value,
             "updated_at": row["updated_at"] if row else None,
-            "overridden": row is not None,
+            "empty": not bool(value.strip()),
         })
     return {"sections": sections}
 
 
 @app.put("/api/admin/prompts/{key}")
 async def admin_save_prompt(key: str, body: dict):
-    """保存单个 prompt section 的覆盖文本。"""
+    """保存单个 prompt section。"""
     from bot.prompts import PROMPT_SECTION_LABELS
     if key not in PROMPT_SECTION_LABELS:
         raise HTTPException(status_code=404, detail=f"unknown prompt section: {key}")
@@ -598,17 +595,7 @@ async def admin_save_prompt(key: str, body: dict):
     if not value:
         raise HTTPException(status_code=400, detail="value required")
     _validate_prompt_template(key, value)
-    changed = db.set_prompt_override(key, value)
-    return {"ok": True, "key": key, "changed": changed}
-
-
-@app.delete("/api/admin/prompts/{key}")
-async def admin_reset_prompt(key: str):
-    """删除 override，使 prompt section 回到代码默认值。"""
-    from bot.prompts import PROMPT_SECTION_LABELS
-    if key not in PROMPT_SECTION_LABELS:
-        raise HTTPException(status_code=404, detail=f"unknown prompt section: {key}")
-    changed = db.delete_prompt_override(key)
+    changed = db.set_prompt_section(key, value)
     return {"ok": True, "key": key, "changed": changed}
 
 

@@ -344,21 +344,6 @@
   font-family: var(--mono);
   font-size: 11px;
 }
-.prompt-default {
-  max-height: 220px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin: 0 0 10px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--muted);
-  color: var(--muted-foreground);
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.55;
-}
 .prompt-textarea {
   width: 100%;
   min-height: 68vh;

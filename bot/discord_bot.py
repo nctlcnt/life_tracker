@@ -564,7 +564,7 @@ def _weather_command(bot: LifeTrackerBot) -> app_commands.Command:
 
         prompt = get_prompt_template(
             "weather_report",
-            bot.db.get_prompt_overrides(),
+            bot.db.get_prompt_sections(),
         ).format(weather_data=weather_data)
         reply = await simple_completion(prompt)
         if geocode_header:

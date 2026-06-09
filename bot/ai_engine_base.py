@@ -87,7 +87,7 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
     return build_prompt(
         mode,
         provider=provider,
-        overrides=db.get_prompt_overrides(),
+        sections=db.get_prompt_sections(),
         memories=memories or None,
         ongoing=ongoing or None,
         weather=weather,

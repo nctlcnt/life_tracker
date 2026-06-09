@@ -132,6 +132,23 @@ append-only 保存通过 Discord 收发的原始消息，作为后续 Context Bu
 
 ---
 
+## prompt_sections — Prompt 管理
+
+前端 Admin 页面可编辑 prompt sections。prompt 正文保存在本地 SQLite，不再作为源码提交到 GitHub。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `key` | TEXT PK | 稳定 section key，例如 `identity`、`tools`、`reminder` |
+| `label` | TEXT NOT NULL | 前端展示名 |
+| `value` | TEXT NOT NULL | prompt 正文 |
+| `updated_at` | TEXT | 更新时间 |
+
+当前可编辑 section 的 key/label 定义在 `bot/prompts.py::PROMPT_SECTION_LABELS`。代码只负责声明 section、校验模板占位符和组装 prompt，不再保存私有 prompt 正文。
+
+旧表 `prompt_overrides` 只用于兼容迁移：如果 `prompt_sections.value` 为空，启动时会用同 key 的旧 override 补齐。
+
+---
+
 ## app_state — 进程无关的小型 KV
 
 | 字段 | 类型 | 说明 |
@@ -179,6 +196,7 @@ append-only 保存通过 Discord 收发的原始消息，作为后续 Context Bu
 - `reminders.group_id` 没有独立 groups 表，AI 自由生成字符串作为分组 key。
 - `messages` 与 `events` 完全解耦，AI 从聊天里提取活动后单独写 `events`。
 - `conversation_messages` 与结构化表解耦，是原始会话日志；未来 compact/RAG 从它派生摘要和 memory chunks。
+- `prompt_sections` 是本地配置数据，不跟代码版本绑定；部署新库时需要先通过 Admin 页面填入各 section。
 
 ---
 
@@ -190,6 +208,7 @@ append-only 保存通过 Discord 收发的原始消息，作为后续 Context Bu
 - `reminders(status, trigger_time)` —— scheduler 的 MIN 查询
 - `messages(id DESC)` —— 最近 N 条（id 已 PK，效果近似有索引）
 - `conversation_messages(channel_id, created_at)` —— Context Builder 按频道取最近上下文
+- `prompt_sections.key` —— 主键自动索引
 
 ---
 
