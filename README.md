@@ -1,143 +1,83 @@
 # Life Tracker
 
-A personal life-tracking assistant that combines Discord, AI, and a web dashboard. Chat with the bot like a friend; in the background it logs activities, schedules reminders, manages long-term memory, and surfaces everything on a timeline-based web frontend.
+Single-user, self-hosted life-tracking assistant.
 
-> Single-user, self-hosted. Not intended for public deployment or third-party contribution.
+It combines a Discord bot, AI-driven logging, scheduled reminders, SQLite storage, and a React dashboard. You chat with the bot naturally; it records useful events, memories, todos, reminders, and project activity in the background.
 
-## Features
+## 功能概览
 
-- **Conversational logging** — natural Discord conversation; the AI decides what's worth recording.
-- **Timeline of events** — categorized (`Focus` / `Routine` / `Chill`), supports parallel and in-progress events, grouped by project.
-- **Proactive reminders** — the AI identifies reminder-worthy moments and pushes Discord messages on schedule.
-- **Persistent memory** — bounded long-term memory (deadlines, preferences, etc.) preserved across conversations.
-- **Web dashboard** — daily timeline, weekly view, project Gantt, memory browser, todos, reminders.
-- **Multi-provider AI** — Claude / OpenAI / Gemini / relay endpoints, switchable at runtime via slash commands with optional fallback.
-- **Weather assist** — `/weather` for the configured location, or `/weather <address>` to query any place via Google Geocoding + tomorrow.io.
+- **Discord 对话记录**：通过自然语言记录日常活动、想法、项目进展和提醒。
+- **AI 自动整理**：根据聊天内容判断是否写入 timeline、memory、todo、deadline 或 reminder。
+- **主动提醒与调度**：支持随机 check-in、定时提醒、早晚例行提示等。
+- **项目追踪**：记录 Focus 事件，按项目展示热力图、周视图和甘特视图。
+- **Web Dashboard**：查看 timeline、week view、projects、todos、memories、reminders、AI traces 和 admin 面板。
+- **多 AI Provider**：支持 Claude、OpenAI、Gemini 和 relay endpoint，可在运行时切换 preset / fallback。
+- **天气辅助**：支持配置默认位置，也可通过 Discord 查询指定地址天气。
 
-## Architecture
+## 基础架构
 
-| Layer | Stack |
-|---|---|
-| Bot | `discord.py` slash commands + scheduler + AI engine |
-| API | FastAPI, served on the same process |
-| Frontend | React + Vite + TypeScript (built artifacts served by FastAPI) |
-| Storage | SQLite (single file), optional Litestream → Cloudflare R2 replication |
-| Runtime | One Python process orchestrating everything via `asyncio.gather` |
-| Packaging | Docker multi-stage build (Node frontend + Python runtime) |
-
-All secrets and tunables live in a single `config.json` mounted into the container. State is persisted in `data/life_tracker.db` plus a small JSON for the active AI preset.
-
-## Quick start (local)
-
-Requires Python 3.12+ and Node/pnpm if running outside Docker.
-
-```bash
-cp config.example.json config.json   # fill Discord token, AI keys, etc.
-
-# Option A — bare metal
-pip install -r requirements.txt
-cd frontend && pnpm install && pnpm build && cd ..
-python main.py
-python main.py --test                # verbose: dump logs + AI prompt payloads to data/test_logs/
-
-# Option B — Docker (recommended)
-make dev                             # docker compose up --build
-```
-
-Open `http://localhost:8080` for the dashboard.
-
-## Configuration
-
-`config.json` is the single source of truth. It is **not** committed and **not** baked into the image — the deploy side mounts it. Reference shape (`config.example.json`):
-
-```jsonc
-{
-  "discord": {
-    "token": "...",                  // required
-    "allowed_user_id": 0,            // required, single-user mode
-    "channel_id": 0                  // bot only listens in this channel
-  },
-  "ai": {
-    "default_preset": "claude-opus", // required, must exist in `presets`
-    "default_fallback": "",          // optional, used when primary preset fails
-    "presets": {                     // at least one; runtime-switchable via /model
-      "claude-opus": {
-        "provider": "claude",        // claude / openai / gemini / relay
-        "api_key": "...",
-        "base_url": "",              // only for relay
-        "model": "claude-opus-4-6"
-      }
-    }
-  },
-  "server":  { "port": 8080 },
-  "weather": {
-    "api_key": "",                   // tomorrow.io; empty disables silently
-    "location": "-33.8688,151.2093", // default lat,lon
-    "geocoding_api_key": ""          // Google Geocoding; required for /weather <address>
-  },
-  "poll": { "min_seconds": 60, "max_seconds": 3600 },
-  "timezone": "Australia/Sydney",
-  "log": { "level": "INFO", "file": null }
-}
-```
-
-Active AI preset and timezone overrides are persisted to `data/active_preset.json` and `data/active_tz.json` so they survive restarts.
-
-## Discord commands
-
-| Command | Purpose |
-|---|---|
-| (just talk) | Free-form conversation; the AI logs events, sets reminders, and writes memories on its own. |
-| `/todo add\|list\|all\|done\|del` | Manual todo management (no AI). |
-| `/weather [address]` | Today's weather + outfit/umbrella advice. With an address, geocodes and queries that location. |
-| `/model [name]` | Show or switch the primary AI preset. |
-| `/fallback [name\|off]` | Show or switch the fallback preset. |
-| `/tz [iana]` | Show or switch the process timezone (used for travel). |
-
-The bot only responds in the channel set by `discord.channel_id` and only to the user set by `discord.allowed_user_id`.
-
-## Project structure
-
-```
-├── bot/
-│   ├── discord_bot.py      # Discord I/O + slash command registration
-│   ├── ai_engine*.py       # AI dispatch + tool-calling, one file per provider
-│   ├── scheduler.py        # Random check-ins + reminder polling
-│   ├── database.py         # SQLite access layer + schema migrations
-│   ├── tools.py            # Tool definitions exposed to the AI
-│   ├── prompts.py          # System prompt assembly + editable overrides
-│   ├── weather.py          # tomorrow.io + Google Geocoding integration
-│   └── test_mode.py        # Capture logs and AI payloads to JSONL
-├── api/server.py           # FastAPI REST endpoints + static file serving
+```text
+.
+├── main.py                 # 单进程入口：启动 Discord bot、scheduler、FastAPI
+├── config.py               # 读取 config.json，管理 AI preset 和运行态配置
+├── bot/                    # Discord bot、AI dispatch、scheduler、SQLite access、prompts/tools
+├── api/                    # FastAPI API 与前端静态资源服务
 ├── frontend/               # React + Vite + TypeScript dashboard
-├── main.py                 # Entry point — asyncio.gather of bot / scheduler / API
-├── config.py               # Loads config.json + runtime preset switching
-├── data/                   # SQLite DB + active state (mounted from host)
-└── docs/                   # Database schema, deployment, dispatch samples
+├── scripts/                # 本地维护、清理、调试脚本
+├── docs/                   # 部署和数据库文档
+├── data/                   # SQLite 数据与运行态文件，Docker volume 挂载
+├── Dockerfile              # 前端构建 + Python runtime 多阶段镜像
+├── docker-compose.yml      # 本地 Docker 启动
+├── docker-compose.prod.yml # 生产部署
+└── docker-compose.staging.yml
 ```
 
-## Deployment
+运行模型：
 
-The production stack runs on a VPS via `docker compose`, with images published to GitHub Container Registry (`ghcr.io/nctlcnt/life_tracker`). Two image tags are produced per release:
+- 一个 Python 进程通过 `asyncio` 同时运行 Discord bot、scheduler 和 FastAPI。
+- FastAPI 提供 REST API，并在生产镜像中服务 `frontend/dist`。
+- SQLite 文件保存在 `data/life_tracker.db`。
+- 配置从 `config.json` 读取；敏感信息不提交到仓库。
+- 生产环境可选用 Litestream 将 SQLite 复制到 Cloudflare R2。
 
-| Tag | Meaning |
-|---|---|
-| `:vX.Y.Z` | Immutable, archived forever |
-| `:stable` | Always points at the latest stable release |
+## Docker 启动
 
-Release workflow:
+先准备配置文件：
 
 ```bash
-make release VERSION=v1.0.0          # tag + push; GitHub Actions builds and publishes the image
-make deploy  VERSION=v1.0.0          # on the server: pull and restart prod
+cp config.example.json config.json
 ```
 
-**Staging is mandatory before prod.** The same VPS hosts a parallel staging stack on port 8081 backed by a second Discord bot and an isolated SQLite. Untested working-tree changes only ever land on staging first; prod only consumes registry releases.
+填好 `config.json` 里的 Discord token、用户/频道 ID、AI preset、server port 等字段。
 
-For first-time VPS setup, daily upgrade flow, rollback procedure, the staging stack, and troubleshooting see [`docs/deploy.md`](docs/deploy.md).
+本地启动：
 
-## Documentation
+```bash
+make dev
+```
 
-- [`docs/deploy.md`](docs/deploy.md) — first-time install, releases, upgrades, staging, troubleshooting
-- [`docs/database.md`](docs/database.md) — SQLite schema reference
-- [`docs/dispatch-escalation-samples.md`](docs/dispatch-escalation-samples.md) — sample AI dispatch traces
+等容器启动后打开：
+
+```text
+http://localhost:8080
+```
+
+停止：
+
+```bash
+make down
+```
+
+查看日志：
+
+```bash
+make logs
+```
+
+只构建镜像：
+
+```bash
+make build
+```
+
+生产和 staging 部署细节见 [docs/deploy.md](docs/deploy.md)。
