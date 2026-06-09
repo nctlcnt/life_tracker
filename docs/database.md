@@ -44,6 +44,34 @@
 
 ---
 
+## conversation_messages — Discord 原始会话日志
+
+append-only 保存通过 Discord 收发的原始消息，作为后续 Context Builder、rolling compact、RAG、replay/debug 的 source of truth。旧 `messages` 表仍保留作兼容备份。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | INTEGER PK | 自增主键 |
+| `discord_message_id` | TEXT UNIQUE | Discord message id；用于幂等去重 |
+| `channel_id` | TEXT NOT NULL | Discord channel id |
+| `guild_id` | TEXT | DM 时为空 |
+| `author_id` | TEXT | 发送者 id |
+| `author_name` | TEXT | 发送者展示名快照 |
+| `role` | TEXT NOT NULL | `user` / `assistant` / `system` |
+| `content` | TEXT NOT NULL | 原始消息内容 |
+| `created_at` | TEXT NOT NULL | Discord 消息创建时间，ISO 8601 |
+| `reply_to_message_id` | TEXT | 引用/回复的 Discord message id |
+| `metadata_json` | TEXT | JSON 附加信息，例如富化后的 prompt 文本 |
+
+当前接入点：
+
+- `on_message` 过滤通过后写入 inbound user message。
+- `_send_chat_chunks` 在 `channel.send()` 返回后写入 outbound assistant message，并记录实际 Discord message id。
+- 重复 `discord_message_id` 使用 `INSERT OR IGNORE` 忽略，保证重放/重复处理不会重复插入。
+
+本表第一阶段只铺数据层，当前 AI 上下文仍沿用 Discord history。后续 Context Builder 会切换为从这里读取 summary + 最近原文。
+
+---
+
 ## reminders — 提醒队列
 
 | 字段 | 类型 | 说明 |
@@ -150,6 +178,7 @@
 - `events.project_name` 只保存事件引用的项目名；AI 可见项目来自独立的 `projects` 表，由用户手动创建/删除/改名，不再从事件自动反推。
 - `reminders.group_id` 没有独立 groups 表，AI 自由生成字符串作为分组 key。
 - `messages` 与 `events` 完全解耦，AI 从聊天里提取活动后单独写 `events`。
+- `conversation_messages` 与结构化表解耦，是原始会话日志；未来 compact/RAG 从它派生摘要和 memory chunks。
 
 ---
 
@@ -160,6 +189,7 @@
 - `events(start_time)`、`events(status, start_time)` —— 时间窗查询和 planned 列表
 - `reminders(status, trigger_time)` —— scheduler 的 MIN 查询
 - `messages(id DESC)` —— 最近 N 条（id 已 PK，效果近似有索引）
+- `conversation_messages(channel_id, created_at)` —— Context Builder 按频道取最近上下文
 
 ---
 

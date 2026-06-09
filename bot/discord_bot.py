@@ -5,6 +5,7 @@ Discord 机器人模块
 import asyncio
 import re
 import discord
+import inspect
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timezone, timedelta
@@ -126,6 +127,26 @@ class LifeTrackerBot(commands.Bot):
 
         # 备份到 DB（messages 表只作备份，AI 上下文走 Discord 历史）
         self.db.add_message("user", current_content)
+        self.db.add_conversation_message(
+            discord_message_id=str(message.id),
+            channel_id=str(message.channel.id),
+            guild_id=str(message.guild.id) if message.guild else None,
+            author_id=str(message.author.id),
+            author_name=str(message.author),
+            role="user",
+            content=message.content or "",
+            created_at=message.created_at.isoformat(),
+            reply_to_message_id=(
+                str(message.reference.message_id)
+                if message.reference and message.reference.message_id
+                else None
+            ),
+            metadata={
+                "content_to_send": content_to_send,
+                "current_content": current_content,
+                "message_type": str(message.type),
+            },
+        )
 
         # 从 Discord 拉历史（排除当前这条，等下单独 append 富化版本）
         history = await self._fetch_history_as_messages(
@@ -138,6 +159,8 @@ class LifeTrackerBot(commands.Bot):
                 await _send_chat_chunks(
                     message.channel,
                     text,
+                    db=self.db,
+                    role="assistant",
                     use_typing=not self._is_typing_cooling_down(message.channel.id),
                     on_typing_rate_limited=lambda: self._mark_typing_cooldown(
                         message.channel.id, "Discord typing 发送限流"
@@ -174,7 +197,8 @@ class LifeTrackerBot(commands.Bot):
         except Exception as e:
             error_msg = f"❌ {type(e).__name__}: {e}"
             logger.exception(error_msg)
-            await message.channel.send(error_msg[:2000])
+            sent = await message.channel.send(error_msg[:2000])
+            self._record_sent_message(sent, role="assistant")
         finally:
             # cache 钱已付，通知 scheduler 重置 poll 基准（45-55min 内不再轮询）
             if self.on_ai_call_done:
@@ -203,6 +227,8 @@ class LifeTrackerBot(commands.Bot):
             await _send_chat_chunks(
                 channel,
                 text,
+                db=self.db,
+                role="assistant",
                 use_typing=not self._is_typing_cooling_down(channel.id),
                 on_typing_rate_limited=lambda: self._mark_typing_cooldown(
                     channel.id, "Discord typing 主动发送限流"
@@ -276,6 +302,28 @@ class LifeTrackerBot(commands.Bot):
         if not channel:
             return []
         return await self._fetch_history_as_messages(channel, limit=limit)
+
+    def _record_sent_message(self, sent: discord.Message, role: str = "assistant") -> None:
+        """Record a Discord message sent by Hiyori into the raw conversation log."""
+        try:
+            self.db.add_conversation_message(
+                discord_message_id=str(sent.id),
+                channel_id=str(sent.channel.id),
+                guild_id=str(sent.guild.id) if sent.guild else None,
+                author_id=str(sent.author.id) if sent.author else None,
+                author_name=str(sent.author) if sent.author else None,
+                role=role,
+                content=sent.content or "",
+                created_at=sent.created_at.isoformat(),
+                reply_to_message_id=(
+                    str(sent.reference.message_id)
+                    if sent.reference and sent.reference.message_id
+                    else None
+                ),
+                metadata={"message_type": str(sent.type)},
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ 写入 outbound conversation log 失败: {e}")
 
 
 def _todo_group(bot: LifeTrackerBot) -> app_commands.Group:
@@ -530,6 +578,8 @@ _RE_TS_PREFIX = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]\s*")
 
 
 async def _send_chat_chunks(target, text: str, *,
+                            db: Database | None = None,
+                            role: str = "assistant",
                             use_typing: bool = True,
                             on_typing_rate_limited=None) -> None:
     """
@@ -557,12 +607,41 @@ async def _send_chat_chunks(target, text: str, *,
         else:
             try:
                 for chunk in chunks:
-                    await target.send(chunk)
+                    sent = await target.send(chunk)
+                    await _record_sent_chunk(db, sent, role)
             finally:
                 await typing_cm.__aexit__(None, None, None)
             logger.info("✅ 消息发送完成")
             return
 
     for chunk in chunks:
-        await target.send(chunk)
+        sent = await target.send(chunk)
+        await _record_sent_chunk(db, sent, role)
     logger.info("✅ 消息发送完成")
+
+
+async def _record_sent_chunk(db: Database | None, sent: discord.Message, role: str) -> None:
+    """Persist a sent Discord message when a DB is available."""
+    if db is None:
+        return
+    try:
+        result = db.add_conversation_message(
+            discord_message_id=str(sent.id),
+            channel_id=str(sent.channel.id),
+            guild_id=str(sent.guild.id) if sent.guild else None,
+            author_id=str(sent.author.id) if sent.author else None,
+            author_name=str(sent.author) if sent.author else None,
+            role=role,
+            content=sent.content or "",
+            created_at=sent.created_at.isoformat(),
+            reply_to_message_id=(
+                str(sent.reference.message_id)
+                if sent.reference and sent.reference.message_id
+                else None
+            ),
+            metadata={"message_type": str(sent.type)},
+        )
+        if inspect.isawaitable(result):
+            await result
+    except Exception as e:
+        logger.warning(f"⚠️ 写入 outbound conversation log 失败: {e}")

@@ -42,6 +42,25 @@ class Database:
                 timestamp TEXT DEFAULT (datetime('now'))
             );
 
+            -- Discord 原始会话日志（append-only），用于后续 Context Builder / compact / replay。
+            -- 旧 messages 表只保留 role/content/timestamp 兼容；这里保存完整 Discord 元数据。
+            CREATE TABLE IF NOT EXISTS conversation_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                discord_message_id TEXT UNIQUE,
+                channel_id TEXT NOT NULL,
+                guild_id TEXT,
+                author_id TEXT,
+                author_name TEXT,
+                role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                reply_to_message_id TEXT,
+                metadata_json TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_conversation_messages_channel_created
+                ON conversation_messages(channel_id, created_at);
+
             -- 提醒队列表
             CREATE TABLE IF NOT EXISTS reminders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -476,6 +495,79 @@ class Database:
         conn.close()
         # 反转为时间正序
         return [dict(row) for row in reversed(rows)]
+
+    # ============ Discord 原始会话日志 ============
+
+    def add_conversation_message(self, *,
+                                 discord_message_id: str | None,
+                                 channel_id: str,
+                                 role: str,
+                                 content: str,
+                                 created_at: str,
+                                 guild_id: str | None = None,
+                                 author_id: str | None = None,
+                                 author_name: str | None = None,
+                                 reply_to_message_id: str | None = None,
+                                 metadata: dict | None = None) -> bool:
+        """保存一条 Discord 会话消息。返回是否新增，重复 message id 会被忽略。"""
+        if role not in {"user", "assistant", "system"}:
+            raise ValueError(f"invalid conversation role: {role}")
+        if not channel_id:
+            raise ValueError("channel_id is required")
+        text = content or ""
+        metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO conversation_messages (
+                discord_message_id, channel_id, guild_id, author_id, author_name,
+                role, content, created_at, reply_to_message_id, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(discord_message_id) if discord_message_id is not None else None,
+                str(channel_id),
+                str(guild_id) if guild_id is not None else None,
+                str(author_id) if author_id is not None else None,
+                author_name,
+                role,
+                text,
+                created_at,
+                str(reply_to_message_id) if reply_to_message_id is not None else None,
+                metadata_json,
+            )
+        )
+        conn.commit()
+        changed = cursor.rowcount > 0
+        conn.close()
+        return changed
+
+    def get_recent_conversation_messages(self, channel_id: str, limit: int = 20) -> list[dict]:
+        """按频道获取最近的 Discord 会话消息，返回时间正序。"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM conversation_messages
+            WHERE channel_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (str(channel_id), limit)
+        ).fetchall()
+        conn.close()
+        messages = []
+        for row in reversed(rows):
+            item = dict(row)
+            if item.get("metadata_json"):
+                try:
+                    item["metadata"] = json.loads(item["metadata_json"])
+                except json.JSONDecodeError:
+                    item["metadata"] = None
+            else:
+                item["metadata"] = None
+            messages.append(item)
+        return messages
 
     # ============ 提醒队列 ============
 

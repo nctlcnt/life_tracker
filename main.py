@@ -16,6 +16,7 @@ if "--api-only" in sys.argv:
 
 import argparse
 import asyncio
+import contextlib
 import uvicorn
 import config
 from bot.logger import setup_logging, get_logger
@@ -62,6 +63,7 @@ async def main(test: bool = False, api_only: bool = False):
             return
 
         # 这些 import 放在这里，以便 --api-only 时无需安装 discord.py 等重依赖也能起来
+        import discord
         from bot.discord_bot import LifeTrackerBot
         from bot.scheduler import Scheduler
 
@@ -84,12 +86,32 @@ async def main(test: bool = False, api_only: bool = False):
         logger.info("   - 定时调度器 (轮询间隔: 45-55min, 基于上次 AI 调用时刻)")
         logger.info(f"   - FastAPI 接口 (端口: {config.API_PORT})")
 
-        # 三个任务并发运行
-        await asyncio.gather(
-            bot.start(config.DISCORD_TOKEN),   # Discord Bot
-            scheduler.start(),                  # 定时调度器
-            api_server.serve(),                 # FastAPI
+        # Bot token 失效时不要让 Docker 反复重启整个容器刷 Discord 登录接口。
+        bot_task = asyncio.create_task(bot.start(config.DISCORD_TOKEN))
+        scheduler_task = asyncio.create_task(scheduler.start())
+        api_task = asyncio.create_task(api_server.serve())
+        done, pending = await asyncio.wait(
+            {bot_task, scheduler_task, api_task},
+            return_when=asyncio.FIRST_EXCEPTION,
         )
+        login_failed = any(
+            task is bot_task
+            and isinstance(task.exception(), discord.LoginFailure)
+            for task in done
+            if not task.cancelled()
+        )
+        if login_failed:
+            logger.error("❌ Discord token 无效；停止 Bot/调度器，仅保留 FastAPI，避免重启风暴")
+            await scheduler.stop()
+            scheduler_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await scheduler_task
+            await bot.close()
+            await api_task
+        else:
+            for task in done:
+                task.result()
+            await asyncio.gather(*pending)
     finally:
         if test_mode.is_active():
             final_path = test_mode.stop()
