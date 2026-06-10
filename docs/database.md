@@ -145,8 +145,6 @@ append-only 保存通过 Discord 收发的原始消息，作为后续 Context Bu
 
 当前可编辑 section 的 key/label 定义在 `bot/prompts.py::PROMPT_SECTION_LABELS`。代码只负责声明 section、校验模板占位符和组装 prompt，不再保存私有 prompt 正文。
 
-旧表 `prompt_overrides` 只用于兼容迁移：如果 `prompt_sections.value` 为空，启动时会用同 key 的旧 override 补齐。
-
 ---
 
 ## app_state — 进程无关的小型 KV

@@ -128,13 +128,6 @@ class Database:
                 value TEXT NOT NULL DEFAULT '',
                 updated_at TEXT DEFAULT (datetime('now'))
             );
-
-            -- 旧版 prompt 覆盖层，保留用于一次性迁移兼容。
-            CREATE TABLE IF NOT EXISTS prompt_overrides (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at TEXT DEFAULT (datetime('now'))
-            );
         """)
         conn.commit()
         # 兼容已有数据库：尝试加列，已存在则忽略
@@ -204,26 +197,6 @@ class Database:
                 """,
                 (key, label),
             )
-        # 兼容旧版 DB override：如果 prompt_sections 仍为空，用旧 override 补进去。
-        conn.execute("""
-            UPDATE prompt_sections
-            SET value = (
-                SELECT prompt_overrides.value
-                FROM prompt_overrides
-                WHERE prompt_overrides.key = prompt_sections.key
-            ),
-            updated_at = COALESCE((
-                SELECT prompt_overrides.updated_at
-                FROM prompt_overrides
-                WHERE prompt_overrides.key = prompt_sections.key
-            ), datetime('now'))
-            WHERE value = ''
-              AND EXISTS (
-                SELECT 1
-                FROM prompt_overrides
-                WHERE prompt_overrides.key = prompt_sections.key
-              )
-        """)
 
         conn.commit()
         conn.close()
