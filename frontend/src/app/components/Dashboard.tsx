@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, Fragment } from 'react';
-import { TimelineEvent } from './MultiLaneTimeline';
+import { MultiLaneTimeline, TimelineEvent } from './MultiLaneTimeline';
 import { ListItem } from './ItemList';
 import './dashboard.css';
 
@@ -218,6 +218,14 @@ export function Dashboard({
 
   return (
     <div className="dash-grid">
+      {/* ── Left rail: rhythm timeline ─────────────────────── */}
+      <aside className="rail-rhythm">
+        <div className="rhythm-title">Today&apos;s Rhythm</div>
+        <div className="multi-lane-frame">
+          <MultiLaneTimeline events={timelineEvents} date={date} />
+        </div>
+      </aside>
+
       {/* ── Center column ──────────────────────────────────── */}
       <main className="col-center">
         <div className="hero">

@@ -1,277 +1,196 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { TimelineEvent } from './MultiLaneTimeline';
 import './rhythm.css';
 
 // ── Types ─────────────────────────────────────────────────────────
 type Track = 'chill' | 'focus' | 'routine';
-type BlockKind = 'logged' | 'intent';
-type EntrySource = 'auto' | 'ai' | 'manual';
-type ProjectId = 'atlas' | 'beacon' | 'meridian' | 'writing';
 
 interface Block {
   id: string;
   track: Track;
   title: string;
-  start: number;
+  start: number; // 小时浮点，相对当天 00:00
   end: number;
-  cost: number;
-  note: string;
-  kind: BlockKind;
-  project?: ProjectId;
+  note: string | null;
+  project: string | null;
 }
 
-interface Entry {
-  id: string;
-  at: number;
-  track: Track;
-  text: string;
-  source: EntrySource;
-  project?: ProjectId;
-}
-
-// ── Seed data ─────────────────────────────────────────────────────
 const TRACKS: Record<Track, { label: string }> = {
   chill: { label: 'Chill' },
   focus: { label: 'Focus' },
   routine: { label: 'Routine' },
 };
 
-const PROJECTS: Record<ProjectId, { label: string; tone: string }> = {
-  atlas: { label: 'Atlas 报告', tone: 'oklch(55% 0.12 40)' },
-  beacon: { label: 'Beacon', tone: 'oklch(50% 0.10 240)' },
-  meridian: { label: 'Meridian', tone: 'oklch(52% 0.12 160)' },
-  writing: { label: '个人写作', tone: 'oklch(45% 0.06 310)' },
-};
+// Morandi 项目色板（与 theme.css 的 chart 色一致），按出现顺序分配
+const PROJECT_TONES = ['#94A3B5', '#A8B9A0', '#D4AFA0', '#B5A6BC', '#CFB897'];
 
-const SEED_BLOCKS: Block[] = [
-  { id: 'b1', track: 'routine', title: '起床 · 洗漱 · 早餐', start: 7.0, end: 8.0, cost: 4, note: '慢启动', kind: 'logged' },
-  { id: 'b2', track: 'chill', title: '晨读 · 咖啡', start: 8.0, end: 9.0, cost: 2, note: '《失控》p.120', kind: 'logged' },
-  { id: 'b3', track: 'focus', title: '深度工作 · 报告起草', start: 9.0, end: 11.5, cost: 14, note: '无通知', project: 'atlas', kind: 'logged' },
-  { id: 'b4', track: 'routine', title: '午餐 · 散步', start: 11.5, end: 12.5, cost: 3, note: '', kind: 'logged' },
-  { id: 'b5', track: 'focus', title: '会议 · 产品评审', start: 13.0, end: 14.5, cost: 9, note: '带 2 页稿', project: 'beacon', kind: 'logged' },
-  { id: 'b6', track: 'chill', title: '咖啡 · 整理桌面', start: 14.5, end: 15.0, cost: 1, note: '', kind: 'logged' },
-  { id: 'b7', track: 'focus', title: '代码 · 修 bug #882', start: 15.0, end: 17.0, cost: 10, note: '', project: 'meridian', kind: 'logged' },
-  { id: 'b8', track: 'routine', title: '健身 · 拉伸', start: 17.5, end: 18.5, cost: 6, note: '推日', kind: 'intent' },
-  { id: 'b9', track: 'chill', title: '晚餐 · 看剧', start: 18.5, end: 20.0, cost: 0, note: '', kind: 'intent' },
-  { id: 'b10', track: 'focus', title: '写作 · 周记', start: 20.5, end: 21.5, cost: 5, note: '', project: 'writing', kind: 'intent' },
-  { id: 'b11', track: 'chill', title: '阅读 · 睡前', start: 22.0, end: 23.0, cost: 0, note: '', kind: 'intent' },
-];
-
-const SEED_ENTRIES: Entry[] = [
-  { id: 'e1', at: 7.05, track: 'routine', text: '起床，有点赖床 · 泡了咖啡', source: 'auto' },
-  { id: 'e2', at: 8.02, track: 'chill', text: '翻了几页《失控》p.120 起', source: 'ai' },
-  { id: 'e3', at: 9.1, track: 'focus', text: '进入 Atlas 报告草稿 · 无通知', source: 'auto', project: 'atlas' },
-  { id: 'e4', at: 10.4, track: 'focus', text: '卡在第 3 节结构 · 换了思路', source: 'manual', project: 'atlas' },
-  { id: 'e5', at: 11.35, track: 'routine', text: '午饭 + 园区散步 12 分钟', source: 'ai' },
-  { id: 'e6', at: 13.0, track: 'focus', text: 'Beacon 评审 · 带两页稿', source: 'auto', project: 'beacon' },
-  { id: 'e7', at: 14.28, track: 'chill', text: '桌面清理 + 一杯手冲', source: 'ai' },
-  { id: 'e8', at: 15.02, track: 'focus', text: '修 bug #882 · 先复现', source: 'auto', project: 'meridian' },
-  { id: 'e9', at: 16.12, track: 'focus', text: '找到原因：race condition in scheduler', source: 'manual', project: 'meridian' },
-];
-
-const TWEAK_DEFAULTS = {
-  capacity: 80,
-  now: 10.15,
-  palette: 'paper' as 'paper' | 'slate' | 'olive',
-  density: 'cozy' as 'cozy' | 'comfy' | 'roomy',
-  nowStyle: 'detailed' as 'detailed' | 'minimal',
-};
+const trackOf = (cat: string): Track =>
+  cat === 'Focus' ? 'focus' : cat === 'Chill' ? 'chill' : 'routine';
 
 // ── Helpers ───────────────────────────────────────────────────────
 const fmtTime = (h: number) => {
-  const hh = Math.floor(h);
-  const mm = Math.round((h - hh) * 60);
+  const total = Math.round(h * 60);
+  const hh = Math.floor(total / 60);
+  const mm = total % 60;
   return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 };
 const fmtDur = (mins: number) => {
-  if (mins < 60) return `${mins}m`;
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
-  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+  const m = Math.max(0, Math.round(mins));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return rest === 0 ? `${h}h` : `${h}h ${rest}m`;
 };
 
-// ── Energy Bar ────────────────────────────────────────────────────
-function EnergyBar({
-  capacity,
-  spent,
-  planned,
-  nowHour,
-  blocks,
-  onScrub,
-}: {
-  capacity: number;
-  spent: number;
-  planned: number;
-  nowHour: number;
-  blocks: Block[];
-  onScrub: (h: number) => void;
-}) {
-  const remaining = Math.max(0, capacity - spent);
-  const afterPlanned = Math.max(0, capacity - spent - planned);
-  const pctSpent = (spent / capacity) * 100;
-  const pctPlanned = (planned / capacity) * 100;
+const WEEKDAYS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 
-  const startH = 7;
-  const endH = 24;
-  const steps: { h: number; e: number }[] = [];
-  let e = capacity;
-  for (let h = startH; h <= endH; h += 0.25) {
-    const active = blocks.find((b) => h >= b.start && h < b.end);
-    if (active) {
-      e = Math.max(
-        0,
-        e - (active.cost * 0.25) / Math.max(0.25, active.end - active.start),
-      );
-    }
-    if (active && active.track === 'chill') e = Math.min(capacity, e + 0.25);
-    steps.push({ h, e });
-  }
-  const maxE = capacity;
-  const pathD = steps
-    .map((s, i) => {
-      const x = ((s.h - startH) / (endH - startH)) * 100;
-      const y = 100 - (s.e / maxE) * 100;
-      return `${i === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
-    })
-    .join(' ');
+// 当前事件判定窗口：最后一段结束时间距现在 5 分钟内视为仍在进行
+const NOW_WINDOW_H = 5 / 60;
 
-  const nowX = ((nowHour - startH) / (endH - startH)) * 100;
+// ── Day strip：顶部 24h 横条 ──────────────────────────────────────
+function DayStrip({ blocks, nowHour }: { blocks: Block[]; nowHour: number | null }) {
+  return (
+    <div className="rhythm-strip-wrap">
+      <div className="rhythm-strip">
+        {blocks.map(b => (
+          <span
+            key={b.id}
+            className={`rhythm-strip-seg rhythm-strip-${b.track}`}
+            style={{
+              left: `${(b.start / 24) * 100}%`,
+              width: `${Math.max(0.4, ((b.end - b.start) / 24) * 100)}%`,
+            }}
+          />
+        ))}
+        {nowHour != null && (
+          <span className="rhythm-strip-now" style={{ left: `${(nowHour / 24) * 100}%` }} />
+        )}
+      </div>
+      <div className="rhythm-strip-axis rhythm-mono">
+        {[0, 6, 12, 18, 24].map(h => (
+          <span key={h} style={{ left: `${(h / 24) * 100}%` }}>
+            {String(h % 24).padStart(2, '0')}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── 顶栏：今日概览 ────────────────────────────────────────────────
+function DayPulse({ blocks, nowHour }: { blocks: Block[]; nowHour: number | null }) {
+  const focusH = blocks
+    .filter(b => b.track === 'focus')
+    .reduce((s, b) => s + (b.end - b.start), 0);
+  const totalH = blocks.reduce((s, b) => s + (b.end - b.start), 0);
 
   return (
     <div className="rhythm-energy">
       <div className="rhythm-energy-head">
         <div className="rhythm-energy-title">
-          <span className="rhythm-kicker">ENERGY · 今日已消耗</span>
+          <span className="rhythm-kicker">FOCUS · 今日</span>
           <span className="rhythm-big-num">
-            {Math.round(spent)}
-            <span className="rhythm-big-num-unit">/{capacity}</span>
+            {focusH.toFixed(1)}
+            <span className="rhythm-big-num-unit">h</span>
           </span>
           <span className="rhythm-energy-sub">
-            剩余 <b>{Math.round(remaining)}</b> · 估算意向还将消耗 {Math.round(planned)}
+            共 <b>{blocks.length}</b> 段记录 · 总计 <b>{fmtDur(totalH * 60)}</b>
           </span>
         </div>
         <div className="rhythm-energy-legend">
-          <span>
-            <i className="rhythm-lg rhythm-lg-spent" />已用 {Math.round(spent)}
-          </span>
-          <span>
-            <i className="rhythm-lg rhythm-lg-planned" />意向 {Math.round(planned)}
-          </span>
-          <span>
-            <i className="rhythm-lg rhythm-lg-free" />余 {Math.round(afterPlanned)}
-          </span>
-        </div>
-      </div>
-
-      <div className="rhythm-energy-bar">
-        <div className="rhythm-eb-seg rhythm-eb-spent" style={{ width: `${pctSpent}%` }} />
-        <div className="rhythm-eb-seg rhythm-eb-planned" style={{ width: `${pctPlanned}%` }} />
-        <div className="rhythm-eb-ticks">
-          {Array.from({ length: 11 }).map((_, i) => (
-            <span key={i} style={{ left: `${i * 10}%` }} />
-          ))}
-        </div>
-      </div>
-
-      <div className="rhythm-energy-forecast">
-        <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="rhythm-fc-svg">
-          <defs>
-            <linearGradient id="rhythm-fc-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stopColor="var(--rhythm-ink)" stopOpacity="0.14" />
-              <stop offset="1" stopColor="var(--rhythm-ink)" stopOpacity="0" />
-            </linearGradient>
-            <clipPath id="rhythm-fc-clip-past">
-              <rect x="0" y="0" width={nowX} height="100" />
-            </clipPath>
-            <clipPath id="rhythm-fc-clip-future">
-              <rect x={nowX} y="0" width={100 - nowX} height="100" />
-            </clipPath>
-          </defs>
-          <path d={`${pathD} L100,100 L0,100 Z`} fill="url(#rhythm-fc-fill)" clipPath="url(#rhythm-fc-clip-past)" />
-          <path
-            d={pathD}
-            fill="none"
-            stroke="var(--rhythm-ink)"
-            strokeWidth="0.7"
-            vectorEffect="non-scaling-stroke"
-            clipPath="url(#rhythm-fc-clip-past)"
-          />
-          <path
-            d={pathD}
-            fill="none"
-            stroke="var(--rhythm-ink-3)"
-            strokeWidth="0.5"
-            strokeDasharray="1.5 1.5"
-            vectorEffect="non-scaling-stroke"
-            clipPath="url(#rhythm-fc-clip-future)"
-          />
-          <line
-            x1={nowX}
-            y1="0"
-            x2={nowX}
-            y2="100"
-            stroke="var(--rhythm-accent)"
-            strokeWidth="0.8"
-            vectorEffect="non-scaling-stroke"
-          />
-        </svg>
-        <div className="rhythm-fc-axis">
-          {[7, 10, 13, 16, 19, 22].map((h) => (
-            <span key={h} style={{ left: `${((h - startH) / (endH - startH)) * 100}%` }}>
-              {h}:00
+          {(['focus', 'routine', 'chill'] as Track[]).map(t => (
+            <span key={t}>
+              <i className={`rhythm-lg rhythm-lg-${t}`} />
+              {TRACKS[t].label}{' '}
+              {fmtDur(
+                blocks
+                  .filter(b => b.track === t)
+                  .reduce((s, b) => s + (b.end - b.start), 0) * 60
+              )}
             </span>
           ))}
         </div>
-        <input
-          className="rhythm-fc-scrub"
-          type="range"
-          min={startH * 100}
-          max={endH * 100}
-          step={5}
-          value={Math.round(nowHour * 100)}
-          onChange={(e) => onScrub(Number(e.target.value) / 100)}
-          aria-label="拖动时间"
-        />
       </div>
+      <DayStrip blocks={blocks} nowHour={nowHour} />
     </div>
   );
+}
+
+// 同一泳道内时间重叠的块，按日历的方式分到并列子列，避免互相盖住
+function layoutOverlaps(blocks: Block[]): Map<string, { sub: number; subCount: number }> {
+  const out = new Map<string, { sub: number; subCount: number }>();
+  const sorted = [...blocks].sort((a, b) => a.start - b.start);
+  let cluster: Block[] = [];
+  let clusterEnd = -Infinity;
+  const subEnds: number[] = [];
+
+  const flush = () => {
+    const count = subEnds.length;
+    cluster.forEach(b => {
+      const cur = out.get(b.id)!;
+      out.set(b.id, { ...cur, subCount: count });
+    });
+    cluster = [];
+    subEnds.length = 0;
+  };
+
+  for (const b of sorted) {
+    if (b.start >= clusterEnd && cluster.length > 0) flush();
+    let sub = subEnds.findIndex(end => end <= b.start);
+    if (sub === -1) {
+      sub = subEnds.length;
+      subEnds.push(b.end);
+    } else {
+      subEnds[sub] = b.end;
+    }
+    out.set(b.id, { sub, subCount: 1 });
+    cluster.push(b);
+    clusterEnd = Math.max(clusterEnd, b.end);
+  }
+  if (cluster.length > 0) flush();
+  return out;
 }
 
 // ── Timeline Rail ─────────────────────────────────────────────────
 function TimelineRail({
   blocks,
   nowHour,
+  dateLabel,
   activeId,
   onPick,
-  startH = 7,
-  endH = 24,
+  startH,
+  endH,
 }: {
   blocks: Block[];
-  nowHour: number;
+  nowHour: number | null;
+  dateLabel: string;
   activeId: string | null;
   onPick: (id: string) => void;
-  startH?: number;
-  endH?: number;
+  startH: number;
+  endH: number;
 }) {
   const hours = endH - startH;
   const trackOrder: Track[] = ['chill', 'focus', 'routine'];
   const railRef = useRef<HTMLDivElement>(null);
 
+  // 仅初次渲染时滚到当前时间附近，避免每分钟把用户拽走
   useEffect(() => {
-    if (!railRef.current) return;
+    if (!railRef.current || nowHour == null) return;
     const el = railRef.current;
     const y = ((nowHour - startH) / hours) * el.scrollHeight - el.clientHeight / 2;
-    el.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
-  }, [nowHour, startH, hours]);
+    el.scrollTo({ top: Math.max(0, y) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="rhythm-rail" ref={railRef}>
       <div className="rhythm-rail-head">
         <div className="rhythm-rail-head-row">
           <span className="rhythm-rail-head-label">Timeline</span>
-          <span className="rhythm-rail-head-date">THU · 04/21</span>
+          <span className="rhythm-rail-head-date">{dateLabel}</span>
         </div>
         <div className="rhythm-rail-tracks">
-          {trackOrder.map((t) => (
+          {trackOrder.map(t => (
             <div key={t} className={`rhythm-rt rhythm-rt-${t}`}>
               <i />
               <span>{TRACKS[t].label}</span>
@@ -286,7 +205,7 @@ function TimelineRail({
             const h = startH + i;
             return (
               <div key={h} className="rhythm-hour" style={{ top: `calc(${i} * var(--rhythm-hour-h))` }}>
-                <span className="rhythm-hour-lbl">{String(h).padStart(2, '0')}</span>
+                <span className="rhythm-hour-lbl">{String(h % 24).padStart(2, '0')}</span>
                 <span className="rhythm-hour-line" />
               </div>
             );
@@ -294,18 +213,21 @@ function TimelineRail({
         </div>
 
         <div className="rhythm-cols">
-          {trackOrder.map((t) => (
+          {trackOrder.map(t => (
             <div key={t} className={`rhythm-col rhythm-col-${t}`} />
           ))}
         </div>
 
         <div className="rhythm-blocks">
-          {blocks.map((b) => {
+          {trackOrder.flatMap(t => {
+            const trackBlocks = blocks.filter(b => b.track === t);
+            const overlaps = layoutOverlaps(trackBlocks);
+            return trackBlocks.map(b => ({ b, lay: overlaps.get(b.id)! }));
+          }).map(({ b, lay }) => {
             const colIdx = trackOrder.indexOf(b.track);
             const top = ((b.start - startH) / hours) * 100;
-            const height = ((b.end - b.start) / hours) * 100;
-            const isIntent = b.kind === 'intent';
-            const isNow = nowHour >= b.start && nowHour < b.end;
+            const height = Math.max(((b.end - b.start) / hours) * 100, 0.6);
+            const isNow = nowHour != null && nowHour >= b.start && nowHour < b.end + NOW_WINDOW_H;
             return (
               <button
                 key={b.id}
@@ -313,7 +235,6 @@ function TimelineRail({
                 className={[
                   'rhythm-blk',
                   `rhythm-blk-${b.track}`,
-                  isIntent ? 'is-intent' : 'is-logged',
                   isNow ? 'is-now' : '',
                   activeId === b.id ? 'is-active' : '',
                 ]
@@ -322,18 +243,15 @@ function TimelineRail({
                 style={{
                   top: `${top}%`,
                   height: `${height}%`,
-                  left: `calc(${colIdx} * (100%/3))`,
-                  width: 'calc(100%/3)',
+                  left: `calc(${colIdx} * (100%/3) + ${lay.sub} * (100%/3) / ${lay.subCount})`,
+                  width: `calc(100%/3 / ${lay.subCount})`,
                 }}
               >
-                <div className="rhythm-blk-time">
-                  {fmtTime(b.start)}
-                  {isIntent && <span className="rhythm-blk-intent-tag"> · 意向</span>}
-                </div>
+                <div className="rhythm-blk-time">{fmtTime(b.start)}</div>
                 <div className="rhythm-blk-title">{b.title}</div>
                 <div className="rhythm-blk-meta">
-                  <span className="rhythm-blk-cost">{b.cost}⌁</span>
-                  <span className="rhythm-blk-dur">{fmtDur(Math.round((b.end - b.start) * 60))}</span>
+                  <span>{b.project ?? ''}</span>
+                  <span className="rhythm-blk-dur">{fmtDur((b.end - b.start) * 60)}</span>
                 </div>
                 {isNow && <span className="rhythm-blk-pulse" />}
               </button>
@@ -341,34 +259,49 @@ function TimelineRail({
           })}
         </div>
 
-        <div className="rhythm-nowline" style={{ top: `${((nowHour - startH) / hours) * 100}%` }}>
-          <span className="rhythm-nowline-dot" />
-          <span className="rhythm-nowline-lbl">{fmtTime(nowHour)}</span>
-        </div>
+        {nowHour != null && nowHour >= startH && nowHour <= endH && (
+          <div className="rhythm-nowline" style={{ top: `${((nowHour - startH) / hours) * 100}%` }}>
+            <span className="rhythm-nowline-dot" />
+            <span className="rhythm-nowline-lbl">{fmtTime(nowHour)}</span>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
 // ── Now Card ──────────────────────────────────────────────────────
-function NowCard({ block, nowHour, entries }: { block: Block | null; nowHour: number; entries: Entry[] }) {
-  const blockEntries = block ? entries.filter((e) => e.at >= block.start && e.at <= nowHour).slice(-3) : [];
+function NowCard({
+  block,
+  nowHour,
+  recent,
+  isToday,
+}: {
+  block: Block | null;
+  nowHour: number | null;
+  recent: Block[];
+  isToday: boolean;
+}) {
   if (!block) {
     return (
       <div className="rhythm-now-card rhythm-now-card--empty">
-        <span className="rhythm-kicker">正在记录 · 当前</span>
-        <h2>空档 · 无正在进行的记录</h2>
-        <p>AI 没有检测到正在进行的活动。下一条记录出现后会自动填入这里。</p>
+        <span className="rhythm-kicker">{isToday ? '正在记录 · 当前' : '历史回看'}</span>
+        <h2>{isToday ? '空档 · 无正在进行的记录' : '这一天已经过去'}</h2>
+        <p>
+          {isToday
+            ? '下一条记录出现后会自动填入这里。'
+            : '下方是当天的节奏与流水。'}
+        </p>
       </div>
     );
   }
-  const elapsed = Math.max(0, Math.round((nowHour - block.start) * 60));
+  const elapsed = nowHour != null ? Math.max(0, Math.round((nowHour - block.start) * 60)) : 0;
   return (
     <div className={`rhythm-now-card rhythm-now-card--${block.track}`}>
       <div className="rhythm-now-card-head">
         <span className="rhythm-kicker">
           正在记录 · {TRACKS[block.track].label}
-          {block.project ? ` · ${PROJECTS[block.project]?.label || block.project}` : ''}
+          {block.project ? ` · ${block.project}` : ''}
         </span>
         <span className="rhythm-now-card-time rhythm-mono">
           自 {fmtTime(block.start)} · 已 {fmtDur(elapsed)}
@@ -377,14 +310,13 @@ function NowCard({ block, nowHour, entries }: { block: Block | null; nowHour: nu
       <h2 className="rhythm-now-card-title">{block.title}</h2>
       {block.note && <p className="rhythm-now-card-note">“{block.note}”</p>}
       <div className="rhythm-now-entries">
-        <span className="rhythm-kicker">最近自动捕获</span>
-        {blockEntries.length === 0 && <div className="rhythm-ne-empty">等待下一条自动记录…</div>}
-        {blockEntries.map((e) => (
-          <div key={e.id} className="rhythm-ne-row">
-            <span className="rhythm-ne-time rhythm-mono">{fmtTime(e.at)}</span>
+        <span className="rhythm-kicker">此前的记录</span>
+        {recent.length === 0 && <div className="rhythm-ne-empty">今天的第一条记录。</div>}
+        {recent.map(b => (
+          <div key={b.id} className="rhythm-ne-row">
+            <span className="rhythm-ne-time rhythm-mono">{fmtTime(b.start)}</span>
             <span className="rhythm-ne-dot" />
-            <span className="rhythm-ne-text">{e.text}</span>
-            <span className={`rhythm-ne-src rhythm-ne-src-${e.source}`}>{e.source}</span>
+            <span className="rhythm-ne-text">{b.title}</span>
           </div>
         ))}
       </div>
@@ -396,116 +328,105 @@ function NowCard({ block, nowHour, entries }: { block: Block | null; nowHour: nu
   );
 }
 
-// ── Projects Summary ─────────────────────────────────────────────
-function ProjectsSummary({ blocks, nowHour }: { blocks: Block[]; nowHour: number }) {
+// ── Projects Summary：Focus 时长按项目分解 ────────────────────────
+function ProjectsSummary({ blocks }: { blocks: Block[] }) {
   const rows = useMemo(() => {
-    const agg: Record<string, { planned: number; done: number }> = {};
-    blocks.forEach((b) => {
+    const agg: Record<string, number> = {};
+    blocks.forEach(b => {
       if (b.track !== 'focus' || !b.project) return;
-      const dur = b.end - b.start;
-      const donePortion = Math.max(0, Math.min(dur, nowHour - b.start));
-      if (!agg[b.project]) agg[b.project] = { planned: 0, done: 0 };
-      agg[b.project].planned += dur;
-      agg[b.project].done += donePortion;
+      agg[b.project] = (agg[b.project] ?? 0) + (b.end - b.start);
     });
     return Object.entries(agg)
-      .map(([id, v]) => ({ id: id as ProjectId, ...PROJECTS[id as ProjectId], ...v }))
-      .sort((a, b) => b.planned - a.planned);
-  }, [blocks, nowHour]);
+      .map(([name, hours], i) => ({ name, hours, tone: PROJECT_TONES[i % PROJECT_TONES.length] }))
+      .sort((a, b) => b.hours - a.hours);
+  }, [blocks]);
 
-  const totalPlanned = rows.reduce((s, r) => s + r.planned, 0);
-  const maxPlanned = Math.max(1, ...rows.map((r) => r.planned));
+  const total = rows.reduce((s, r) => s + r.hours, 0);
+  const max = Math.max(1e-6, ...rows.map(r => r.hours));
 
   return (
     <div className="rhythm-ov-projects">
       <div className="rhythm-ov-proj-head">
         <span className="rhythm-kicker">PROJECTS · Focus 分解</span>
-        <span className="rhythm-ov-proj-total">{totalPlanned.toFixed(1)}h</span>
+        <span className="rhythm-ov-proj-total">{total.toFixed(1)}h</span>
       </div>
       <div className="rhythm-ov-proj-list">
-        {rows.map((r) => {
-          const pct = (r.done / r.planned) * 100;
-          const wPct = (r.planned / maxPlanned) * 100;
-          return (
-            <div key={r.id} className="rhythm-ov-proj-row">
-              <div className="rhythm-ov-proj-top">
-                <span className="rhythm-ov-proj-dot" style={{ background: r.tone }} />
-                <span className="rhythm-ov-proj-name">{r.label}</span>
-                <span className="rhythm-ov-proj-hrs rhythm-mono">
-                  {r.done.toFixed(1)}/{r.planned.toFixed(1)}h
-                </span>
-              </div>
-              <div className="rhythm-ov-proj-bar" style={{ width: `${wPct}%` }}>
-                <div className="rhythm-ov-proj-fill" style={{ width: `${pct}%`, background: r.tone }} />
-              </div>
+        {rows.map(r => (
+          <div key={r.name} className="rhythm-ov-proj-row">
+            <div className="rhythm-ov-proj-top">
+              <span className="rhythm-ov-proj-dot" style={{ background: r.tone }} />
+              <span className="rhythm-ov-proj-name">{r.name}</span>
+              <span className="rhythm-ov-proj-hrs rhythm-mono">{fmtDur(r.hours * 60)}</span>
             </div>
-          );
-        })}
-        {rows.length === 0 && <div className="rhythm-ov-proj-empty">今日无 Focus 项目。</div>}
+            <div className="rhythm-ov-proj-bar" style={{ width: `${(r.hours / max) * 100}%` }}>
+              <div className="rhythm-ov-proj-fill" style={{ width: '100%', background: r.tone }} />
+            </div>
+          </div>
+        ))}
+        {rows.length === 0 && <div className="rhythm-ov-proj-empty">这一天没有挂项目的 Focus 记录。</div>}
       </div>
     </div>
   );
 }
 
 // ── Day Overview ─────────────────────────────────────────────────
-function DayOverview({ blocks, nowHour }: { blocks: Block[]; nowHour: number }) {
+function DayOverview({ blocks }: { blocks: Block[] }) {
   const stats = useMemo(() => {
     const agg: Record<Track, number> = { chill: 0, focus: 0, routine: 0 };
-    blocks.forEach((b) => {
-      if (b.kind === 'intent') return;
-      const end = Math.min(b.end, nowHour);
-      if (end <= b.start) return;
-      agg[b.track] += end - b.start;
+    blocks.forEach(b => {
+      agg[b.track] += b.end - b.start;
     });
     const total = agg.chill + agg.focus + agg.routine;
     return { agg, total };
-  }, [blocks, nowHour]);
+  }, [blocks]);
 
   return (
     <div className="rhythm-overview">
       <div className="rhythm-ov-row rhythm-ov-balance">
         <div className="rhythm-ov-head">
-          <span className="rhythm-kicker">BALANCE · 今日已记录</span>
+          <span className="rhythm-kicker">BALANCE · 当日已记录</span>
           <span className="rhythm-ov-total rhythm-mono">{stats.total.toFixed(1)}h</span>
         </div>
         <div className="rhythm-ov-bar">
-          {(['chill', 'focus', 'routine'] as Track[]).map((t) => {
-            const pct = stats.total > 0 ? (stats.agg[t] / stats.total) * 100 : 33.3;
-            return (
-              <div key={t} className={`rhythm-ov-seg rhythm-ov-seg-${t}`} style={{ width: `${pct}%` }}>
-                <span>{TRACKS[t].label}</span>
-                <b>{stats.agg[t].toFixed(1)}h</b>
-              </div>
-            );
-          })}
+          {(['chill', 'focus', 'routine'] as Track[])
+            .filter(t => stats.total === 0 || stats.agg[t] > 0)
+            .map(t => {
+              const pct = stats.total > 0 ? (stats.agg[t] / stats.total) * 100 : 33.3;
+              return (
+                <div key={t} className={`rhythm-ov-seg rhythm-ov-seg-${t}`} style={{ width: `${pct}%` }}>
+                  <span>{TRACKS[t].label}</span>
+                  <b>{stats.agg[t].toFixed(1)}h</b>
+                </div>
+              );
+            })}
         </div>
       </div>
 
       <div className="rhythm-ov-row rhythm-ov-next">
-        <ProjectsSummary blocks={blocks} nowHour={nowHour} />
+        <ProjectsSummary blocks={blocks} />
       </div>
     </div>
   );
 }
 
-// ── Entries Feed ─────────────────────────────────────────────────
+// ── Entries Feed：当日事件流水 ────────────────────────────────────
 function EntriesFeed({
-  entries,
+  blocks,
   filter,
   setFilter,
 }: {
-  entries: Entry[];
+  blocks: Block[];
   filter: 'all' | Track;
   setFilter: (f: 'all' | Track) => void;
 }) {
-  const filtered = entries.filter((e) => filter === 'all' || e.track === filter);
-  const sorted = [...filtered].sort((a, b) => b.at - a.at);
+  const filtered = blocks.filter(b => filter === 'all' || b.track === filter);
+  const sorted = [...filtered].sort((a, b) => b.start - a.start);
   return (
     <div className="rhythm-todos">
       <div className="rhythm-todos-head">
         <div>
-          <span className="rhythm-kicker">已安排 · 流水</span>
-          <span className="rhythm-todos-count">{entries.length} 条 · 今日</span>
+          <span className="rhythm-kicker">流水 · 当日</span>
+          <span className="rhythm-todos-count">{blocks.length} 条</span>
         </div>
         <div className="rhythm-todos-filters">
           {([
@@ -513,7 +434,7 @@ function EntriesFeed({
             { k: 'focus', lbl: 'Focus' },
             { k: 'chill', lbl: 'Chill' },
             { k: 'routine', lbl: 'Routine' },
-          ] as { k: 'all' | Track; lbl: string }[]).map((f) => (
+          ] as { k: 'all' | Track; lbl: string }[]).map(f => (
             <button
               key={f.k}
               className={`rhythm-tf ${filter === f.k ? 'is-on' : ''}`}
@@ -526,100 +447,109 @@ function EntriesFeed({
       </div>
 
       <div className="rhythm-feed-list">
-        {sorted.map((e) => (
-          <div key={e.id} className={`rhythm-feed-row rhythm-feed-${e.track}`}>
-            <span className="rhythm-feed-time rhythm-mono">{fmtTime(e.at)}</span>
-            <span className={`rhythm-feed-bar rhythm-feed-bar-${e.track}`} />
+        {sorted.map(b => (
+          <div key={b.id} className={`rhythm-feed-row rhythm-feed-${b.track}`}>
+            <span className="rhythm-feed-time rhythm-mono">{fmtTime(b.start)}</span>
+            <span className={`rhythm-feed-bar rhythm-feed-bar-${b.track}`} />
             <div className="rhythm-feed-body">
-              <div className="rhythm-feed-text">{e.text}</div>
+              <div className="rhythm-feed-text">{b.title}</div>
               <div className="rhythm-feed-meta">
-                <span className={`rhythm-tag rhythm-tag-${e.track}`}>{TRACKS[e.track].label}</span>
-                {e.project && <span className="rhythm-feed-proj">{PROJECTS[e.project]?.label}</span>}
-                <span className={`rhythm-feed-src rhythm-feed-src-${e.source}`}>
-                  {e.source === 'auto' && '◉ 自动'}
-                  {e.source === 'ai' && '✦ AI 摘要'}
-                  {e.source === 'manual' && '✎ 手动补充'}
+                <span className={`rhythm-tag rhythm-tag-${b.track}`}>{TRACKS[b.track].label}</span>
+                {b.project && <span className="rhythm-feed-proj">{b.project}</span>}
+                <span>
+                  {fmtTime(b.start)}–{fmtTime(b.end)} · {fmtDur((b.end - b.start) * 60)}
                 </span>
               </div>
+              {b.note && <div className="rhythm-feed-note">{b.note}</div>}
             </div>
           </div>
         ))}
+        {sorted.length === 0 && <div className="rhythm-ne-empty">没有记录。</div>}
       </div>
     </div>
   );
 }
 
 // ── Root ─────────────────────────────────────────────────────────
-export function RhythmView() {
-  const [tweaks, setTweaks] = useState(TWEAK_DEFAULTS);
-  const [blocks] = useState(SEED_BLOCKS);
-  const [entries] = useState(SEED_ENTRIES);
+export function RhythmView({ events, date }: { events: TimelineEvent[]; date: string }) {
   const [filter, setFilter] = useState<'all' | Track>('all');
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [now, setNow] = useState(() => new Date());
 
-  const nowHour = tweaks.now;
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(t);
+  }, []);
 
-  const { spent, planned } = useMemo(() => {
-    let s = 0;
-    let p = 0;
-    blocks.forEach((b) => {
-      if (b.kind === 'intent') {
-        if (b.start >= nowHour) p += b.cost;
-        else {
-          const frac = Math.max(0, (nowHour - b.start) / (b.end - b.start));
-          s += b.cost * frac;
-          p += b.cost * (1 - frac);
-        }
-      } else {
-        if (b.end <= nowHour) s += b.cost;
-        else if (b.start >= nowHour) p += b.cost;
-        else {
-          const frac = (nowHour - b.start) / (b.end - b.start);
-          s += b.cost * frac;
-          p += b.cost * (1 - frac);
-        }
-      }
-    });
-    return { spent: s, planned: p };
+  const dayBase = useMemo(() => new Date(`${date}T00:00:00`), [date]);
+  const isToday =
+    now.getFullYear() === dayBase.getFullYear() &&
+    now.getMonth() === dayBase.getMonth() &&
+    now.getDate() === dayBase.getDate();
+  const nowHour = isToday ? (now.getTime() - dayBase.getTime()) / 3_600_000 : null;
+
+  const blocks = useMemo<Block[]>(
+    () =>
+      [...events]
+        .sort((a, b) => a.startDate.getTime() - b.startDate.getTime())
+        .map(ev => ({
+          id: ev.id,
+          track: trackOf(ev.category),
+          title: ev.content,
+          start: (ev.startDate.getTime() - dayBase.getTime()) / 3_600_000,
+          end: (ev.endDate.getTime() - dayBase.getTime()) / 3_600_000,
+          note: ev.notes ?? null,
+          project: ev.project_name ?? null,
+        })),
+    [events, dayBase]
+  );
+
+  // 时间轴范围：默认 07–24，事件更早则向上扩
+  const startH = Math.max(
+    0,
+    Math.min(7, ...blocks.map(b => Math.floor(b.start)))
+  );
+  const endH = 24;
+
+  // 当前进行中的块：今天的最后一段，且结束时间贴近现在
+  const currentBlock = useMemo(() => {
+    if (nowHour == null || blocks.length === 0) return null;
+    const last = blocks[blocks.length - 1];
+    return last.end >= nowHour - NOW_WINDOW_H ? last : null;
   }, [blocks, nowHour]);
+  const recent = useMemo(
+    () => blocks.filter(b => b !== currentBlock).slice(-3).reverse(),
+    [blocks, currentBlock]
+  );
 
-  const currentBlock = blocks.find((b) => nowHour >= b.start && nowHour < b.end) || null;
+  const dateLabel = `${WEEKDAYS[dayBase.getDay()]} · ${String(dayBase.getMonth() + 1).padStart(2, '0')}/${String(dayBase.getDate()).padStart(2, '0')}`;
 
   return (
-    <div
-      className="rhythm-app"
-      data-palette={tweaks.palette}
-      data-density={tweaks.density}
-      data-now-style={tweaks.nowStyle}
-    >
+    <div className="rhythm-app">
       <div className="rhythm-brand">
-        <span className="rhythm-brand-mark">RHYTHM · v0.5 · LOG · MOCK</span>
-        <div className="rhythm-brand-title">时间管理系统</div>
+        <span className="rhythm-brand-mark">RHYTHM · LIFE LOG</span>
+        <div className="rhythm-brand-title">今日节奏</div>
         <div className="rhythm-brand-sub">AI 自动记录 · Chill / Focus / Routine</div>
       </div>
 
-      <EnergyBar
-        capacity={tweaks.capacity}
-        spent={spent}
-        planned={planned}
-        nowHour={nowHour}
-        blocks={blocks}
-        onScrub={(h) => setTweaks({ ...tweaks, now: h })}
-      />
+      <DayPulse blocks={blocks} nowHour={nowHour} />
 
       <TimelineRail
         blocks={blocks}
         nowHour={nowHour}
+        dateLabel={dateLabel}
         activeId={activeId}
-        onPick={(id) => setActiveId(id === activeId ? null : id)}
+        onPick={id => setActiveId(id === activeId ? null : id)}
+        startH={startH}
+        endH={endH}
       />
 
       <div className="rhythm-main">
-        <NowCard block={currentBlock} nowHour={nowHour} entries={entries} />
-        <DayOverview blocks={blocks} nowHour={nowHour} />
+        <NowCard block={currentBlock} nowHour={nowHour} recent={recent} isToday={isToday} />
+        <DayOverview blocks={blocks} />
       </div>
 
-      <EntriesFeed entries={entries} filter={filter} setFilter={setFilter} />
+      <EntriesFeed blocks={blocks} filter={filter} setFilter={setFilter} />
     </div>
   );
 }

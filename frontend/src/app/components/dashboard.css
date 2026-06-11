@@ -100,13 +100,44 @@
 /* ── Layout ───────────────────────────────────────────────── */
 .dash-grid {
   display: grid;
-  grid-template-columns: 1fr 340px;
+  grid-template-columns: 220px 1fr 340px;
   gap: 32px;
   padding: 24px 48px 40px;
   align-items: stretch;
   min-height: calc(100vh - 73px);
   max-width: 1400px;
   margin: 0 auto;
+}
+
+/* ── Left rail: rhythm timeline ───────────────────────────── */
+.rail-rhythm {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px 12px 12px;
+  height: calc(100vh - 121px);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 24px;
+  min-height: 0;
+}
+.rail-rhythm .rhythm-title {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--foreground);
+  margin: 0 0 10px;
+  text-align: center;
+}
+/* Strip MultiLaneTimeline's own outer border so the rail card frames it */
+.rail-rhythm .multi-lane-frame {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Section heading */
@@ -753,6 +784,10 @@
   }
   .rail-right {
     position: static;
+  }
+  .rail-rhythm {
+    position: static;
+    height: 60vh;
   }
   .hero h1 { font-size: 36px; }
   .rhythm-page,

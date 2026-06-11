@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { ListItem } from './components/ItemList';
 import { WeekView, getMonday } from './components/WeekView';
-import { MultiLaneTimeline, TimelineEvent } from './components/MultiLaneTimeline';
+import { TimelineEvent } from './components/MultiLaneTimeline';
+import { RhythmView } from './components/RhythmView';
 import { ProjectOverview } from './components/ProjectOverview';
 import { Dashboard } from './components/Dashboard';
 import { AdminPanel } from './components/AdminPanel';
@@ -262,15 +263,8 @@ function DashboardApp() {
           <ProjectOverview />
         </div>
       ) : viewMode === 'rhythm' ? (
-        <div className="flex-1 min-h-0 overflow-auto">
-          <div className="rhythm-page">
-            <div className="rhythm-card">
-              <div className="rhythm-title">Today&apos;s Rhythm</div>
-              <div className="multi-lane-frame">
-                <MultiLaneTimeline events={timelineEvents} date={currentDate} />
-              </div>
-            </div>
-          </div>
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <RhythmView events={timelineEvents} date={currentDate} />
         </div>
       ) : viewMode === 'memory' ? (
         <div className="flex-1 min-h-0 overflow-auto">

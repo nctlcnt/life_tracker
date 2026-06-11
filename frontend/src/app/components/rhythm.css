@@ -117,59 +117,35 @@
 }
 .rhythm-energy-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .rhythm-lg { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
-.rhythm-lg-spent { background: var(--rhythm-ink); }
-.rhythm-lg-planned {
-  background: repeating-linear-gradient(45deg, var(--rhythm-ink-3) 0 2px, transparent 2px 4px);
-}
-.rhythm-lg-free { background: var(--rhythm-paper-3); border: 1px solid var(--rhythm-rule); }
+.rhythm-lg-focus { background: var(--rhythm-focus-ink); }
+.rhythm-lg-routine { background: var(--rhythm-routine-ink); }
+.rhythm-lg-chill { background: var(--rhythm-chill-ink); }
 
-.rhythm-energy-bar {
-  grid-column: 1 / -1;
+/* Day strip：顶部 24h 横条 */
+.rhythm-strip-wrap { grid-column: 1 / -1; }
+.rhythm-strip {
   position: relative;
-  height: 14px;
+  height: 22px;
   background: var(--rhythm-paper-3);
   border: 1px solid var(--rhythm-rule);
-  border-radius: 3px;
-  overflow: hidden;
-  display: flex;
-}
-.rhythm-eb-seg { height: 100%; }
-.rhythm-eb-spent { background: var(--rhythm-ink); }
-.rhythm-eb-planned {
-  background: repeating-linear-gradient(45deg, var(--rhythm-ink-3) 0 3px, transparent 3px 6px);
-  border-left: 1px solid var(--rhythm-paper);
-}
-.rhythm-eb-ticks { position: absolute; inset: 0; pointer-events: none; }
-.rhythm-eb-ticks span {
-  position: absolute; top: 0; bottom: 0; width: 1px;
-  background: var(--rhythm-paper); opacity: 0.5;
-}
-
-.rhythm-energy-forecast {
-  grid-column: 1 / -1;
-  position: relative;
-  height: 64px;
-  border: 1px solid var(--rhythm-rule);
   border-radius: 4px;
-  background:
-    linear-gradient(to bottom, transparent 0 99%, var(--rhythm-rule) 99% 100%),
-    repeating-linear-gradient(to right, transparent 0 calc(100%/17 - 1px), var(--rhythm-rule) calc(100%/17 - 1px) calc(100%/17));
-  padding: 4px 4px 16px;
   overflow: hidden;
 }
-.rhythm-fc-svg { width: 100%; height: 100%; display: block; }
-.rhythm-fc-axis {
-  position: absolute; left: 4px; right: 4px; bottom: 2px; height: 12px;
+.rhythm-strip-seg { position: absolute; top: 0; bottom: 0; opacity: 0.85; }
+.rhythm-strip-focus { background: var(--rhythm-focus-ink); }
+.rhythm-strip-routine { background: var(--rhythm-routine-ink); }
+.rhythm-strip-chill { background: var(--rhythm-chill-ink); }
+.rhythm-strip-now {
+  position: absolute; top: -2px; bottom: -2px; width: 1.5px;
+  background: var(--rhythm-accent);
+}
+.rhythm-strip-axis {
+  position: relative; height: 14px; margin-top: 3px;
   font-size: 9px; color: var(--rhythm-ink-3);
-  font-family: "JetBrains Mono", ui-monospace, monospace;
 }
-.rhythm-fc-axis span { position: absolute; transform: translateX(-50%); }
-.rhythm-fc-scrub {
-  position: absolute; inset: 0; width: 100%; height: 100%;
-  appearance: none; background: transparent; margin: 0;
-  opacity: 0; cursor: ew-resize;
-}
-.rhythm-fc-scrub::-webkit-slider-thumb { appearance: none; width: 20px; height: 100%; }
+.rhythm-strip-axis span { position: absolute; transform: translateX(-50%); }
+.rhythm-strip-axis span:first-child { transform: none; }
+.rhythm-strip-axis span:last-child { transform: translateX(-100%); }
 
 /* Rail */
 .rhythm-rail {
@@ -254,16 +230,6 @@
 .rhythm-blk-focus { background: var(--rhythm-focus); border-left: 2px solid var(--rhythm-focus-ink); }
 .rhythm-blk-routine { background: var(--rhythm-routine); border-left: 2px solid var(--rhythm-routine-ink); }
 .rhythm-blk:hover { transform: translateX(-1px); box-shadow: 0 2px 0 var(--rhythm-ink); }
-.rhythm-blk.is-intent {
-  background: transparent !important;
-  border: 1px dashed var(--rhythm-ink-3);
-  border-left: 2px dashed currentColor;
-  opacity: 0.65;
-}
-.rhythm-blk.is-intent.rhythm-blk-chill { color: var(--rhythm-chill-ink); }
-.rhythm-blk.is-intent.rhythm-blk-focus { color: var(--rhythm-focus-ink); }
-.rhythm-blk.is-intent.rhythm-blk-routine { color: var(--rhythm-routine-ink); }
-.rhythm-blk-intent-tag { color: var(--rhythm-ink-3); font-style: italic; }
 .rhythm-blk.is-active { box-shadow: 0 0 0 2px var(--rhythm-accent); }
 .rhythm-blk.is-now { box-shadow: 0 0 0 1.5px var(--rhythm-ink); }
 .rhythm-blk-time {
@@ -493,9 +459,10 @@
   font-size: 10px; color: var(--rhythm-ink-3); flex-wrap: wrap;
 }
 .rhythm-feed-proj { color: var(--rhythm-ink-2); }
-.rhythm-feed-src { text-transform: uppercase; letter-spacing: 0.08em; }
-.rhythm-feed-src-ai { color: var(--rhythm-accent); }
-.rhythm-feed-src-manual { color: var(--rhythm-ink-2); }
+.rhythm-feed-note {
+  font-size: 11px; color: var(--rhythm-ink-2); font-style: italic;
+  line-height: 1.4;
+}
 
 .rhythm-tag {
   padding: 1px 6px; border-radius: 3px;
