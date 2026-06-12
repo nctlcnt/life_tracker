@@ -81,3 +81,27 @@ make build
 ```
 
 生产和 staging 部署细节见 [docs/deploy.md](docs/deploy.md)。
+
+## Prompt 初始化与自定义
+
+Prompt 正文保存在 SQLite 的 `prompt_sections` 表里，不提交到 Git。新安装时，如果表为空，系统会自动从 `docs/default-prompts.json` 导入一份默认 prompt；之后可以在 Admin 里按自己的工作流调整。
+
+备份当前 prompt：
+
+```bash
+docker compose exec app python -m scripts.export_prompts
+```
+
+备份文件默认写到 `data/backups/prompts/`，会随 Docker volume 持久化，且不会被 Git 跟踪。
+
+恢复到默认 prompt：
+
+```bash
+docker compose exec app python -m scripts.import_prompts docs/default-prompts.json --apply
+```
+
+从备份恢复：
+
+```bash
+docker compose exec app python -m scripts.import_prompts data/backups/prompts/prompts-YYYYMMDDTHHMMSSZ.json --apply
+```

@@ -145,6 +145,25 @@ append-only 保存通过 Discord 收发的原始消息，作为后续 Context Bu
 
 当前可编辑 section 的 key/label 定义在 `bot/prompts.py::PROMPT_SECTION_LABELS`。代码只负责声明 section、校验模板占位符和组装 prompt，不再保存私有 prompt 正文。
 
+新数据库初始化时，如果所有 prompt section 都为空，会自动从 `docs/default-prompts.json` 导入一份默认 prompt。之后可以通过 Admin 页面改成自己的工作流。
+
+Prompt 备份/恢复走 JSON：
+
+```bash
+python -m scripts.export_prompts
+python -m scripts.import_prompts docs/default-prompts.json --apply
+python -m scripts.import_prompts data/backups/prompts/prompts-YYYYMMDDTHHMMSSZ.json --apply
+```
+
+默认导出目录是 `data/backups/prompts/`，随 Docker volume 一起持久化，并被 `.gitignore` 通过 `data/` 忽略；真实私有 prompt 备份不要提交到 Git。
+
+Docker 环境中可以在容器内运行同样的命令：
+
+```bash
+docker compose exec app python -m scripts.export_prompts
+docker compose exec app python -m scripts.import_prompts docs/default-prompts.json --apply
+```
+
 ---
 
 ## app_state — 进程无关的小型 KV

@@ -188,6 +188,7 @@ class Database:
         """)
 
         from bot.prompts import PROMPT_SECTION_LABELS
+        from bot.prompt_store import initialize_prompts_if_empty
         for key, label in PROMPT_SECTION_LABELS.items():
             conn.execute(
                 """
@@ -197,6 +198,7 @@ class Database:
                 """,
                 (key, label),
             )
+        initialize_prompts_if_empty(conn)
 
         conn.commit()
         conn.close()
