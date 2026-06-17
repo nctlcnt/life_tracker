@@ -80,7 +80,7 @@ class PromptParts:
     Block 2 (stable context)：projects（项目列表几乎不增删）
     Block 3 (memories)：memories（比 projects 变化略频繁，独立成 block 避免
            因记忆更新连带 invalidate Block 2 的 cache）
-    Block 4 (volatile)：ongoing + pending_reminders + deadlines + weather（高频变化）
+    Block 4 (volatile)：ongoing + pending_reminders + deadlines + weather + calendar（高频变化）
 
     pending_reminders 注入 Block 4 的目的：让 AI 一眼看到队列里已有什么 follow-up，
     避免被聊天历史带回去重复 set 同一件事；也让"主动 follow-up"策略有兜底。
@@ -106,6 +106,7 @@ class PromptParts:
     pending_reminders: str = ""
     deadlines: str = ""
     weather: str = ""
+    calendar: str = ""
 
     def static_text(self) -> str:
         """Block 1：所有静态段落。"""
@@ -129,12 +130,13 @@ class PromptParts:
         return self.memories
 
     def dynamic_text(self) -> str:
-        """Block 4：ongoing + pending_reminders + deadlines + weather（高频变化）。"""
+        """Block 4：ongoing + pending_reminders + deadlines + weather + calendar（高频变化）。"""
         return _join_nonempty(
             self.ongoing,
             self.pending_reminders,
             self.deadlines,
             self.weather,
+            self.calendar,
         )
 
     def flatten(self) -> str:
@@ -154,7 +156,7 @@ class PromptParts:
         - Block 1: 静态（identity/user_model/.../tools）
         - Block 2: projects（稳定上下文）
         - Block 3: memories（单独块，记忆更新不影响 Block 2）
-        - Block 4: ongoing + deadlines + weather（高频变化，失效只影响此块）
+        - Block 4: ongoing + deadlines + weather + calendar（高频变化，失效只影响此块）
         """
         blocks = []
         for text in (
@@ -184,6 +186,7 @@ LABEL_MEMORIES = "【你现在记着的事】"
 LABEL_ONGOING = "【当前进行中的事件（end_time 为空）】"
 LABEL_DEADLINES = "【待完成的 Deadline】"
 LABEL_WEATHER = "【今日天气】"
+LABEL_CALENDAR = "【Google Calendar（今天 + 未来 7 天，计划中的日程）】"
 LABEL_PROJECTS = "【现有项目列表（Focus 用，只能引用这里已有的项目）】"
 LABEL_PENDING_REMINDERS = "【待触发的 Reminder（你自己设的 follow-up 队列）】"
 
@@ -257,6 +260,12 @@ def _format_weather(weather: str | None) -> str:
     return f"{LABEL_WEATHER}\n{weather}\n{WEATHER_CONTEXT_SUFFIX}"
 
 
+def _format_calendar(calendar: str | None) -> str:
+    if not calendar:
+        return ""
+    return f"{LABEL_CALENDAR}\n{calendar}"
+
+
 def _format_projects(projects: list[dict] | None) -> str:
     if not projects:
         return f"{LABEL_PROJECTS}\n- 无"
@@ -297,6 +306,7 @@ def build_prompt(
     memories: list[dict] | None = None,
     ongoing: list[dict] | None = None,
     weather: str | None = None,
+    calendar: str | None = None,
     deadlines: list[dict] | None = None,
     projects: list[dict] | None = None,
     pending_reminders: list[dict] | None = None,
@@ -333,6 +343,7 @@ def build_prompt(
         ongoing=_format_ongoing(ongoing),
         pending_reminders=_format_pending_reminders(pending_reminders),
         weather=_format_weather(weather),
+        calendar=_format_calendar(calendar),
     )
 
 

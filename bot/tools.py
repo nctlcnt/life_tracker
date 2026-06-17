@@ -155,6 +155,35 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "query_calendar",
+            "description": "查询已启用的 Google Calendars 中计划中的日程。用于查未来/当天安排；不要和 query_timeline 的已发生生活轨迹混用。只读，不会创建或修改日历。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start": {
+                        "type": "string",
+                        "description": "查询起始时间，本地 ISO 8601 格式或 YYYY-MM-DD。日期按本地当天 00:00 解析。"
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "查询结束时间，本地 ISO 8601 格式或 YYYY-MM-DD。作为 exclusive 上界。"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "可选关键词过滤，例如课程名、地点或标题片段。"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "最多返回条数，默认 50，上限 100。"
+                    }
+                },
+                "required": ["start", "end"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "update_timeline_event",
             "description": "更新一条已有的时间轴事件。notes 会追加到已有内容后面，不会覆盖。",
             "parameters": {
