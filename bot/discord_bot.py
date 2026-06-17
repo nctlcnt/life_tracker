@@ -342,13 +342,23 @@ class LifeTrackerBot(commands.Bot):
         """Consume a pasted Google OAuth localhost callback URL before it reaches AI."""
         if not self.calendar_auth_session:
             return False
+        # Only the authorized user can complete the session we started.
+        if config.ALLOWED_USER_ID and message.author.id != config.ALLOWED_USER_ID:
+            return False
         match = _LOCALHOST_CALLBACK_RE.search(message.content or "")
         if not match:
             return False
 
+        # The pasted URL carries the OAuth code; delete it before doing anything
+        # else so the secret never lingers in the channel — no matter the outcome.
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
         session = self.calendar_auth_session
+        self.calendar_auth_session = None
         if datetime.now(timezone.utc) - session.created_at > timedelta(minutes=15):
-            self.calendar_auth_session = None
             await message.channel.send("⚠️ Calendar 授权会话已过期，请重新运行 `/calendar auth`。")
             return True
 
@@ -360,11 +370,6 @@ class LifeTrackerBot(commands.Bot):
             await message.channel.send(f"⚠️ Calendar 授权失败：{type(e).__name__}: {e}")
             return True
 
-        self.calendar_auth_session = None
-        try:
-            await message.delete()
-        except Exception:
-            pass
         await message.channel.send(f"✅ Google Calendar 已授权，token 已写入 `{token_file}`")
         return True
 
