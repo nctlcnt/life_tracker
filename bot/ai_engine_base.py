@@ -194,6 +194,7 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
                 end=args["end"],
                 query=args.get("query"),
                 max_results=args.get("max_results", 50),
+                cache_seconds=google_calendar.QUERY_CALENDAR_CACHE_SECONDS,
             )
             return {"success": True, "events": events, "count": len(events)}
         except CalendarNotConfigured:

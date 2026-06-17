@@ -24,11 +24,13 @@ DEFAULT_CONTEXT_DAYS = 7
 DEFAULT_CONTEXT_LIMIT = 20
 DEFAULT_CONTEXT_TIMEOUT_SECONDS = 8
 DEFAULT_CONTEXT_CACHE_SECONDS = 300
+QUERY_CALENDAR_CACHE_SECONDS = 3600  # query_calendar 工具结果按查询参数缓存 1 小时
 
 _creds_cache: Any | None = None
 _service_cache: Any | None = None
 _context_cache: dict[tuple[str, int, int, str], tuple[datetime, str]] = {}
 _calendar_list_cache: tuple[datetime, list[dict]] | None = None
+_events_cache: dict[tuple, tuple[datetime, list[dict]]] = {}
 
 
 class CalendarNotConfigured(Exception):
@@ -65,6 +67,7 @@ def _reset_caches() -> None:
     _service_cache = None
     _calendar_list_cache = None
     _context_cache.clear()
+    _events_cache.clear()
 
 
 def begin_oauth_flow(redirect_port: int = 58679) -> tuple[Any, str]:
@@ -291,8 +294,14 @@ def list_events(
     end: str,
     query: str | None = None,
     max_results: int = 50,
+    cache_seconds: int = 0,
 ) -> list[dict]:
-    """Return normalized calendar events for [start, end)."""
+    """Return normalized calendar events for [start, end).
+
+    When ``cache_seconds`` > 0, results are cached by query parameters for that
+    many seconds (used by the on-demand query_calendar tool); the proactive
+    context path leaves it at 0 and keeps its own separate cache.
+    """
     if not config.GCAL_ENABLED:
         raise CalendarNotConfigured("Google Calendar is disabled in config.json.")
     start_dt = _parse_local(start)
@@ -318,6 +327,20 @@ def list_events(
         base_params["q"] = query
 
     calendar_ids = _configured_calendar_ids()
+
+    cache_key = (
+        tuple(calendar_ids),
+        base_params["timeMin"],
+        base_params["timeMax"],
+        base_params["maxResults"],
+        base_params["timeZone"],
+        query or "",
+    )
+    if cache_seconds > 0:
+        cached = _events_cache.get(cache_key)
+        if cached and (datetime.now() - cached[0]).total_seconds() < cache_seconds:
+            return cached[1]
+
     try:
         summaries = _calendar_summaries()
     except CalendarNotConfigured:
@@ -342,7 +365,10 @@ def list_events(
             event["calendar_summary"] = summaries.get(calendar_id, calendar_id)
             events.append(event)
 
-    return sorted(events, key=lambda e: (e.get("start") or "", e.get("summary") or ""))
+    sorted_events = sorted(events, key=lambda e: (e.get("start") or "", e.get("summary") or ""))
+    if cache_seconds > 0:
+        _events_cache[cache_key] = (datetime.now(), sorted_events)
+    return sorted_events
 
 
 def _format_event_line(event: dict, show_calendar: bool = True) -> str:
