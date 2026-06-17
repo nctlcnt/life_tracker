@@ -49,6 +49,12 @@
     "location": "-33.8688,151.2093",
     "geocoding_api_key": ""
   },
+  "google_calendar": {
+    "enabled": false,
+    "client_secret_file": "data/google_oauth_client.json",
+    "token_file": "data/google_calendar_token.json",
+    "calendar_id": "primary"
+  },
   "poll": {
     "min_seconds": 60,
     "max_seconds": 3600

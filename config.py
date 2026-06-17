@@ -293,6 +293,26 @@ WEATHER_LOCATION: str = _weather.get("location", "-33.8688,151.2093")  # 默认�
 # Google Geocoding API key（/weather <address> 用，留空则按地址查天气会失败）
 WEATHER_GEOCODING_API_KEY: str = _weather.get("geocoding_api_key", "")
 
+# ── Google Calendar ───────────────────────────────────────────────────
+# Optional read-only calendar integration. Missing credentials degrade at runtime.
+def _resolve_config_path(path: str) -> str:
+    if not path:
+        return ""
+    if os.path.isabs(path):
+        return path
+    return os.path.join(os.path.dirname(__file__), path)
+
+
+_google_calendar = _cfg.get("google_calendar", {})
+GCAL_ENABLED: bool = bool(_google_calendar.get("enabled", False))
+GCAL_CLIENT_SECRET_FILE: str = _resolve_config_path(
+    _google_calendar.get("client_secret_file", "data/google_oauth_client.json")
+)
+GCAL_TOKEN_FILE: str = _resolve_config_path(
+    _google_calendar.get("token_file", "data/google_calendar_token.json")
+)
+GCAL_CALENDAR_ID: str = _google_calendar.get("calendar_id", "primary")
+
 # ── 日志 ───────────────────────────────────────────────────────────────
 _log = _cfg.get("log", {})
 LOG_LEVEL: str = _log.get("level", "INFO")

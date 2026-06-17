@@ -9,6 +9,7 @@ AI 引擎公共模块
 from bot.tools import TOOLS
 from bot.prompts import build_prompt, PromptParts
 from bot.weather import is_morning, get_weather_brief
+from bot.google_calendar import CalendarNotConfigured, CalendarQueryError, get_calendar_context
 from bot.database import Database
 from bot.logger import get_logger
 from bot import trace
@@ -64,7 +65,8 @@ def format_tool_calls_summary(called_names: list[str], called_args: list[dict] |
 
 
 def _build_prompt(db: Database, mode: str, provider: str = "claude",
-                  weather: str | None = None) -> PromptParts:
+                  weather: str | None = None,
+                  calendar: str | None = None) -> PromptParts:
     """
     从 DB 取数据，构建完整的 PromptParts 对象。
 
@@ -91,6 +93,7 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
         memories=memories or None,
         ongoing=ongoing or None,
         weather=weather,
+        calendar=calendar,
         deadlines=deadlines or None,
         projects=projects or None,
         pending_reminders=pending_reminders or None,
@@ -182,6 +185,24 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
     elif tool_name == "query_timeline":
         events = db.get_events(start=args["start"], end=args["end"])
         return {"success": True, "events": events, "count": len(events)}
+
+    elif tool_name == "query_calendar":
+        from bot import google_calendar
+        try:
+            events = google_calendar.list_events(
+                start=args["start"],
+                end=args["end"],
+                query=args.get("query"),
+                max_results=args.get("max_results", 50),
+            )
+            return {"success": True, "events": events, "count": len(events)}
+        except CalendarNotConfigured:
+            return {
+                "success": False,
+                "message": "Google Calendar 未配置/未授权，先跑 scripts/google_calendar_auth.py",
+            }
+        except CalendarQueryError as e:
+            return {"success": False, "message": str(e)}
 
     elif tool_name == "update_timeline_event":
         fields = {k: args[k] for k in ("end_time", "content", "category") if k in args}
@@ -297,9 +318,11 @@ async def chat(db: Database, messages: list[dict],
 
     # 早上时段查天气
     weather = await get_weather_brief() if is_morning() else None
+    calendar = await get_calendar_context()
 
     # 构建 PromptParts（静态 + 动态上下文一步到位）
-    prompt = _build_prompt(db, "chat", provider=preset.provider, weather=weather)
+    prompt = _build_prompt(db, "chat", provider=preset.provider, weather=weather,
+                           calendar=calendar)
 
     trace.start(trigger="chat", model=preset.model, provider=preset.provider,
                 prompt_parts=prompt, messages=messages)
@@ -349,8 +372,10 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
 
     # 早上时段查天气
     weather = await get_weather_brief() if is_morning() else None
+    calendar = await get_calendar_context()
 
-    prompt_parts = _build_prompt(db, "poll", provider=preset.provider, weather=weather)
+    prompt_parts = _build_prompt(db, "poll", provider=preset.provider, weather=weather,
+                                 calendar=calendar)
 
     messages = [
         *history,
