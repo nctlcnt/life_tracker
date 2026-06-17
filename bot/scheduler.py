@@ -24,6 +24,8 @@ logger = get_logger(__name__)
 # 随机轮询间隔（秒）：上次 AI 调用后 45-55min 再发起下一次 poll
 POLL_INTERVAL_MIN = 45 * 60
 POLL_INTERVAL_MAX = 55 * 60
+CALENDAR_REFRESH_HOUR = 6
+CALENDAR_REFRESH_MINUTE = 5
 
 # Prompt 模板统一在 bot/prompts.py 里定义，避免多处重复维护同一条规则
 
@@ -69,6 +71,7 @@ class Scheduler:
         await asyncio.gather(
             self._timer_loop(),
             self._reminder_loop(),
+            self._calendar_refresh_loop(),
         )
 
     async def stop(self):
@@ -76,6 +79,38 @@ class Scheduler:
         self._reminder_event.set()  # 唤醒可能在 sleep 的 reminder 循环
 
     # ── Timer 循环：随机轮询 + 睡前提醒 ──────────────────────
+
+    async def _calendar_refresh_loop(self):
+        """Refresh Google Calendar prompt cache once every morning."""
+        while self._running:
+            now = datetime.now()
+            next_refresh = datetime.combine(
+                now.date(),
+                datetime.min.time().replace(
+                    hour=CALENDAR_REFRESH_HOUR,
+                    minute=CALENDAR_REFRESH_MINUTE,
+                ),
+            )
+            if next_refresh <= now:
+                next_refresh += timedelta(days=1)
+            wait = max((next_refresh - now).total_seconds(), 1)
+            logger.info(
+                f"📅 下次 Google Calendar 缓存在 {next_refresh.strftime('%Y-%m-%d %H:%M:%S')} 刷新"
+            )
+            try:
+                await asyncio.sleep(wait)
+            except asyncio.CancelledError:
+                raise
+            if not self._running:
+                break
+            try:
+                from bot.google_calendar import refresh_calendar_context
+                result = refresh_calendar_context()
+                logger.info(
+                    f"📅 Google Calendar 缓存已刷新: {result.get('count', 0)} events"
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Google Calendar 缓存刷新失败: {e}")
 
     async def _timer_loop(self):
         """

@@ -363,14 +363,23 @@ class LifeTrackerBot(commands.Bot):
             return True
 
         try:
-            from bot.google_calendar import finish_oauth_flow
+            from bot.google_calendar import finish_oauth_flow, refresh_calendar_context
             token_file = finish_oauth_flow(session.flow, match.group(0))
         except Exception as e:
             logger.warning(f"⚠️ Google Calendar 授权失败: {e}")
             await message.channel.send(f"⚠️ Calendar 授权失败：{type(e).__name__}: {e}")
             return True
 
-        await message.channel.send(f"✅ Google Calendar 已授权，token 已写入 `{token_file}`")
+        try:
+            refresh = refresh_calendar_context()
+            refresh_line = f"\nCalendar 缓存已刷新：{refresh.get('count', 0)} events"
+        except Exception as e:
+            logger.warning(f"⚠️ Google Calendar 授权后刷新缓存失败: {e}")
+            refresh_line = "\n缓存刷新失败；请稍后运行 `/calendar refresh`。"
+
+        await message.channel.send(
+            f"✅ Google Calendar 已授权，token 已写入 `{token_file}`{refresh_line}"
+        )
         return True
 
 
@@ -454,13 +463,36 @@ def _calendar_group(bot: LifeTrackerBot) -> app_commands.Group:
     async def calendar_status(interaction: discord.Interaction):
         if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
             return
-        from bot.google_calendar import is_authorized
+        from bot.google_calendar import get_calendar_cache_status, is_authorized
         status = "已授权" if is_authorized() else "未授权"
         enabled = "enabled" if config.GCAL_ENABLED else "disabled"
+        cache = get_calendar_cache_status()
+        cache_line = (
+            f"cache: `{cache['count']} events @ {cache['refreshed_at']}`"
+            if cache.get("cached")
+            else "cache: `empty`"
+        )
         await interaction.response.send_message(
             f"Google Calendar: `{enabled}` / `{status}`\n"
-            f"token: `{config.GCAL_TOKEN_FILE}`",
+            f"token: `{config.GCAL_TOKEN_FILE}`\n"
+            f"{cache_line}",
             ephemeral=True,
+        )
+
+    @group.command(name="refresh", description="手动刷新今天起未来 7 天的日历缓存")
+    async def calendar_refresh(interaction: discord.Interaction):
+        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            from bot.google_calendar import refresh_calendar_context
+            result = refresh_calendar_context()
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ Calendar 刷新失败：{type(e).__name__}: {e}")
+            return
+        await interaction.followup.send(
+            f"✅ Calendar 缓存已刷新：{result.get('count', 0)} events\n"
+            f"refreshed_at: `{result.get('refreshed_at')}`"
         )
 
     @group.command(name="list", description="列出可读取的 Google calendars")

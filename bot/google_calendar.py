@@ -28,7 +28,7 @@ QUERY_CALENDAR_CACHE_SECONDS = 3600  # query_calendar 工具结果按查询参�
 
 _creds_cache: Any | None = None
 _service_cache: Any | None = None
-_context_cache: dict[tuple[str, int, int, str], tuple[datetime, str]] = {}
+_context_cache: dict[tuple[str, int, int, str], tuple[datetime, str, int]] = {}
 _calendar_list_cache: tuple[datetime, list[dict]] | None = None
 _events_cache: dict[tuple, tuple[datetime, list[dict]]] = {}
 
@@ -412,40 +412,66 @@ def _format_event_line(event: dict, show_calendar: bool = True) -> str:
     return f"- {when} | {title}{suffix}"
 
 
-def build_calendar_context(days: int = DEFAULT_CONTEXT_DAYS, limit: int = DEFAULT_CONTEXT_LIMIT) -> str:
-    """Build prompt-ready context for today plus the next `days` days."""
+def _context_key(days: int = DEFAULT_CONTEXT_DAYS, limit: int = DEFAULT_CONTEXT_LIMIT) -> tuple[str, int, int, str]:
+    tz = _tz()
+    today = datetime.now(tz).date()
+    return (get_timezone() or config.TIMEZONE or "UTC", days, limit, today.isoformat())
+
+
+def build_calendar_context(days: int = DEFAULT_CONTEXT_DAYS, limit: int = DEFAULT_CONTEXT_LIMIT) -> tuple[str, int]:
+    """Fetch and format prompt-ready context for today plus the next `days` days."""
     tz = _tz()
     today = datetime.now(tz).date()
     start = today.isoformat()
     end = (today + timedelta(days=days + 1)).isoformat()
     events = list_events(start, end, max_results=max(limit + 1, limit))
     if not events:
-        return ""
+        return "", 0
     shown = events[:limit]
     show_calendar = len({e.get("calendar_id") for e in shown}) > 1
     lines = [_format_event_line(e, show_calendar=show_calendar) for e in shown]
     if len(events) > limit:
         lines.append(f"- ...还有 {len(events) - limit} 条未展开，可用 query_calendar 精查")
-    return "\n".join(lines)
+    return "\n".join(lines), len(events)
+
+
+def refresh_calendar_context(days: int = DEFAULT_CONTEXT_DAYS, limit: int = DEFAULT_CONTEXT_LIMIT) -> dict:
+    """Fetch Google Calendar now and replace the prompt-context cache."""
+    key = _context_key(days, limit)
+    context, count = build_calendar_context(days, limit)
+    _context_cache[key] = (datetime.now(), context, count)
+    return {
+        "success": True,
+        "context": context,
+        "count": count,
+        "refreshed_at": _context_cache[key][0].isoformat(timespec="seconds"),
+        "days": days,
+        "limit": limit,
+    }
 
 
 async def get_calendar_context(days: int = DEFAULT_CONTEXT_DAYS, limit: int = DEFAULT_CONTEXT_LIMIT) -> str | None:
-    """Async wrapper for prompt construction; failures are logged and ignored."""
+    """Return cached calendar prompt context only; never hits Google Calendar."""
     try:
-        tz_name = get_timezone() or config.TIMEZONE or "UTC"
-        today = datetime.now(_tz()).date().isoformat()
-        key = (tz_name, days, limit, today)
+        key = _context_key(days, limit)
         cached = _context_cache.get(key)
-        now = datetime.now()
-        if cached and (now - cached[0]).total_seconds() < DEFAULT_CONTEXT_CACHE_SECONDS:
-            return cached[1] or None
-
-        context = build_calendar_context(days, limit)
-        _context_cache[key] = (now, context)
-        return context or None
-    except CalendarNotConfigured as e:
-        logger.info(f"⚠️ Google Calendar 未启用/未授权，跳过日历上下文: {e}")
-        return None
+        return cached[1] if cached and cached[1] else None
     except Exception as e:
-        logger.warning(f"⚠️ Google Calendar 上下文查询失败: {e}")
+        logger.warning(f"⚠️ Google Calendar 缓存读取失败: {e}")
         return None
+
+
+def get_calendar_cache_status(days: int = DEFAULT_CONTEXT_DAYS, limit: int = DEFAULT_CONTEXT_LIMIT) -> dict:
+    key = _context_key(days, limit)
+    cached = _context_cache.get(key)
+    if not cached:
+        return {"cached": False, "days": days, "limit": limit}
+    refreshed_at, context, count = cached
+    return {
+        "cached": True,
+        "count": count,
+        "has_context": bool(context),
+        "refreshed_at": refreshed_at.isoformat(timespec="seconds"),
+        "days": days,
+        "limit": limit,
+    }
