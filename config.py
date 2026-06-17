@@ -312,6 +312,39 @@ GCAL_TOKEN_FILE: str = _resolve_config_path(
     _google_calendar.get("token_file", "data/google_calendar_token.json")
 )
 GCAL_CALENDAR_ID: str = _google_calendar.get("calendar_id", "primary")
+GCAL_CALENDAR_IDS: list[str] = [
+    str(x).strip()
+    for x in _google_calendar.get("calendar_ids", [])
+    if str(x).strip()
+]
+GCAL_INCLUDE_ALL_READABLE: bool = bool(_google_calendar.get("include_all_readable", False))
+GCAL_DISABLED_CALENDAR_IDS: list[str] = [
+    str(x).strip()
+    for x in _google_calendar.get("disabled_calendar_ids", [])
+    if str(x).strip()
+]
+
+
+def _write_google_calendar_config(**fields) -> None:
+    with open(_CONFIG_FILE, encoding="utf-8") as f:
+        cfg = json.load(f)
+    section = cfg.setdefault("google_calendar", {})
+    section.update(fields)
+    with open(_CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+def set_gcal_disabled_calendar_ids(calendar_ids: list[str]) -> None:
+    global GCAL_DISABLED_CALENDAR_IDS
+    clean: list[str] = []
+    seen: set[str] = set()
+    for calendar_id in calendar_ids:
+        cid = str(calendar_id).strip()
+        if cid and cid not in seen:
+            clean.append(cid)
+            seen.add(cid)
+    GCAL_DISABLED_CALENDAR_IDS = clean
+    _write_google_calendar_config(disabled_calendar_ids=clean)
 
 # ── 日志 ───────────────────────────────────────────────────────────────
 _log = _cfg.get("log", {})

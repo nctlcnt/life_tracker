@@ -53,7 +53,10 @@
     "enabled": false,
     "client_secret_file": "data/google_oauth_client.json",
     "token_file": "data/google_calendar_token.json",
-    "calendar_id": "primary"
+    "calendar_id": "primary",
+    "calendar_ids": [],
+    "include_all_readable": true,
+    "disabled_calendar_ids": []
   },
   "poll": {
     "min_seconds": 60,

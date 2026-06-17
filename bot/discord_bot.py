@@ -6,6 +6,7 @@ import asyncio
 import re
 import discord
 import inspect
+from dataclasses import dataclass
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timezone, timedelta
@@ -19,6 +20,13 @@ import config
 
 logger = get_logger(__name__)
 _TYPING_COOLDOWN = timedelta(minutes=5)
+_LOCALHOST_CALLBACK_RE = re.compile(r"https?://localhost:\d+/\?\S*")
+
+
+@dataclass
+class _CalendarAuthSession:
+    flow: object
+    created_at: datetime
 
 
 def _is_rate_limited_error(exc: Exception) -> bool:
@@ -38,6 +46,7 @@ class LifeTrackerBot(commands.Bot):
         self._typing_cooldown_until: dict[int, datetime] = {}
         # 由 main.py 注入：chat 完成时调用，用于重置 scheduler 的 poll 基准时间
         self.on_ai_call_done = None
+        self.calendar_auth_session: _CalendarAuthSession | None = None
 
     def _get_typing_cooldown_until(self, channel_id: int) -> datetime | None:
         until = self._typing_cooldown_until.get(channel_id)
@@ -62,6 +71,7 @@ class LifeTrackerBot(commands.Bot):
     async def setup_hook(self):
         """注册斜杠命令并同步到 Discord"""
         self.tree.add_command(_todo_group(self))
+        self.tree.add_command(_calendar_group(self))
         self.tree.add_command(_weather_command(self))
         self.tree.add_command(_model_command(self))
         self.tree.add_command(_fallback_command(self))
@@ -103,6 +113,9 @@ class LifeTrackerBot(commands.Bot):
         # 斜杠命令走 interaction，普通消息才到这里
         # 跳过斜杠命令的文本消息（防止重复处理）
         if message.content.startswith("/"):
+            return
+
+        if await self._maybe_finish_calendar_auth(message):
             return
 
         logger.info(f"📨 收到消息: {message.author} ({message.author.id}): {message.content}")
@@ -325,6 +338,36 @@ class LifeTrackerBot(commands.Bot):
         except Exception as e:
             logger.warning(f"⚠️ 写入 outbound conversation log 失败: {e}")
 
+    async def _maybe_finish_calendar_auth(self, message: discord.Message) -> bool:
+        """Consume a pasted Google OAuth localhost callback URL before it reaches AI."""
+        if not self.calendar_auth_session:
+            return False
+        match = _LOCALHOST_CALLBACK_RE.search(message.content or "")
+        if not match:
+            return False
+
+        session = self.calendar_auth_session
+        if datetime.now(timezone.utc) - session.created_at > timedelta(minutes=15):
+            self.calendar_auth_session = None
+            await message.channel.send("⚠️ Calendar 授权会话已过期，请重新运行 `/calendar auth`。")
+            return True
+
+        try:
+            from bot.google_calendar import finish_oauth_flow
+            token_file = finish_oauth_flow(session.flow, match.group(0))
+        except Exception as e:
+            logger.warning(f"⚠️ Google Calendar 授权失败: {e}")
+            await message.channel.send(f"⚠️ Calendar 授权失败：{type(e).__name__}: {e}")
+            return True
+
+        self.calendar_auth_session = None
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        await message.channel.send(f"✅ Google Calendar 已授权，token 已写入 `{token_file}`")
+        return True
+
 
 def _todo_group(bot: LifeTrackerBot) -> app_commands.Group:
     """创建 /todo 命令组"""
@@ -369,6 +412,114 @@ def _todo_group(bot: LifeTrackerBot) -> app_commands.Group:
             await interaction.response.send_message(f"🗑️ 已删除 #{id}")
         else:
             await interaction.response.send_message(f"⚠️ 找不到 #{id}")
+
+    return group
+
+
+def _calendar_group(bot: LifeTrackerBot) -> app_commands.Group:
+    """创建 /calendar 命令组"""
+    group = app_commands.Group(name="calendar", description="Google Calendar 授权与状态")
+
+    @group.command(name="auth", description="生成 Google Calendar 授权链接")
+    async def calendar_auth(interaction: discord.Interaction):
+        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
+            return
+        try:
+            from bot.google_calendar import begin_oauth_flow
+            flow, auth_url = begin_oauth_flow()
+        except Exception as e:
+            await interaction.response.send_message(
+                f"⚠️ 无法开始 Calendar 授权：{type(e).__name__}: {e}",
+                ephemeral=True,
+            )
+            return
+
+        bot.calendar_auth_session = _CalendarAuthSession(
+            flow=flow,
+            created_at=datetime.now(timezone.utc),
+        )
+        await interaction.response.send_message(
+            "打开下面的链接完成 Google Calendar 授权。授权后浏览器会跳到 "
+            "`http://localhost:58679/?...code=...`；把地址栏里的完整 URL 发回这个频道，我会自动换 token。\n\n"
+            f"{auth_url}",
+            ephemeral=True,
+        )
+
+    @group.command(name="status", description="查看 Google Calendar 授权状态")
+    async def calendar_status(interaction: discord.Interaction):
+        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
+            return
+        from bot.google_calendar import is_authorized
+        status = "已授权" if is_authorized() else "未授权"
+        enabled = "enabled" if config.GCAL_ENABLED else "disabled"
+        await interaction.response.send_message(
+            f"Google Calendar: `{enabled}` / `{status}`\n"
+            f"token: `{config.GCAL_TOKEN_FILE}`",
+            ephemeral=True,
+        )
+
+    @group.command(name="list", description="列出可读取的 Google calendars")
+    async def calendar_list(interaction: discord.Interaction):
+        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            from bot.google_calendar import list_calendars
+            calendars = list_calendars()
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ Calendar 列表读取失败：{type(e).__name__}: {e}")
+            return
+        if not calendars:
+            await interaction.followup.send("没有读到任何 calendar。")
+            return
+        lines = []
+        for cal in calendars:
+            marker = "🚫" if cal.get("disabled") else "✅"
+            primary = " primary" if cal.get("primary") else ""
+            selected = "" if cal.get("selected", True) else " hidden-in-google-ui"
+            lines.append(
+                f"{marker} `{cal['id']}` — {cal.get('summary', cal['id'])}{primary}{selected}"
+            )
+        text = "Google Calendars\n" + "\n".join(lines)
+        await interaction.followup.send(text[:2000])
+
+    @group.command(name="disable", description="隐藏一个 calendar id，不再注入/查询")
+    @app_commands.describe(calendar_id="从 /calendar list 复制 calendar id")
+    async def calendar_disable(interaction: discord.Interaction, calendar_id: str):
+        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
+            return
+        try:
+            from bot.google_calendar import disable_calendar
+            disable_calendar(calendar_id)
+        except Exception as e:
+            await interaction.response.send_message(
+                f"⚠️ 禁用失败：{type(e).__name__}: {e}",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"🚫 已隐藏 calendar `{calendar_id}`",
+            ephemeral=True,
+        )
+
+    @group.command(name="enable", description="重新显示一个被隐藏的 calendar id")
+    @app_commands.describe(calendar_id="从 /calendar list 复制 calendar id")
+    async def calendar_enable(interaction: discord.Interaction, calendar_id: str):
+        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
+            return
+        try:
+            from bot.google_calendar import enable_calendar
+            enable_calendar(calendar_id)
+        except Exception as e:
+            await interaction.response.send_message(
+                f"⚠️ 启用失败：{type(e).__name__}: {e}",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"✅ 已重新显示 calendar `{calendar_id}`",
+            ephemeral=True,
+        )
 
     return group
 

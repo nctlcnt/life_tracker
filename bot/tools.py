@@ -156,7 +156,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "query_calendar",
-            "description": "查询 Google Calendar 中计划中的日程。用于查未来/当天安排；不要和 query_timeline 的已发生生活轨迹混用。只读，不会创建或修改日历。",
+            "description": "查询已启用的 Google Calendars 中计划中的日程。用于查未来/当天安排；不要和 query_timeline 的已发生生活轨迹混用。只读，不会创建或修改日历。",
             "parameters": {
                 "type": "object",
                 "properties": {
