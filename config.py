@@ -330,8 +330,14 @@ def _write_google_calendar_config(**fields) -> None:
         cfg = json.load(f)
     section = cfg.setdefault("google_calendar", {})
     section.update(fields)
+    # 先整体序列化成字符串，再原地写：这样「序列化出错时文件已被 truncate」的
+    # 损坏窗口就不存在了。不用 临时文件 + os.replace，因为 config.json 在 Docker 里
+    # 是单文件 bind-mount，往挂载点 rename 会 EBUSY 失败 / 让 host 文件不再更新。
+    data = json.dumps(cfg, ensure_ascii=False, indent=2)
     with open(_CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def set_gcal_disabled_calendar_ids(calendar_ids: list[str]) -> None:
