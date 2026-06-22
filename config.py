@@ -54,7 +54,8 @@ ALLOWED_USER_ID: int = int(_cfg.get("discord", {}).get("allowed_user_id", 0) or 
 CHANNEL_ID: int = int(_cfg.get("discord", {}).get("channel_id", 0) or 0)
 
 # ── AI Presets ─────────────────────────────────────────────────────────
-# config.json 里维护一张 presets 表，每条 preset 是一套 { provider, api_key, base_url, model }
+# config.json 里维护一张 presets 表，每条 preset 是一套
+# { provider, api_key, base_url, model, use_v1_suffix }
 # 运行时通过 /model、/fallback 斜杠命令切换，状态持久化到 data/active_preset.json
 
 
@@ -66,6 +67,7 @@ class Preset:
     base_url: str   # 仅 relay 需要
     model: str
     note: str = ""
+    use_v1_suffix: bool = True
 
 
 _ALLOWED_PROVIDERS: set[str] = {"claude", "openai", "relay", "gemini"}
@@ -79,6 +81,7 @@ def _build_preset(name: str, raw: dict) -> Preset:
         base_url=raw.get("base_url", ""),
         model=raw.get("model", ""),
         note=raw.get("note", ""),
+        use_v1_suffix=bool(raw.get("use_v1_suffix", True)),
     )
 
 
@@ -189,7 +192,7 @@ def reload_presets() -> None:
 
 
 def add_preset(name: str, provider: str, api_key: str, base_url: str,
-               model: str, note: str = "") -> None:
+               model: str, note: str = "", use_v1_suffix: bool = True) -> None:
     name = name.strip()
     if not name:
         raise ValueError("name required")
@@ -214,6 +217,7 @@ def add_preset(name: str, provider: str, api_key: str, base_url: str,
         "base_url": base_url,
         "model": model,
         "note": note,
+        "use_v1_suffix": bool(use_v1_suffix),
     }
     with open(_CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -221,7 +225,8 @@ def add_preset(name: str, provider: str, api_key: str, base_url: str,
 
 
 def update_preset(name: str, **fields) -> None:
-    """更新现有 preset 的字段。允许的字段：provider / api_key / base_url / model / note。
+    """更新现有 preset 的字段。允许的字段：
+    provider / api_key / base_url / model / note / use_v1_suffix。
     api_key 传空字符串 = 不动（仅当显式传 None 跳过）。不支持改名。"""
     if name not in PRESETS:
         raise ValueError(f"unknown preset: {name}")
@@ -231,7 +236,7 @@ def update_preset(name: str, **fields) -> None:
     presets = cfg.setdefault("ai", {}).setdefault("presets", {})
     entry = presets.get(name, {})
 
-    allowed = {"provider", "api_key", "base_url", "model", "note"}
+    allowed = {"provider", "api_key", "base_url", "model", "note", "use_v1_suffix"}
     for k, v in fields.items():
         if k not in allowed:
             raise ValueError(f"field not editable: {k}")
@@ -241,6 +246,8 @@ def update_preset(name: str, **fields) -> None:
             v = v.strip().lower()
             if v not in _ALLOWED_PROVIDERS:
                 raise ValueError(f"invalid provider: {v}")
+        elif k == "use_v1_suffix":
+            v = bool(v)
         entry[k] = v
 
     final_provider = entry.get("provider", "claude")

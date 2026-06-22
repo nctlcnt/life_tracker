@@ -6,6 +6,7 @@ interface Preset {
   provider: string;
   model: string;
   base_url: string;
+  use_v1_suffix: boolean;
   note: string;
   api_key_masked: string;
 }
@@ -43,6 +44,7 @@ interface FormData {
   provider: string;
   api_key: string;
   base_url: string;
+  use_v1_suffix: boolean;
   model: string;
   note: string;
 }
@@ -54,6 +56,7 @@ const emptyForm: FormData = {
   provider: 'claude',
   api_key: '',
   base_url: '',
+  use_v1_suffix: true,
   model: '',
   note: '',
 };
@@ -173,6 +176,7 @@ export function AdminPanel() {
       const body: Partial<FormData> = {
         provider: form.provider,
         base_url: form.base_url,
+        use_v1_suffix: form.use_v1_suffix,
         model: form.model,
         note: form.note,
       };
@@ -230,6 +234,7 @@ export function AdminPanel() {
             <th>Name</th>
             <th>Provider</th>
             <th>Model</th>
+            <th>URL</th>
             <th>API key</th>
             <th>Note</th>
             <th>State</th>
@@ -247,6 +252,7 @@ export function AdminPanel() {
                 <td className="name">{p.name}</td>
                 <td>{p.provider}</td>
                 <td className="mono">{p.model}</td>
+                <td className="mono dim">{p.use_v1_suffix ? '+ /v1' : 'direct'}</td>
                 <td className="mono dim">{p.api_key_masked || '—'}</td>
                 <td className="note-cell">
                   <NoteInput value={p.note} onSave={(v) => saveNote(p.name, v)} />
@@ -437,6 +443,7 @@ function PresetEditor({
         provider: original.provider,
         api_key: '',
         base_url: original.base_url || '',
+        use_v1_suffix: original.use_v1_suffix ?? true,
         model: original.model,
         note: original.note || '',
       };
@@ -493,6 +500,18 @@ function PresetEditor({
           <input type="text" value={form.base_url}
                  placeholder={form.provider === 'relay' ? 'required' : 'optional'}
                  onChange={(e) => update('base_url', e.target.value)} />
+        </label>
+
+        <label className="form-row check-row">
+          <span>Relay URL</span>
+          <label className="check-control">
+            <input type="checkbox" checked={form.use_v1_suffix}
+                   onChange={(e) => update('use_v1_suffix', e.target.checked)} />
+            <span>Use /v1 suffix before /chat/completions</span>
+          </label>
+          <span className="form-hint">
+            勾选：base_url + /v1/chat/completions；不勾：base_url + /chat/completions
+          </span>
         </label>
 
         <label className="form-row">

@@ -30,7 +30,8 @@
         "provider": "relay",
         "api_key": "",
         "base_url": "https://your-relay-endpoint.com/v1",
-        "model": "gpt-4o"
+        "model": "gpt-4o",
+        "use_v1_suffix": true
       },
       "openai-gpt4o": {
         "provider": "openai",

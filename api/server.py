@@ -336,6 +336,23 @@ async def list_traces(
     return {"traces": entries, "count": len(entries)}
 
 
+@app.get("/api/traces/tools")
+async def list_recent_trace_tool_calls(
+    limit: int = Query(50, ge=1, le=500),
+    date: str | None = Query(None, description="可选日期 YYYY-MM-DD；不传则从最新 trace 文件往回扫"),
+    trigger: str | None = Query(None, description="按触发源过滤：chat/poll/reminder/bedtime/morning/oneshot"),
+    name: str | None = Query(None, description="按工具名过滤，例如 set_reminder"),
+):
+    """最近 AI 工具调用日志，含工具名和参数。"""
+    calls = ai_trace.list_recent_tool_calls(
+        limit=limit,
+        date=date,
+        trigger=trigger,
+        name=name,
+    )
+    return {"tool_calls": calls, "count": len(calls)}
+
+
 @app.get("/api/health")
 async def health_check():
     """健康检查"""
@@ -367,6 +384,7 @@ def _preset_view(name: str, p) -> dict:
         "model": p.model,
         "base_url": p.base_url or "",
         "note": getattr(p, "note", "") or "",
+        "use_v1_suffix": getattr(p, "use_v1_suffix", True),
         "api_key_masked": _mask_api_key(p.api_key),
     }
 
@@ -464,6 +482,7 @@ async def admin_create_preset(body: dict):
             base_url=body.get("base_url") or "",
             model=body.get("model") or "",
             note=body.get("note") or "",
+            use_v1_suffix=body.get("use_v1_suffix", True),
         )
     except ValueError as e:
         msg = str(e)
@@ -475,11 +494,11 @@ async def admin_create_preset(body: dict):
 
 @app.patch("/api/admin/presets/{name}")
 async def admin_update_preset(name: str, body: dict):
-    """更新 preset 字段。允许：provider / api_key / base_url / model / note。
+    """更新 preset 字段。允许：provider / api_key / base_url / model / note / use_v1_suffix。
     api_key 传空字符串或不传 = 不动；不支持改名。"""
     import config
     fields: dict = {}
-    for k in ("provider", "base_url", "model", "note"):
+    for k in ("provider", "base_url", "model", "note", "use_v1_suffix"):
         if k in body and body[k] is not None:
             fields[k] = body[k]
     # api_key 留空 = 不变（避免误清空）

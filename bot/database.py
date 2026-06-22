@@ -330,6 +330,23 @@ class Database:
         conn.close()
         return [dict(row) for row in rows]
 
+    def get_today_events(self, now: Optional[datetime] = None) -> list[dict]:
+        """获取本地今天完整 timeline 原始事件。"""
+        now = now or datetime.now()
+        start = now.strftime("%Y-%m-%dT00:00:00")
+        end = now.strftime("%Y-%m-%dT23:59:59")
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM events WHERE "
+            "(start_time >= ? AND start_time <= ?) "
+            "OR (start_time < ? AND end_time > ?) "
+            "OR (start_time < ? AND end_time IS NULL) "
+            "ORDER BY start_time",
+            (start, end, start, start, start)
+        ).fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
     def get_event_by_id(self, event_id: int) -> Optional[dict]:
         """根据 ID 获取单条事件"""
         conn = self._get_conn()
@@ -472,17 +489,6 @@ class Database:
         conn.close()
         return changed
 
-    def get_ongoing_events(self, limit: int = 5) -> list[dict]:
-        """获取最近的未结束事件（end_time 为空），按 start_time 倒序。"""
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM events WHERE end_time IS NULL "
-            "ORDER BY start_time DESC LIMIT ?",
-            (limit,)
-        ).fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
-
     # ============ 聊天记录 ============
 
     def add_message(self, role: str, content: str):
@@ -579,15 +585,72 @@ class Database:
             messages.append(item)
         return messages
 
+    def get_recent_ai_messages(self, channel_id: str, limit: int = 20) -> list[dict]:
+        """按频道获取最近会话，转换为 AI 引擎需要的 role/content 消息。"""
+        messages = []
+        for item in self.get_recent_conversation_messages(channel_id, limit=limit):
+            role = item.get("role")
+            if role not in {"user", "assistant"}:
+                continue
+            metadata = item.get("metadata") or {}
+            if role == "user":
+                content = metadata.get("current_content")
+                if not content:
+                    try:
+                        ts = datetime.fromisoformat(item["created_at"]).astimezone().strftime("%Y-%m-%d %H:%M")
+                    except (ValueError, TypeError):
+                        ts = item.get("created_at", "")[:16]
+                    content = f"[{ts}] {item.get('content') or ''}".strip()
+            else:
+                content = item.get("content") or ""
+            if content:
+                messages.append({"role": role, "content": content})
+        return messages
+
     # ============ 提醒队列 ============
+
+    REMINDER_DEDUPE_SECONDS = 5
+
+    @staticmethod
+    def normalize_local_time(value: str) -> datetime:
+        """把 ISO 时间统一成进程本地时区的 naive datetime。
+
+        AI 有时会传 `...Z` / `...+10:00`。本项目 scheduler 使用
+        datetime.now() 的本地 naive 时间域，因此入库和比较前必须归一。
+        """
+        raw = (value or "").strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt
 
     def add_reminder(self, trigger_time: str, action: str, group_id: str = None,
                      priority: str = "normal") -> int:
         """添加一个提醒"""
+        trigger_dt = self.normalize_local_time(trigger_time)
+        now = datetime.now()
+        if trigger_dt < now:
+            raise ValueError(
+                f"trigger_time is in the past after timezone normalization: "
+                f"{trigger_time} -> {trigger_dt.isoformat(timespec='seconds')} "
+                f"(now={now.isoformat(timespec='seconds')})"
+            )
+        normalized_trigger_time = trigger_dt.isoformat(timespec="seconds")
+
+        existing_id = self.find_duplicate_pending_reminder(
+            trigger_dt=trigger_dt,
+            action=action,
+            group_id=group_id,
+        )
+        if existing_id is not None:
+            return existing_id
+
         conn = self._get_conn()
         cursor = conn.execute(
             "INSERT INTO reminders (trigger_time, action, group_id, priority) VALUES (?, ?, ?, ?)",
-            (trigger_time, action, group_id, priority)
+            (normalized_trigger_time, action, group_id, priority)
         )
         conn.commit()
         reminder_id = cursor.lastrowid
@@ -597,16 +660,85 @@ class Database:
             self._on_reminder_added()
         return reminder_id
 
+    def find_duplicate_pending_reminder(
+        self,
+        *,
+        trigger_dt: datetime,
+        action: str,
+        group_id: str = None,
+    ) -> Optional[int]:
+        """查找等价 pending reminder，防止 AI/重试重复插入。"""
+        normalized_action = (action or "").strip()
+        normalized_group = (group_id or "").strip()
+        conn = self._get_conn()
+        if normalized_group:
+            rows = conn.execute(
+                "SELECT * FROM reminders WHERE status = 'pending' AND action = ? AND group_id = ?",
+                (normalized_action, normalized_group),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM reminders WHERE status = 'pending' AND action = ? "
+                "AND (group_id IS NULL OR group_id = '')",
+                (normalized_action,),
+            ).fetchall()
+        conn.close()
+
+        for row in rows:
+            item = dict(row)
+            try:
+                existing_dt = self.normalize_local_time(item["trigger_time"])
+            except (TypeError, ValueError):
+                continue
+            if abs((existing_dt - trigger_dt).total_seconds()) <= self.REMINDER_DEDUPE_SECONDS:
+                return item["id"]
+        return None
+
     def get_pending_reminders(self) -> list[dict]:
         """获取所有未完成且已到时间的提醒"""
-        now = datetime.now().isoformat()
+        now = datetime.now()
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT * FROM reminders WHERE status = 'pending' AND trigger_time <= ?",
-            (now,)
+            "SELECT * FROM reminders WHERE status = 'pending' ORDER BY trigger_time ASC"
         ).fetchall()
         conn.close()
-        return [dict(row) for row in rows]
+        out = []
+        for row in rows:
+            item = dict(row)
+            try:
+                if self.normalize_local_time(item["trigger_time"]) <= now:
+                    out.append(item)
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def get_pending_reminders_until(self, cutoff_time: str) -> list[dict]:
+        """获取 cutoff_time 前所有待触发提醒，用于 scheduler 合并临近提醒。"""
+        cutoff_dt = self.normalize_local_time(cutoff_time)
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM reminders WHERE status = 'pending'"
+        ).fetchall()
+        conn.close()
+        out = []
+        for row in rows:
+            item = dict(row)
+            try:
+                trigger_dt = self.normalize_local_time(item["trigger_time"])
+            except (TypeError, ValueError):
+                continue
+            if trigger_dt <= cutoff_dt:
+                item["_trigger_dt"] = trigger_dt
+                out.append(item)
+        priority_rank = {"high": 0, "normal": 1, "low": 2}
+        out.sort(key=lambda r: (
+            r["_trigger_dt"],
+            priority_rank.get(r.get("priority") or "normal", 1),
+            r["id"],
+        ))
+        for item in out:
+            item.pop("_trigger_dt", None)
+        return out
 
     def mark_reminder_done(self, reminder_id: int):
         """标记提醒为已触发"""
@@ -680,11 +812,20 @@ class Database:
     def get_next_reminder_time(self) -> Optional[str]:
         """获取下一条待触发 reminder 的 trigger_time（含 hidden），用于 scheduler 倒计时"""
         conn = self._get_conn()
-        row = conn.execute(
-            "SELECT MIN(trigger_time) as next_time FROM reminders WHERE status = 'pending'"
-        ).fetchone()
+        rows = conn.execute(
+            "SELECT * FROM reminders WHERE status = 'pending'"
+        ).fetchall()
         conn.close()
-        return row["next_time"] if row and row["next_time"] else None
+        reminders = []
+        for row in rows:
+            item = dict(row)
+            try:
+                reminders.append((self.normalize_local_time(item["trigger_time"]), item["trigger_time"]))
+            except (TypeError, ValueError):
+                continue
+        if not reminders:
+            return None
+        return min(reminders, key=lambda r: r[0])[1]
 
     # ============ 记忆系统 ============
 

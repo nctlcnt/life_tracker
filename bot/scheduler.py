@@ -26,25 +26,21 @@ POLL_INTERVAL_MIN = 45 * 60
 POLL_INTERVAL_MAX = 55 * 60
 CALENDAR_REFRESH_HOUR = 6
 CALENDAR_REFRESH_MINUTE = 5
+REMINDER_BATCH_WINDOW = timedelta(minutes=5)
 
 # Prompt 模板统一在 bot/prompts.py 里定义，避免多处重复维护同一条规则
 
 
 class Scheduler:
-    def __init__(self, db: Database, send_callback, fetch_history_callback,
-                 is_user_typing_callback=None):
+    def __init__(self, db: Database, send_callback, is_user_typing_callback=None):
         """
         send_callback: 一个 async 函数，用于发送消息到 Discord
             例如 bot.send_proactive_message
-        fetch_history_callback: 一个 async 函数 (limit: int) -> list[dict]，
-            从 Discord 拉对话历史交给 AI 引擎作上下文
-            例如 bot.fetch_history_for_scheduler
         is_user_typing_callback: 同步函数 () -> bool，
             返回用户当前是否在输入；仅随机轮询会用来决定是否让路
         """
         self.db = db
         self.send = send_callback
-        self.fetch_history = fetch_history_callback
         self.is_user_typing = is_user_typing_callback or (lambda: False)
         self._running = False
         self._ai_lock = asyncio.Lock()  # 防止 timer 和 reminder 循环同时调用 AI
@@ -193,7 +189,7 @@ class Scheduler:
                     sections,
                 ).format(timestamp=timestamp)
                 # poll 路径只判断"要不要说话"，历史拉短一点省 token
-                history = await self.fetch_history(limit=8)
+                history = self.db.get_recent_ai_messages(str(config.CHANNEL_ID), limit=8)
                 reply = await scheduled_action(
                     self.db, prompt, timestamp, history,
                     send_callback=self.send, allow_silent=True,
@@ -215,7 +211,7 @@ class Scheduler:
                     "bedtime",
                     self.db.get_prompt_sections(),
                 ).format(timestamp=timestamp)
-                history = await self.fetch_history(limit=20)
+                history = self.db.get_recent_ai_messages(str(config.CHANNEL_ID), limit=20)
                 reply = await scheduled_action(
                     self.db, prompt, timestamp, history,
                     send_callback=self.send,
@@ -243,13 +239,9 @@ class Scheduler:
             next_time_str = self.db.get_next_reminder_time()
 
             if next_time_str:
-                # AI 偶尔会写带时区偏移的 ISO 串（如 ...+10:00），此时
-                # fromisoformat 返回 tz-aware datetime；但本代码库其它地方
-                # 都用 naive local 时间（datetime.now()），直接相减会抛
-                # TypeError。统一剥掉 tzinfo 当 naive local 用。
-                next_time = datetime.fromisoformat(next_time_str)
-                if next_time.tzinfo is not None:
-                    next_time = next_time.replace(tzinfo=None)
+                # DB 会把新 reminder 规范化成本地 naive ISO；旧数据里若仍有
+                # Z/+offset，也统一按本地 naive 域解析。
+                next_time = self.db.normalize_local_time(next_time_str)
                 wait = max((next_time - datetime.now()).total_seconds(), 0)
                 logger.info(f"⏰ 下条提醒在 {next_time_str} ({int(wait)}s 后)")
             else:
@@ -269,46 +261,83 @@ class Scheduler:
 
     async def _process_due_reminders(self):
         """处理所有已到期的提醒"""
-        pending = self.db.get_pending_reminders()
-        for reminder in pending:
-            if not self._running:
-                break
+        due = self.db.get_pending_reminders()
+        if not due:
+            return
 
-            # 先标记完成，防止重复触发
-            self.db.mark_reminder_done(reminder["id"])
+        first_due = min(
+            self.db.normalize_local_time(r["trigger_time"])
+            for r in due
+        )
+        cutoff = (first_due + REMINDER_BATCH_WINDOW).isoformat()
+        batch = self.db.get_pending_reminders_until(cutoff)
+        if not batch:
+            return
 
-            # 查同 group 的信息
+        if not self._running:
+            return
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        context_action = self._format_reminder_batch(batch)
+        delivered = False
+
+        async with self._ai_lock:
+            try:
+                prompt = get_prompt_template(
+                    "reminder",
+                    self.db.get_prompt_sections(),
+                ).format(
+                    timestamp=timestamp, action=context_action
+                )
+                history = self.db.get_recent_ai_messages(str(config.CHANNEL_ID), limit=20)
+                reply = await scheduled_action(
+                    self.db, prompt, timestamp, history,
+                    send_callback=self.send,
+                    trigger="reminder"
+                )
+                if reply and "[SILENT]" not in reply:
+                    logger.info(f"🔔 提醒发送: {reply[:50]}...")
+                    delivered = True
+            except Exception as e:
+                logger.exception(f"❌ 提醒处理出错: {e}")
+                delivered = await self._send_reminder_fallback(context_action)
+            finally:
+                if delivered:
+                    for reminder in batch:
+                        self.db.mark_reminder_done(reminder["id"])
+                self.notify_ai_call_done()
+
+    async def _send_reminder_fallback(self, context_action: str) -> bool:
+        """AI 调用失败时的兜底提醒。发送成功才允许标记 reminder done。"""
+        text = f"提醒到了：\n{context_action}"
+        try:
+            await self.send(text)
+            logger.info("🔔 已发送兜底提醒")
+            return True
+        except Exception as send_err:
+            logger.exception(f"❌ 兜底提醒发送失败: {send_err}")
+            return False
+
+    def _format_reminder_batch(self, reminders: list[dict]) -> str:
+        """把同一触发窗口内的 reminders 合并成给 AI 的上下文。"""
+        if len(reminders) == 1:
+            reminder = reminders[0]
             group_info = ""
-            if reminder.get('group_id'):
-                remaining = self.db.get_pending_reminders_by_group(reminder['group_id'])
-                total = self.db.count_reminders_in_group(reminder['group_id'])
+            if reminder.get("group_id"):
+                remaining = self.db.get_pending_reminders_by_group(reminder["group_id"])
+                total = self.db.count_reminders_in_group(reminder["group_id"])
                 group_info = f"（这是关于此事的第{total - len(remaining)}条提醒，共{total}条）"
-
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-            context_action = (
+            return (
                 f"{reminder['action']}\n"
                 f"优先级: {reminder.get('priority', 'normal')}\n"
                 f"{group_info}"
             ).strip()
 
-            async with self._ai_lock:
-                try:
-                    prompt = get_prompt_template(
-                        "reminder",
-                        self.db.get_prompt_sections(),
-                    ).format(
-                        timestamp=timestamp, action=context_action
-                    )
-                    history = await self.fetch_history(limit=20)
-                    reply = await scheduled_action(
-                        self.db, prompt, timestamp, history,
-                        send_callback=self.send,
-                        trigger="reminder"
-                    )
-                    if reply and "[SILENT]" not in reply:
-                        logger.info(f"🔔 提醒发送: {reply[:50]}...")
-                except Exception as e:
-                    logger.exception(f"❌ 提醒处理出错: {e}")
-                finally:
-                    self.notify_ai_call_done()
+        lines = ["以下 reminders 在同一触发窗口内一起到期："]
+        for reminder in reminders:
+            group = f", group={reminder['group_id']}" if reminder.get("group_id") else ""
+            lines.append(
+                f"- [id={reminder['id']}{group}] {reminder['trigger_time']} | "
+                f"{reminder.get('priority', 'normal')} | {reminder['action']}"
+            )
+        return "\n".join(lines)

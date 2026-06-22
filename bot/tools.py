@@ -134,29 +134,8 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "query_timeline",
-            "description": "查询指定时间范围内的活动记录。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "start": {
-                        "type": "string",
-                        "description": "查询起始时间，ISO 8601 格式"
-                    },
-                    "end": {
-                        "type": "string",
-                        "description": "查询结束时间，ISO 8601 格式"
-                    }
-                },
-                "required": ["start", "end"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "query_calendar",
-            "description": "查询已启用的 Google Calendars 中计划中的日程。用于查未来/当天安排；不要和 query_timeline 的已发生生活轨迹混用。只读，不会创建或修改日历。",
+            "description": "查询已启用的 Google Calendars 中计划中的日程。用于查未来/当天安排；只读，不会创建或修改日历。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -191,7 +170,7 @@ TOOLS = [
                 "properties": {
                     "event_id": {
                         "type": "integer",
-                        "description": "要更新的事件 ID（从 log_timeline_event 返回值或 query_timeline 结果中获取）"
+                        "description": "要更新的事件 ID（从今天 timeline 上下文或 log_timeline_event 返回值中获取）"
                     },
                     "end_time": {
                         "type": "string",
@@ -229,7 +208,7 @@ TOOLS = [
                 "properties": {
                     "event_id": {
                         "type": "integer",
-                        "description": "要删除的事件 ID（从 query_timeline 或 log_timeline_event 返回值中获取）"
+                        "description": "要删除的事件 ID（从今天 timeline 上下文或 log_timeline_event 返回值中获取）"
                     }
                 },
                 "required": ["event_id"]

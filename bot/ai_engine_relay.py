@@ -48,7 +48,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
     """用 httpx 直接调用 OpenAI 兼容的中转站 API。"""
     model = preset.model
     base_url = preset.base_url.rstrip("/")
-    if not base_url.endswith("/v1"):
+    if preset.use_v1_suffix and not base_url.endswith("/v1"):
         base_url = base_url + "/v1"
     url = f"{base_url}/chat/completions"
     headers = {
@@ -82,7 +82,11 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
 
             test_mode.log_prompt("relay", model, payload, round_num=round_idx + 1)
 
-            resp = await client.post(url, json=payload, headers=headers, timeout=120.0)
+            try:
+                resp = await client.post(url, json=payload, headers=headers, timeout=120.0)
+            except httpx.HTTPError as e:
+                logger.error(f"❌ Relay request failed: {type(e).__name__}: {e}")
+                raise AIProviderError(f"Relay request failed: {type(e).__name__}: {e}") from e
 
             logger.info(f"🌐 Relay status: {resp.status_code}")
             logger.info(f"🌐 Relay body (first 500): {resp.text[:500]}")

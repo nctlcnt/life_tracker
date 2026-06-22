@@ -6,7 +6,7 @@ AI 引擎公共模块
 - 工具执行
 - chat / scheduled_action 高层流程
 """
-from bot.tools import TOOLS
+from bot.tools import POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, TOOLS
 from bot.prompts import build_prompt, PromptParts
 from bot.weather import is_morning, get_weather_brief
 from bot.google_calendar import CalendarNotConfigured, CalendarQueryError, get_calendar_context
@@ -74,7 +74,7 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
     provider: AI 引擎标识，透传给 build_prompt（预留 provider-specific prompt 扩展）
     """
     memories = db.get_all_memories()
-    ongoing = db.get_ongoing_events(limit=5)
+    today_timeline = db.get_today_events()
 
     # Deadline：先自动过期，再取 active
     db.expire_past_deadlines()
@@ -91,7 +91,7 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
         provider=provider,
         sections=db.get_prompt_sections(),
         memories=memories or None,
-        ongoing=ongoing or None,
+        today_timeline=today_timeline or None,
         weather=weather,
         calendar=calendar,
         deadlines=deadlines or None,
@@ -158,12 +158,15 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
         return {"success": True, "event_id": event_id, "message": "事件已记录"}
 
     elif tool_name == "set_reminder":
-        reminder_id = db.add_reminder(
-            trigger_time=args["trigger_time"],
-            action=args["action"],
-            group_id=args.get("group_id"),
-            priority=args.get("priority", "normal")
-        )
+        try:
+            reminder_id = db.add_reminder(
+                trigger_time=args["trigger_time"],
+                action=args["action"],
+                group_id=args.get("group_id"),
+                priority=args.get("priority", "normal")
+            )
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
         return {"success": True, "reminder_id": reminder_id, "message": "提醒已设置"}
 
     elif tool_name == "cancel_reminders":
@@ -181,10 +184,6 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
     elif tool_name == "list_reminders":
         rems = db.list_active_reminders()
         return {"success": True, "reminders": rems, "count": len(rems)}
-
-    elif tool_name == "query_timeline":
-        events = db.get_events(start=args["start"], end=args["end"])
-        return {"success": True, "events": events, "count": len(events)}
 
     elif tool_name == "query_calendar":
         from bot import google_calendar
@@ -384,8 +383,11 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     ]
     messages = _ensure_valid_messages(messages)
 
-    # 注：tool_names 不再过滤，chat / poll 共用全量 tools，
-    # 避免 tools 字段差异导致 prompt cache 前缀 miss。
+    tool_names = None
+    if trigger == "reminder":
+        tool_names = REMINDER_TOOL_NAMES
+    elif trigger in {"poll", "bedtime"}:
+        tool_names = POLL_TOOL_NAMES
 
     trace.start(trigger=trigger or "scheduled", model=preset.model, provider=preset.provider,
                 prompt_parts=prompt_parts, messages=messages)
@@ -407,6 +409,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                 db, prompt_parts, messages,
                 send_callback=_silent_filter,
                 preset=preset,
+                tool_names=tool_names,
             )
 
             if sent_texts:
@@ -416,6 +419,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                 db, prompt_parts, messages,
                 send_callback=send_callback,
                 preset=preset,
+                tool_names=tool_names,
             )
 
             if reply and "[SILENT]" not in reply:

@@ -104,15 +104,23 @@ class LifeTrackerBot(commands.Bot):
 
         # 只响应指定用户
         if config.ALLOWED_USER_ID and message.author.id != config.ALLOWED_USER_ID:
+            if message.channel.id == config.CHANNEL_ID:
+                logger.info(
+                    f"⏭️ 忽略消息：author_id={message.author.id} != allowed_user_id={config.ALLOWED_USER_ID}"
+                )
             return
 
         # 只响应配置里指定的 channel（prod / staging 各自配置不同 id，多 bot 共存不会串台）
         if message.channel.id != config.CHANNEL_ID:
+            logger.info(
+                f"⏭️ 忽略消息：channel_id={message.channel.id} != configured_channel_id={config.CHANNEL_ID}"
+            )
             return
 
         # 斜杠命令走 interaction，普通消息才到这里
         # 跳过斜杠命令的文本消息（防止重复处理）
         if message.content.startswith("/"):
+            logger.info("⏭️ 忽略斜杠命令文本消息")
             return
 
         if await self._maybe_finish_calendar_auth(message):
@@ -138,7 +146,7 @@ class LifeTrackerBot(commands.Bot):
         # 当前用户消息（带时间戳前缀，和历史消息格式一致）
         current_content = f"[{timestamp}] {content_to_send}"
 
-        # 备份到 DB（messages 表只作备份，AI 上下文走 Discord 历史）
+        # 备份到 DB（messages 表只作备份，AI 上下文走 DB conversation log）
         self.db.add_message("user", current_content)
         self.db.add_conversation_message(
             discord_message_id=str(message.id),
@@ -161,11 +169,8 @@ class LifeTrackerBot(commands.Bot):
             },
         )
 
-        # 从 Discord 拉历史（排除当前这条，等下单独 append 富化版本）
-        history = await self._fetch_history_as_messages(
-            message.channel, limit=20, exclude_id=message.id
-        )
-        ai_messages = history + [{"role": "user", "content": current_content}]
+        # AI 上下文走 DB conversation log，不再实时拉 Discord history。
+        ai_messages = self.db.get_recent_ai_messages(str(message.channel.id), limit=20)
 
         try:
             async def send_reply(text):
@@ -249,72 +254,6 @@ class LifeTrackerBot(commands.Bot):
             )
         except Exception as e:
             logger.exception(f"❌ 主动发送失败: {e}")
-
-    async def _fetch_history_as_messages(
-        self, channel, limit: int = 20, exclude_id: int | None = None
-    ) -> list[dict]:
-        """
-        从 Discord 频道拉历史消息，转换为 AI 引擎期望的 [{role, content}] 格式。
-        - 时间顺序：从旧到新（Discord API 默认是新→旧，这里反转）
-        - 角色映射：bot 自己 → assistant；允许的用户 → user；其他忽略
-        - 消息类型：只保留 default 和 reply，过滤 pin/join 等系统条目
-        - 每条消息前缀 [timestamp]，格式和 on_message 里当前消息保持一致
-        - 斜杠命令的响应（/todo、/weather）也会保留在历史里作为 assistant 角色
-          —— 这是故意的，让 AI 看到用户刚刚查询的上下文；prompt 里已明确告知如何识别
-        """
-        try:
-            fetch_limit = limit + (1 if exclude_id else 0)
-            raw_messages = []
-            async for m in channel.history(limit=fetch_limit):
-                if exclude_id and m.id == exclude_id:
-                    continue
-                if m.type not in (discord.MessageType.default, discord.MessageType.reply):
-                    continue
-
-                # 角色映射
-                if self.user and m.author.id == self.user.id:
-                    role = "assistant"
-                elif config.ALLOWED_USER_ID and m.author.id == config.ALLOWED_USER_ID:
-                    role = "user"
-                else:
-                    continue  # 其他用户忽略（单用户限制）
-
-                # 时间戳前缀（转本地时区）
-                # 只给 user 消息加，assistant 消息不加——避免 AI 模仿时间戳格式回复。
-                # AI 可以通过 user 消息的时间戳推算时间间隔，无需在 assistant 侧重复。
-                ts = m.created_at.astimezone().strftime("%Y-%m-%d %H:%M")
-                if role == "user":
-                    content = f"[{ts}] {m.content}" if m.content else f"[{ts}] "
-                else:
-                    content = m.content or ""
-                
-                # 如果消息上有 ✅ 标记（代表曾被工具处理过），给 AI 增加一个已执行提示
-                for r in m.reactions:
-                    if str(r.emoji) == "✅":
-                        content += " [已执行✅]"
-                        break
-
-                raw_messages.append({"role": role, "content": content})
-
-            # Discord 返回的是新→旧，反转成时间顺序
-            raw_messages.reverse()
-            return raw_messages[-limit:]  # 保证不超过 limit
-        except Exception as e:
-            logger.warning(f"⚠️ 拉 Discord 历史失败，返回空历史: {e}")
-            return []
-
-    async def fetch_history_for_scheduler(self, limit: int = 20) -> list[dict]:
-        """给 Scheduler 的历史拉取入口：从配置里指定的 channel 取历史。"""
-        channel = self.get_channel(config.CHANNEL_ID)
-        if channel is None:
-            try:
-                channel = await self.fetch_channel(config.CHANNEL_ID)
-            except Exception as e:
-                logger.warning(f"⚠️ 拉历史失败：无法取回频道 {config.CHANNEL_ID}: {e}")
-                return []
-        if not channel:
-            return []
-        return await self._fetch_history_as_messages(channel, limit=limit)
 
     def _record_sent_message(self, sent: discord.Message, role: str = "assistant") -> None:
         """Record a Discord message sent by Hiyori into the raw conversation log."""

@@ -80,7 +80,7 @@ class PromptParts:
     Block 2 (stable context)：projects（项目列表几乎不增删）
     Block 3 (memories)：memories（比 projects 变化略频繁，独立成 block 避免
            因记忆更新连带 invalidate Block 2 的 cache）
-    Block 4 (volatile)：ongoing + pending_reminders + deadlines + weather + calendar（高频变化）
+    Block 4 (volatile)：today_timeline + pending_reminders + deadlines + weather + calendar（高频变化）
 
     pending_reminders 注入 Block 4 的目的：让 AI 一眼看到队列里已有什么 follow-up，
     避免被聊天历史带回去重复 set 同一件事；也让"主动 follow-up"策略有兜底。
@@ -102,7 +102,7 @@ class PromptParts:
     memories: str = ""
 
     # 动态层
-    ongoing: str = ""
+    today_timeline: str = ""
     pending_reminders: str = ""
     deadlines: str = ""
     weather: str = ""
@@ -130,9 +130,9 @@ class PromptParts:
         return self.memories
 
     def dynamic_text(self) -> str:
-        """Block 4：ongoing + pending_reminders + deadlines + weather + calendar（高频变化）。"""
+        """Block 4：today_timeline + pending_reminders + deadlines + weather + calendar（高频变化）。"""
         return _join_nonempty(
-            self.ongoing,
+            self.today_timeline,
             self.pending_reminders,
             self.deadlines,
             self.weather,
@@ -156,7 +156,7 @@ class PromptParts:
         - Block 1: 静态（identity/user_model/.../tools）
         - Block 2: projects（稳定上下文）
         - Block 3: memories（单独块，记忆更新不影响 Block 2）
-        - Block 4: ongoing + deadlines + weather + calendar（高频变化，失效只影响此块）
+        - Block 4: today_timeline + deadlines + weather + calendar（高频变化，失效只影响此块）
         """
         blocks = []
         for text in (
@@ -183,7 +183,7 @@ class PromptParts:
 # ── 动态段落格式化函数 ──────────────────────────────────────────
 
 LABEL_MEMORIES = "【你现在记着的事】"
-LABEL_ONGOING = "【当前进行中的事件（end_time 为空）】"
+LABEL_TODAY_TIMELINE = "【今天完整 Timeline（已发生生活轨迹）】"
 LABEL_DEADLINES = "【待完成的 Deadline】"
 LABEL_WEATHER = "【今日天气】"
 LABEL_CALENDAR = "【Google Calendar（今天 + 未来 7 天，计划中的日程）】"
@@ -239,19 +239,20 @@ def _format_memories(memories: list[dict] | None) -> str:
     return f"{LABEL_MEMORIES}\n" + "\n".join(lines)
 
 
-def _format_ongoing(ongoing: list[dict] | None) -> str:
-    if not ongoing:
-        return ""
+def _format_today_timeline(events: list[dict] | None) -> str:
+    if not events:
+        return f"{LABEL_TODAY_TIMELINE}\n- 今天还没有 timeline 记录"
     lines = []
-    for e in ongoing:
+    for e in events:
         cat_part = e['category']
         if e.get("project_name"):
             cat_part += f" [{e['project_name']}]"
-        line = f"- [ID={e['id']}] {e['start_time']} | {cat_part} | {e['content']}"
+        end = e.get("end_time") or "进行中"
+        line = f"- [ID={e['id']}] {e['start_time']} -> {end} | {cat_part} | {e['content']}"
         if e.get("notes"):
             line += f" | 备注: {e['notes']}"
         lines.append(line)
-    return f"{LABEL_ONGOING}\n" + "\n".join(lines)
+    return f"{LABEL_TODAY_TIMELINE}\n" + "\n".join(lines)
 
 
 def _format_weather(weather: str | None) -> str:
@@ -304,7 +305,7 @@ def build_prompt(
     *,
     provider: str = "claude",
     memories: list[dict] | None = None,
-    ongoing: list[dict] | None = None,
+    today_timeline: list[dict] | None = None,
     weather: str | None = None,
     calendar: str | None = None,
     deadlines: list[dict] | None = None,
@@ -340,7 +341,7 @@ def build_prompt(
         memories=_format_memories(memories),
         deadlines=_format_deadlines(deadlines),
         projects=_format_projects(projects),
-        ongoing=_format_ongoing(ongoing),
+        today_timeline=_format_today_timeline(today_timeline),
         pending_reminders=_format_pending_reminders(pending_reminders),
         weather=_format_weather(weather),
         calendar=_format_calendar(calendar),
@@ -361,8 +362,8 @@ TOOL_ROUND_REMINDER = "[系统提示] 上一轮你说的话已经发出去了，
 # 而不是塞进全局 SYSTEM_PROMPT 每次请求都带。
 TOOL_POST_HINTS = {
     "list_reminders": (
-        "[决策辅助] 刚查了 pending reminder。如果要 set_reminder：同一件事复用已有 group_id；"
-        "清单里已有 action 相近且 trigger_time 在 ±30 分钟内的条目就不要再 set；"
+        "[决策辅助] 刚查了 pending reminder。程序会在触发时自动合并临近提醒；"
+        "如果用户明确要替换或取消已有提醒，"
         "要替换旧的先 delete_reminder（单条）或 cancel_reminders（整组）再 set。"
     ),
     # set_reminder 后不做去重自检：pending reminder 列表已经常驻 Block 4

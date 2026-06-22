@@ -74,10 +74,11 @@ def _serialize_prompt(p: PromptParts | None) -> dict | None:
         "block2_projects": p.projects,
         "block3_memories": p.memories,
         "block4_dynamic": {
-            "ongoing": p.ongoing,
+            "today_timeline": p.today_timeline,
             "pending_reminders": p.pending_reminders,
             "deadlines": p.deadlines,
             "weather": p.weather,
+            "calendar": p.calendar,
         },
     }
 
@@ -220,3 +221,71 @@ def read_day(date: str, trigger: str | None = None, limit: int = 100) -> list[di
         logger.exception("trace read failed")
     entries.reverse()
     return entries[:limit]
+
+
+def list_recent_tool_calls(
+    *,
+    limit: int = 50,
+    date: str | None = None,
+    trigger: str | None = None,
+    name: str | None = None,
+) -> list[dict]:
+    """从 trace 文件抽取最近的工具调用，最新在前。
+
+    返回元素只包含便于浏览器 GET 查看和排查的信息，不展开完整 prompt/history。
+    """
+    if date:
+        paths = [_TRACE_DIR / f"{date}.jsonl"]
+    elif _TRACE_DIR.exists():
+        paths = sorted(_TRACE_DIR.glob("*.jsonl"), reverse=True)
+    else:
+        paths = []
+
+    out: list[dict] = []
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            with path.open(encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            logger.exception("trace tool-call read failed")
+            continue
+
+        for line in reversed(lines):
+            if len(out) >= limit:
+                return out
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if trigger and entry.get("trigger") != trigger:
+                continue
+
+            rounds = entry.get("rounds") or []
+            for round_entry in reversed(rounds):
+                calls = round_entry.get("tool_calls") or []
+                for call in reversed(calls):
+                    if not isinstance(call, dict):
+                        continue
+                    call_name = call.get("name") or ""
+                    if name and call_name != name:
+                        continue
+                    out.append({
+                        "trace_id": entry.get("id"),
+                        "ts": entry.get("ts"),
+                        "trigger": entry.get("trigger"),
+                        "provider": entry.get("provider"),
+                        "model": entry.get("model"),
+                        "round": round_entry.get("n"),
+                        "tool": call_name,
+                        "args": call.get("input") or {},
+                        "tool_call_id": call.get("id"),
+                        "visible_text": round_entry.get("visible_text") or "",
+                    })
+                    if len(out) >= limit:
+                        return out
+    return out
