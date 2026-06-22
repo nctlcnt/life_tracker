@@ -46,14 +46,3 @@ services:
       timeout: 10s
       start_period: 15s
       retries: 3
-
-  message-cleaner:
-    build: .
-    container_name: life-tracker-staging-message-cleaner
-    command: ["python", "-m", "scripts.cleanup_staging_bot_messages"]
-    volumes:
-      - ./config.dev.json:/app/config.dev.json
-      - ./scripts:/app/scripts
-    restart: "no"
-    healthcheck:
-      disable: true
