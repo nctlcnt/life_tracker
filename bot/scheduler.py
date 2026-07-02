@@ -49,6 +49,7 @@ class Scheduler:
         self._last_ai_call_ts: datetime = datetime.now()
         # 唤醒 timer 循环重新计算下次 poll（chat 调用完成时使用）
         self._timer_event = asyncio.Event()
+        self._last_calendar_alert_date = None
 
     def notify_new_reminder(self):
         """外部调用：通知 reminder 循环有新提醒插入，重新计算倒计时"""
@@ -100,13 +101,48 @@ class Scheduler:
             if not self._running:
                 break
             try:
-                from bot.google_calendar import refresh_calendar_context
+                from bot.google_calendar import CalendarNotConfigured, refresh_calendar_context
                 result = refresh_calendar_context()
                 logger.info(
                     f"📅 Google Calendar 缓存已刷新: {result.get('count', 0)} events"
                 )
+            except CalendarNotConfigured as e:
+                logger.warning(f"⚠️ Google Calendar 需要重新授权/配置: {e}")
+                await self._send_calendar_health_alert(e)
             except Exception as e:
                 logger.warning(f"⚠️ Google Calendar 缓存刷新失败: {e}")
+                if self._should_alert_calendar_error(e):
+                    await self._send_calendar_health_alert(e)
+
+    def _should_alert_calendar_error(self, error: Exception) -> bool:
+        text = f"{type(error).__name__}: {error!r} {error}".lower()
+        markers = (
+            "invalid_grant",
+            "expired or revoked",
+            "accessnotconfigured",
+            "calendar api has not been used",
+            "calendar api",
+            "disabled",
+            "redirect_uri_mismatch",
+            "scope has changed",
+            "missing code verifier",
+        )
+        return any(marker in text for marker in markers)
+
+    async def _send_calendar_health_alert(self, error: Exception) -> None:
+        today = datetime.now().date()
+        if self._last_calendar_alert_date == today:
+            return
+        self._last_calendar_alert_date = today
+        message = (
+            "⚠️ Google Calendar 自动刷新失败，日程上下文可能已经不可用。\n"
+            "请运行 `/calendar auth` 重新授权；如果刚换了 Google Cloud 项目，也确认已启用 Google Calendar API。\n"
+            f"错误：`{type(error).__name__}: {str(error)[:1200]}`"
+        )
+        try:
+            await self.send(message)
+        except Exception as send_error:
+            logger.warning(f"⚠️ Google Calendar 健康提醒发送失败: {send_error}")
 
     async def _timer_loop(self):
         """

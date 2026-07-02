@@ -5,7 +5,7 @@ FastAPI 接口模块
 import os
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from bot.database import Database
 from bot.merge import merge_events
@@ -28,6 +28,42 @@ db: Database | None = None
 def set_database(database: Database):
     global db
     db = database
+
+
+@app.get("/api/calendar/oauth/callback", response_class=HTMLResponse)
+async def google_calendar_oauth_callback(
+    state: str = "",
+    code: str = "",
+    error: str = "",
+):
+    """Receive Google Calendar Web OAuth callbacks."""
+    if error:
+        return HTMLResponse(
+            f"<h1>Google Calendar 授权失败</h1><p>{error}</p>",
+            status_code=400,
+        )
+    try:
+        from bot.google_calendar import finish_web_oauth_flow, refresh_calendar_context
+        token_file = finish_web_oauth_flow(state, code)
+    except Exception as e:
+        return HTMLResponse(
+            f"<h1>Google Calendar 授权失败</h1><p>{type(e).__name__}: {e}</p>",
+            status_code=400,
+        )
+
+    refresh_line = ""
+    try:
+        refresh = refresh_calendar_context()
+        refresh_line = f"<p>Calendar 缓存已刷新：{refresh.get('count', 0)} events。</p>"
+    except Exception as e:
+        refresh_line = f"<p>Token 已写入，但缓存刷新失败：{type(e).__name__}: {e}</p>"
+
+    return HTMLResponse(
+        "<h1>Google Calendar 已授权</h1>"
+        f"<p>Token 已写入：<code>{token_file}</code></p>"
+        f"{refresh_line}"
+        "<p>可以关闭这个页面。</p>"
+    )
 
 
 @app.get("/api/timeline")

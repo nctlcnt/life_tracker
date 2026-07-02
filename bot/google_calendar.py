@@ -8,7 +8,8 @@ of breaking the bot.
 from __future__ import annotations
 
 import os
-from datetime import date, datetime, time, timedelta
+import secrets
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -25,12 +26,17 @@ DEFAULT_CONTEXT_LIMIT = 20
 DEFAULT_CONTEXT_TIMEOUT_SECONDS = 8
 DEFAULT_CONTEXT_CACHE_SECONDS = 300
 QUERY_CALENDAR_CACHE_SECONDS = 3600  # query_calendar 工具结果按查询参数缓存 1 小时
+REAUTHORIZE_MESSAGE = (
+    "Google Calendar token 已过期或被撤销，请重新运行 /calendar auth 授权。"
+)
 
 _creds_cache: Any | None = None
 _service_cache: Any | None = None
 _context_cache: dict[tuple[str, int, int, str], tuple[datetime, str, int]] = {}
 _calendar_list_cache: tuple[datetime, list[dict]] | None = None
 _events_cache: dict[tuple, tuple[datetime, list[dict]]] = {}
+_oauth_states: dict[str, dict[str, Any]] = {}
+_OAUTH_STATE_TTL_SECONDS = 15 * 60
 
 
 class CalendarNotConfigured(Exception):
@@ -70,6 +76,18 @@ def _reset_caches() -> None:
     _events_cache.clear()
 
 
+def _looks_like_revoked_token_error(error: Exception) -> bool:
+    text = f"{type(error).__name__}: {error!r} {error}".lower()
+    return "invalid_grant" in text or "expired or revoked" in text
+
+
+def _raise_calendar_api_error(context: str, error: Exception) -> None:
+    if _looks_like_revoked_token_error(error):
+        _reset_caches()
+        raise CalendarNotConfigured(f"{REAUTHORIZE_MESSAGE} ({context}: {error})") from error
+    raise CalendarQueryError(f"{context}: {error}") from error
+
+
 def begin_oauth_flow(redirect_port: int = 58679) -> tuple[Any, str]:
     """Create an OAuth flow and return (flow, authorization_url)."""
     if not config.GCAL_CLIENT_SECRET_FILE or not os.path.exists(config.GCAL_CLIENT_SECRET_FILE):
@@ -81,10 +99,63 @@ def begin_oauth_flow(redirect_port: int = 58679) -> tuple[Any, str]:
     flow.redirect_uri = f"http://localhost:{redirect_port}/"
     auth_url, _state = flow.authorization_url(
         access_type="offline",
-        include_granted_scopes="true",
+        include_granted_scopes="false",
         prompt="consent",
     )
     return flow, auth_url
+
+
+def begin_web_oauth_flow() -> tuple[str, str]:
+    """Create a Web OAuth authorization URL and remember its state."""
+    if not config.GCAL_OAUTH_REDIRECT_URI:
+        raise CalendarNotConfigured("google_calendar.oauth_redirect_uri is not configured.")
+    if not config.GCAL_CLIENT_SECRET_FILE or not os.path.exists(config.GCAL_CLIENT_SECRET_FILE):
+        raise CalendarNotConfigured(
+            f"Google Calendar client secret file not found: {config.GCAL_CLIENT_SECRET_FILE}"
+        )
+    _httplib2, _Request, InstalledAppFlow, _AuthorizedHttp, _Credentials, _build, _HttpError = _imports()
+    state = secrets.token_urlsafe(32)
+    flow = InstalledAppFlow.from_client_secrets_file(
+        config.GCAL_CLIENT_SECRET_FILE,
+        SCOPES,
+        redirect_uri=config.GCAL_OAUTH_REDIRECT_URI,
+    )
+    auth_url, returned_state = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="false",
+        prompt="consent",
+        state=state,
+    )
+    _oauth_states[returned_state or state] = {
+        "created_at": datetime.now(timezone.utc),
+        "flow": flow,
+    }
+    return auth_url, returned_state or state
+
+
+def finish_web_oauth_flow(state: str, code: str) -> str:
+    """Exchange a Web OAuth callback code for credentials and write the token file."""
+    state = (state or "").strip()
+    code = (code or "").strip()
+    if not state or not code:
+        raise CalendarNotConfigured("OAuth callback requires state and code.")
+    session = _oauth_states.pop(state, None)
+    if not session:
+        raise CalendarNotConfigured("OAuth state is unknown or already used. Re-run /calendar auth.")
+    created_at = session["created_at"]
+    if (datetime.now(timezone.utc) - created_at).total_seconds() > _OAUTH_STATE_TTL_SECONDS:
+        raise CalendarNotConfigured("OAuth state has expired. Re-run /calendar auth.")
+    if not config.GCAL_OAUTH_REDIRECT_URI:
+        raise CalendarNotConfigured("google_calendar.oauth_redirect_uri is not configured.")
+
+    flow = session["flow"]
+    flow.fetch_token(code=code)
+    creds = flow.credentials
+    os.makedirs(os.path.dirname(config.GCAL_TOKEN_FILE), exist_ok=True)
+    with open(config.GCAL_TOKEN_FILE, "w", encoding="utf-8") as f:
+        f.write(creds.to_json())
+    _reset_caches()
+    return config.GCAL_TOKEN_FILE
 
 
 def finish_oauth_flow(flow: Any, callback_url: str) -> str:
@@ -151,7 +222,9 @@ def _credentials():
         try:
             creds.refresh(Request())
         except Exception as e:
-            _creds_cache = None
+            _reset_caches()
+            if _looks_like_revoked_token_error(e):
+                raise CalendarNotConfigured(f"{REAUTHORIZE_MESSAGE} (refresh failed: {e})") from e
             raise CalendarNotConfigured(f"Google Calendar token refresh failed: {e}") from e
         os.makedirs(os.path.dirname(config.GCAL_TOKEN_FILE), exist_ok=True)
         with open(config.GCAL_TOKEN_FILE, "w", encoding="utf-8") as f:
@@ -216,7 +289,7 @@ def list_calendars() -> list[dict]:
     except CalendarNotConfigured:
         raise
     except Exception as e:
-        raise CalendarQueryError(f"Google Calendar list failed: {e}") from e
+        _raise_calendar_api_error("Google Calendar list failed", e)
 
     calendars = []
     for item in result.get("items", []):
@@ -357,6 +430,8 @@ def list_events(
         except CalendarNotConfigured:
             raise
         except Exception as e:
+            if _looks_like_revoked_token_error(e):
+                _raise_calendar_api_error(f"Google Calendar query failed for {calendar_id}", e)
             logger.warning(f"⚠️ Google Calendar query failed for {calendar_id}: {e}")
             continue
         for item in result.get("items", []):

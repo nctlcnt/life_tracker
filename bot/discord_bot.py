@@ -378,8 +378,26 @@ def _calendar_group(bot: LifeTrackerBot) -> app_commands.Group:
         if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
             return
         try:
-            from bot.google_calendar import begin_oauth_flow
-            flow, auth_url = begin_oauth_flow()
+            from bot.google_calendar import begin_oauth_flow, begin_web_oauth_flow
+            if config.GCAL_OAUTH_REDIRECT_URI:
+                auth_url, _state = begin_web_oauth_flow()
+                bot.calendar_auth_session = None
+                message = (
+                    "打开下面的链接完成 Google Calendar 授权。授权成功后页面会显示完成提示；"
+                    "不需要再复制 localhost URL。\n\n"
+                    f"{auth_url}"
+                )
+            else:
+                flow, auth_url = begin_oauth_flow()
+                bot.calendar_auth_session = _CalendarAuthSession(
+                    flow=flow,
+                    created_at=datetime.now(timezone.utc),
+                )
+                message = (
+                    "打开下面的链接完成 Google Calendar 授权。授权后浏览器会跳到 "
+                    "`http://localhost:58679/?...code=...`；把地址栏里的完整 URL 发回这个频道，我会自动换 token。\n\n"
+                    f"{auth_url}"
+                )
         except Exception as e:
             await interaction.response.send_message(
                 f"⚠️ 无法开始 Calendar 授权：{type(e).__name__}: {e}",
@@ -387,16 +405,7 @@ def _calendar_group(bot: LifeTrackerBot) -> app_commands.Group:
             )
             return
 
-        bot.calendar_auth_session = _CalendarAuthSession(
-            flow=flow,
-            created_at=datetime.now(timezone.utc),
-        )
-        await interaction.response.send_message(
-            "打开下面的链接完成 Google Calendar 授权。授权后浏览器会跳到 "
-            "`http://localhost:58679/?...code=...`；把地址栏里的完整 URL 发回这个频道，我会自动换 token。\n\n"
-            f"{auth_url}",
-            ephemeral=True,
-        )
+        await interaction.response.send_message(message, ephemeral=True)
 
     @group.command(name="status", description="查看 Google Calendar 授权状态")
     async def calendar_status(interaction: discord.Interaction):

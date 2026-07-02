@@ -318,6 +318,7 @@ GCAL_CLIENT_SECRET_FILE: str = _resolve_config_path(
 GCAL_TOKEN_FILE: str = _resolve_config_path(
     _google_calendar.get("token_file", "data/google_calendar_token.json")
 )
+GCAL_OAUTH_REDIRECT_URI: str = str(_google_calendar.get("oauth_redirect_uri", "")).strip()
 GCAL_CALENDAR_ID: str = _google_calendar.get("calendar_id", "primary")
 GCAL_CALENDAR_IDS: list[str] = [
     str(x).strip()
