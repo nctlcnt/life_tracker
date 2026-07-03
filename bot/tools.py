@@ -219,13 +219,25 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "save_memory",
-            "description": "记住一条信息。上限 20 条，满了自动清理最旧的。",
+            "description": (
+                "记住一条长期不变的事实（偏好、身份信息），不是日常进展的备忘录——"
+                "日常聊到的具体事情（比如某个作业做到哪一步了）系统会自动记录，不需要主动存。"
+                "只在信息属于'很久以后也大概率还成立'时才调用，例如 '喜欢喝抹茶'、'在读数据科学'。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "content": {
                         "type": "string",
-                        "description": "要记住的内容，简洁完整，如 '4/16 周三 数据科学作业 deadline'、'喜欢喝抹茶'"
+                        "description": "要记住的内容，简洁完整，如 '喜欢喝抹茶'、'在读数据科学专业'"
+                    },
+                    "memory_type": {
+                        "type": "string",
+                        "description": "可选，自由文本分类，如 preference / identity / interaction_style"
+                    },
+                    "valid_until": {
+                        "type": "string",
+                        "description": "可选，ISO 8601 时间。这条记忆到期后不再进入 prompt。不传 = 永久有效"
                     }
                 },
                 "required": ["content"]
@@ -253,7 +265,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "update_memory",
-            "description": "更新一条记忆的内容。同时刷新时间，防止被自动清理。",
+            "description": "更新一条记忆的内容/分类/有效期。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -264,6 +276,14 @@ TOOLS = [
                     "content": {
                         "type": "string",
                         "description": "更新后的内容"
+                    },
+                    "memory_type": {
+                        "type": "string",
+                        "description": "可选，更新分类"
+                    },
+                    "valid_until": {
+                        "type": "string",
+                        "description": "可选，更新有效期（ISO 8601），传空字符串表示改回永久有效"
                     }
                 },
                 "required": ["memory_id", "content"]
@@ -329,9 +349,10 @@ TOOLS = [
 
 # ── 工具子集：轮询和提醒路径不需要全部工具 ──
 
-# 新建类工具：只有这些操作才触发 ✅ reaction（update/delete/query 均不触发）
+# 写入类工具：新建或更新轨迹/记录才触发 ✅ reaction（delete/query 不触发）
 SET_TOOL_NAMES = {
     "log_timeline_event",
+    "update_timeline_event",
     "set_reminder",
     "save_memory",
     "add_deadline",

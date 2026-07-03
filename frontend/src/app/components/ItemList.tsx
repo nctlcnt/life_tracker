@@ -9,6 +9,10 @@ export interface ListItem {
   priority?: 'low' | 'medium' | 'high';
   dueDate?: Date;
   countdown?: string;
+  // Memory tab 手动整理用：
+  memoryType?: string;
+  validUntil?: string;
+  source?: 'user' | 'ai';
 }
 
 interface ItemListProps {

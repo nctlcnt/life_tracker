@@ -625,8 +625,17 @@
   border-radius: 14px;
   padding: 22px 28px;
 }
-.mem-item { padding: 11px 0; border-bottom: 1px dashed var(--border); }
+.mem-item {
+  padding: 11px 0;
+  border-bottom: 1px dashed var(--border);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
 .mem-item:last-child { border-bottom: 0; }
+.mem-item-main { min-width: 0; flex: 1; }
+.mem-item.mem-item-expired .quote { color: var(--muted-foreground); }
 .mem-item .quote {
   font-family: var(--display);
   font-style: italic;
@@ -640,6 +649,25 @@
   margin-top: 4px;
   letter-spacing: 0.02em;
 }
+.mem-item-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.mem-item:hover .mem-item-actions { opacity: 1; }
+.mem-item-actions button {
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.mem-item-actions button:hover { color: var(--foreground); }
 .mem-toggle {
   margin-top: 14px;
   width: 100%;

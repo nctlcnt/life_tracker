@@ -100,6 +100,10 @@ class PromptParts:
     # 半动态层（拆成两个 block 以隔离 invalidate 影响面）
     projects: str = ""
     memories: str = ""
+    # 语义检索到的历史对话片段（memory v3 Part B2），随每条用户消息变化。
+    # 并入 Block 3 而非新增第 5 个 block：Anthropic cache_control 上限 4 个，
+    # 代价是 Block 3 基本每轮 cache miss，Block 1/2/4 不受影响。
+    relevant_history: str = ""
 
     # 动态层
     today_timeline: str = ""
@@ -126,8 +130,8 @@ class PromptParts:
         return self.projects
 
     def memories_text(self) -> str:
-        """Block 3：memories（单独成 block，避免牵连 Block 2）。"""
-        return self.memories
+        """Block 3：memories + 检索到的历史片段（单独成 block，避免牵连 Block 2）。"""
+        return _join_nonempty(self.memories, self.relevant_history)
 
     def dynamic_text(self) -> str:
         """Block 4：today_timeline + pending_reminders + deadlines + weather + calendar（高频变化）。"""
@@ -183,6 +187,7 @@ class PromptParts:
 # ── 动态段落格式化函数 ──────────────────────────────────────────
 
 LABEL_MEMORIES = "【你现在记着的事】"
+LABEL_RELEVANT_HISTORY = "【可能相关的历史片段】"
 LABEL_TODAY_TIMELINE = "【今天完整 Timeline（已发生生活轨迹）】"
 LABEL_DEADLINES = "【待完成的 Deadline】"
 LABEL_WEATHER = "【今日天气】"
@@ -237,6 +242,22 @@ def _format_memories(memories: list[dict] | None) -> str:
         return ""
     lines = [f"- [id={m['id']}] {m['content']}" for m in memories]
     return f"{LABEL_MEMORIES}\n" + "\n".join(lines)
+
+
+def _format_relevant_history(snippets: list[dict] | None) -> str:
+    """memory v3 Part B2：语义检索命中的历史对话片段。
+    每条展示 embedding_context（带前几轮上下文的拼接文本），短消息才有主题信息。"""
+    if not snippets:
+        return ""
+    parts = []
+    for s in snippets:
+        fragment = (s.get("embedding_context") or s.get("content") or "").strip()
+        if fragment:
+            parts.append(fragment)
+    if not parts:
+        return ""
+    hint = "（系统按语义相关度从过往对话自动检索，可能混入无关内容，自行判断取舍）"
+    return f"{LABEL_RELEVANT_HISTORY}{hint}\n" + "\n---\n".join(parts)
 
 
 def _format_today_timeline(events: list[dict] | None) -> str:
@@ -305,6 +326,7 @@ def build_prompt(
     *,
     provider: str = "claude",
     memories: list[dict] | None = None,
+    relevant_history: list[dict] | None = None,
     today_timeline: list[dict] | None = None,
     weather: str | None = None,
     calendar: str | None = None,
@@ -339,6 +361,7 @@ def build_prompt(
         protocols=prompt_sections["protocols"],
         tools=prompt_sections["tools"],
         memories=_format_memories(memories),
+        relevant_history=_format_relevant_history(relevant_history),
         deadlines=_format_deadlines(deadlines),
         projects=_format_projects(projects),
         today_timeline=_format_today_timeline(today_timeline),

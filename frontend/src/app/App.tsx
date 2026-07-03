@@ -120,6 +120,9 @@ function DashboardApp() {
             id: String(m.id),
             title: m.content,
             description: `来源: ${m.source === 'user' ? '用户' : 'AI'}`,
+            memoryType: m.memory_type || undefined,
+            validUntil: m.valid_until || undefined,
+            source: m.source === 'user' ? 'user' : 'ai',
           })));
         })
         .catch(err => console.error('Failed to load memories:', err));
@@ -268,7 +271,7 @@ function DashboardApp() {
         </div>
       ) : viewMode === 'memory' ? (
         <div className="flex-1 min-h-0 overflow-auto">
-          <MemoryPage memories={memories} />
+          <MemoryPage memories={memories} onRefresh={() => setRefreshKey(k => k + 1)} />
         </div>
       ) : (
         <div className="flex-1 min-h-0 overflow-auto">
@@ -292,9 +295,22 @@ function DashboardApp() {
 }
 
 // ── Memory tab: editorial reading column of saved notes/quotes ──
-function MemoryPage({ memories }: { memories: ListItem[] }) {
+function MemoryPage({ memories, onRefresh }: { memories: ListItem[]; onRefresh: () => void }) {
   const [showAll, setShowAll] = useState(false);
+  const [editing, setEditing] = useState<ListItem | null>(null);
   const visible = showAll ? memories : memories.slice(0, 12);
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('删除这条记忆？')) return;
+    try {
+      const res = await fetch(`/api/memories/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      onRefresh();
+    } catch (err) {
+      console.error('Failed to delete memory:', err);
+    }
+  };
+
   return (
     <div className="memory-page">
       <div className="hero">
@@ -310,12 +326,26 @@ function MemoryPage({ memories }: { memories: ListItem[] }) {
         <div className="memory-empty">Quick notes will show up here.</div>
       ) : (
         <div className="mem-col">
-          {visible.map(m => (
-            <div key={m.id} className="mem-item">
-              <div className="quote">{m.title}</div>
-              {m.description && <div className="src">{m.description}</div>}
-            </div>
-          ))}
+          {visible.map(m => {
+            const expired = !!m.validUntil && new Date(m.validUntil).getTime() < Date.now();
+            const metaBits = [
+              m.description,
+              m.memoryType,
+              m.validUntil && `有效期至 ${m.validUntil.slice(0, 10)}${expired ? '（已过期）' : ''}`,
+            ].filter(Boolean);
+            return (
+              <div key={m.id} className={`mem-item${expired ? ' mem-item-expired' : ''}`}>
+                <div className="mem-item-main">
+                  <div className="quote">{m.title}</div>
+                  {metaBits.length > 0 && <div className="src">{metaBits.join(' · ')}</div>}
+                </div>
+                <div className="mem-item-actions">
+                  <button type="button" onClick={() => setEditing(m)}>编辑</button>
+                  <button type="button" onClick={() => handleDelete(m.id)}>删除</button>
+                </div>
+              </div>
+            );
+          })}
           {memories.length > 12 && (
             <button
               type="button"
@@ -327,6 +357,94 @@ function MemoryPage({ memories }: { memories: ListItem[] }) {
           )}
         </div>
       )}
+      {editing && (
+        <MemoryEditModal
+          memory={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); onRefresh(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Memory 编辑弹窗：手动调整内容/分类/有效期 ────────────────────
+function MemoryEditModal({ memory, onClose, onSaved }: {
+  memory: ListItem;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [content, setContent] = useState(memory.title);
+  const [memoryType, setMemoryType] = useState(memory.memoryType || '');
+  const [validUntil, setValidUntil] = useState(memory.validUntil ? memory.validUntil.slice(0, 10) : '');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!content.trim() || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/memories/${memory.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: content.trim(),
+          memory_type: memoryType.trim() || null,
+          valid_until: validUntil || null,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed');
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <form className="modal" onClick={e => e.stopPropagation()} onSubmit={submit}>
+        <h3 className="h-section" style={{ marginBottom: 14 }}>编辑记忆</h3>
+        <textarea
+          className="modal-input"
+          value={content}
+          onChange={e => setContent(e.target.value)}
+          autoFocus
+          rows={3}
+        />
+        <div className="modal-row">
+          <span className="modal-label">分类</span>
+          <input
+            className="modal-input"
+            placeholder="preference / identity ..."
+            value={memoryType}
+            onChange={e => setMemoryType(e.target.value)}
+          />
+        </div>
+        <div className="modal-row">
+          <span className="modal-label">有效期至</span>
+          <input
+            type="date"
+            className="modal-input"
+            value={validUntil}
+            onChange={e => setValidUntil(e.target.value)}
+          />
+          {validUntil && (
+            <button type="button" className="modal-btn ghost" onClick={() => setValidUntil('')}>
+              清空（永久）
+            </button>
+          )}
+        </div>
+        {error && <div className="modal-error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="modal-btn ghost" onClick={onClose}>取消</button>
+          <button type="submit" className="modal-btn primary" disabled={submitting || !content.trim()}>
+            {submitting ? '保存中...' : '保存'}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

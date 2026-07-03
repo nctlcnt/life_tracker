@@ -131,8 +131,8 @@ async def get_categories():
 
 @app.get("/api/memories")
 async def get_memories():
-    """获取所有记忆"""
-    return db.get_all_memories()
+    """获取所有记忆，包括已过期的——Memory tab 手动整理需要看到全部。"""
+    return db.get_all_memories(include_expired=True)
 
 
 @app.post("/api/memories")
@@ -141,8 +141,36 @@ async def create_memory(body: dict):
     content = (body.get("content") or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="content required")
-    memory_id = db.add_memory(content, source="user")
+    memory_id = db.add_memory(
+        content,
+        source="user",
+        memory_type=(body.get("memory_type") or None),
+        valid_until=(body.get("valid_until") or None),
+    )
     return {"id": memory_id}
+
+
+@app.patch("/api/memories/{memory_id}")
+async def update_memory(memory_id: int, body: dict):
+    """手动编辑一条记忆的 content/memory_type/valid_until。
+
+    只更新 body 里实际出现的字段；某个字段传 null（或前端传空字符串）表示清空，
+    比如把 valid_until 清空 = 改回永久有效。
+    """
+    fields = {}
+    if "content" in body:
+        content = (body.get("content") or "").strip()
+        if not content:
+            raise HTTPException(status_code=400, detail="content required")
+        fields["content"] = content
+    if "memory_type" in body:
+        fields["memory_type"] = body.get("memory_type") or None
+    if "valid_until" in body:
+        fields["valid_until"] = body.get("valid_until") or None
+    if not fields:
+        raise HTTPException(status_code=400, detail="no fields to update")
+    db.update_memory(memory_id, **fields)
+    return {"status": "ok"}
 
 
 @app.delete("/api/memories/{memory_id}")

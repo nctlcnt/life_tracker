@@ -61,14 +61,22 @@ append-only 保存通过 Discord 收发的原始消息，作为后续 Context Bu
 | `created_at` | TEXT NOT NULL | Discord 消息创建时间，ISO 8601 |
 | `reply_to_message_id` | TEXT | 引用/回复的 Discord message id |
 | `metadata_json` | TEXT | JSON 附加信息，例如富化后的 prompt 文本 |
+| `embedding` | TEXT | JSON float 数组（memory v3 B2，迁移列）；后台异步补写，NULL = 未算/失败 |
+| `embedding_context` | TEXT | 实际拿去 embed 的拼接文本（该消息 + 前 4 条上下文），检索命中后原样展示给 AI |
+| `embedding_model` | TEXT | 算 embedding 用的模型名；检索只比对同模型行，换模型后旧向量自然失效 |
 
 当前接入点：
 
 - `on_message` 过滤通过后写入 inbound user message。
 - `_send_chat_chunks` 在 `channel.send()` 返回后写入 outbound assistant message，并记录实际 Discord message id。
 - 重复 `discord_message_id` 使用 `INSERT OR IGNORE` 忽略，保证重放/重复处理不会重复插入。
+- 每次写入后 `_spawn_embedding_task` 起后台任务补 embedding（`bot/embeddings.py`，
+  provider 由 config.json `ai.embedding` 决定，失败静默留空）。
 
-本表第一阶段只铺数据层，当前 AI 上下文仍沿用 Discord history。后续 Context Builder 会切换为从这里读取 summary + 最近原文。
+检索路径（memory v3 Part B2）：`chat()` 用当前用户消息 embed 出 query 向量，
+`get_relevant_conversation_snippets()` 按 `relevance(cosine) + 0.1 × recency(0.995^小时)`
+打分、排除最近 20 条窗口、同段对话去重后取 top-5，注入 system prompt Block 3
+（`【可能相关的历史片段】`）。存量数据用 `scripts/backfill_embeddings.py` 一次性回填。
 
 ---
 
@@ -97,8 +105,13 @@ append-only 保存通过 Discord 收发的原始消息，作为后续 Context Bu
 | `content` | TEXT NOT NULL | |
 | `created_at` | TEXT | |
 | `source` | TEXT | `ai`（默认）/ `user`（用户主动让记的） |
+| `memory_type` | TEXT | 自由文本分类，不强制枚举（memory v3 B1，迁移列） |
+| `valid_until` | TEXT | 过期时间；NULL = 永久（memory v3 B1，迁移列） |
 
-**容量上限 20 条**：`add_memory` 超量时按 `(source='user' ASC, created_at ASC)` 排序删最旧——优先牺牲 AI 来源、保留用户来源。`update_memory` 会同时刷新 `created_at`，避免被自动清理。
+memory v3 B1 起本表收窄为"永久事实"（长期偏好/身份信息），日常进展交给
+conversation_messages 的自动 embedding 检索。原先的 20 条 FIFO 硬删已移除；
+`get_all_memories` 默认只返回未过期的行（`valid_until IS NULL OR > now`），
+过期记忆不删除，可在 Dashboard Memory 页手动管理。
 
 ---
 
@@ -163,6 +176,36 @@ Docker 环境中可以在容器内运行同样的命令：
 docker compose exec app python -m scripts.export_prompts
 docker compose exec app python -m scripts.import_prompts docs/default-prompts.json --apply
 ```
+
+---
+
+## ai_runs / tool_calls — AI 行为可追溯性（memory v3 Part A）
+
+每次 AI 调用（chat / oneshot / scheduled / poll / reminder / bedtime …）在 `ai_runs`
+记一行，run 内的每次工具调用在 `tool_calls` 记一行。数据来自 `bot/trace.py` 的
+run 生命周期（`start` → `add_round` → `finalize`），`finalize(db=...)` 时落库；
+JSONL 调试文件（`data/ai_traces/`）仍然照写，SQLite 里是可查询的结构化摘要。
+落库失败只记日志不抛异常，漏传 `db` 时跳过。
+
+| ai_runs 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | TEXT PK | 复用 trace entry id |
+| `trigger` | TEXT NOT NULL | chat / scheduled / poll / reminder / bedtime … |
+| `model` / `provider` | TEXT | 当时的 preset 信息 |
+| `started_at` / `finished_at` | TEXT | |
+| `status` | TEXT | success / failed |
+| `error` | TEXT | 失败时的异常摘要 |
+| `final_text` | TEXT | 最终回复文本 |
+
+| tool_calls 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `run_id` | TEXT NOT NULL | REFERENCES ai_runs(id)，有索引 |
+| `round_n` | INTEGER | 第几轮工具调用 |
+| `tool_name` | TEXT NOT NULL | |
+| `arguments_json` / `result_json` | TEXT | 完整参数与结果 |
+| `success` | INTEGER | 从 result 推断，取不到为 NULL |
+| `created_at` | TEXT | |
 
 ---
 

@@ -282,6 +282,18 @@ def delete_preset(name: str) -> None:
     reload_presets()
 
 
+# ── Embedding（对话日志语义检索，memory v3 Part B2）─────────────────────
+# OpenAI 兼容 /embeddings 端点。当前默认智谱 embedding-3；想换 OpenAI 官方或
+# 本地 Ollama 只改 config.json 的 ai.embedding（base_url/model/api_key），代码不用动。
+# api_key 或 model 缺失 = 功能整体禁用：消息照常入库，embedding 列留空，检索路径跳过。
+_embedding = _cfg.get("ai", {}).get("embedding", {}) or {}
+EMBEDDING_API_KEY: str = _embedding.get("api_key", "")
+EMBEDDING_BASE_URL: str = _embedding.get("base_url", "")
+EMBEDDING_MODEL: str = _embedding.get("model", "")
+# 部分端点（如 Ollama）不支持 dimensions 参数，置 null/0 即不传
+EMBEDDING_DIMENSIONS: int = int(_embedding.get("dimensions", 0) or 0)
+EMBEDDING_ENABLED: bool = bool(EMBEDDING_API_KEY and EMBEDDING_MODEL)
+
 # ── 服务器 ─────────────────────────────────────────────────────────────
 API_PORT: int = int(_cfg.get("server", {}).get("port", 8080))
 

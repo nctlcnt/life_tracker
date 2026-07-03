@@ -18,10 +18,13 @@ import json
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from bot.prompts import PromptParts, TOOL_POST_HINTS
 from bot.logger import get_logger
+
+if TYPE_CHECKING:
+    from bot.database import Database
 
 logger = get_logger(__name__)
 
@@ -73,6 +76,7 @@ def _serialize_prompt(p: PromptParts | None) -> dict | None:
         },
         "block2_projects": p.projects,
         "block3_memories": p.memories,
+        "block3_relevant_history": p.relevant_history,
         "block4_dynamic": {
             "today_timeline": p.today_timeline,
             "pending_reminders": p.pending_reminders,
@@ -154,14 +158,20 @@ def add_round(*, raw_output: str, think: str, visible_text: str,
     })
 
 
-def finalize(final_text: str | None = None, error: str | None = None) -> None:
-    """终结当前 trace，落盘并清空 context。"""
+def finalize(final_text: str | None = None, error: str | None = None,
+             db: "Database | None" = None) -> None:
+    """终结当前 trace，落盘并清空 context。
+
+    db 非 None 时，同时把 run + tool_calls 摘要写进 SQLite（ai_runs/tool_calls），
+    供查询/审计用；db 为 None（比如 simple_completion 没有 db）时跳过，不影响主流程。
+    """
     entry = _current.get()
     if entry is None:
         return
     entry["final_text"] = final_text
     entry["error"] = error
     _write(entry)
+    _persist_to_db(entry, db)
     _current.set(None)
 
 
@@ -175,6 +185,45 @@ def _write(entry: dict) -> None:
             f.write(line + "\n")
     except Exception:
         logger.exception("trace write failed")
+
+
+def _infer_success(result: Any) -> int | None:
+    if isinstance(result, dict) and "success" in result:
+        return 1 if result["success"] else 0
+    return None
+
+
+def _persist_to_db(entry: dict, db: "Database | None") -> None:
+    """把 entry 摘要写进 ai_runs/tool_calls；写失败不抛异常（同 _write 的容错原则）。"""
+    if db is None:
+        return
+    try:
+        tool_calls = []
+        for round_ in entry["rounds"]:
+            calls = round_.get("tool_calls") or []
+            results = round_.get("tool_results") or []
+            for call, result in zip(calls, results):
+                tool_calls.append({
+                    "round_n": round_.get("n"),
+                    "tool_name": call.get("name", ""),
+                    "arguments_json": json.dumps(call.get("input", {}), ensure_ascii=False, default=str),
+                    "result_json": json.dumps(result.get("result", {}), ensure_ascii=False, default=str),
+                    "success": _infer_success(result.get("result")),
+                })
+        db.save_ai_run(
+            run_id=entry["id"],
+            trigger=entry["trigger"],
+            model=entry.get("model"),
+            provider=entry.get("provider"),
+            started_at=entry["ts"],
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+            status="failed" if entry.get("error") else "success",
+            error=entry.get("error"),
+            final_text=entry.get("final_text"),
+            tool_calls=tool_calls,
+        )
+    except Exception:
+        logger.exception("trace persist to db failed")
 
 
 def is_active() -> bool:

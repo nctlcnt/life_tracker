@@ -11,6 +11,7 @@ from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timezone, timedelta
 from bot.ai_engine import chat, simple_completion
+from bot.embeddings import embed_and_store
 from bot.weather import get_weather_brief, get_weather_detailed, geocode_address
 from bot.prompts import get_prompt_template
 from bot.database import Database
@@ -21,6 +22,22 @@ import config
 logger = get_logger(__name__)
 _TYPING_COOLDOWN = timedelta(minutes=5)
 _LOCALHOST_CALLBACK_RE = re.compile(r"https?://localhost:\d+/\?\S*")
+
+# fire-and-forget embedding 任务的强引用，防止被 GC 提前回收
+_embedding_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_embedding_task(db: Database | None, row_id: int | None, channel_id: str) -> None:
+    """conversation_messages 落库后，后台补 embedding（memory v3 Part B2）。
+    row_id 为 None（重复消息被忽略）或功能禁用时直接跳过；永不抛异常。"""
+    if db is None or row_id is None or not config.EMBEDDING_ENABLED:
+        return
+    try:
+        task = asyncio.create_task(embed_and_store(db, row_id, channel_id))
+    except RuntimeError:
+        return  # 无 running event loop（同步测试环境），跳过
+    _embedding_tasks.add(task)
+    task.add_done_callback(_embedding_tasks.discard)
 
 
 @dataclass
@@ -148,7 +165,7 @@ class LifeTrackerBot(commands.Bot):
 
         # 备份到 DB（messages 表只作备份，AI 上下文走 DB conversation log）
         self.db.add_message("user", current_content)
-        self.db.add_conversation_message(
+        conv_row_id = self.db.add_conversation_message(
             discord_message_id=str(message.id),
             channel_id=str(message.channel.id),
             guild_id=str(message.guild.id) if message.guild else None,
@@ -168,6 +185,7 @@ class LifeTrackerBot(commands.Bot):
                 "message_type": str(message.type),
             },
         )
+        _spawn_embedding_task(self.db, conv_row_id, str(message.channel.id))
 
         # AI 上下文走 DB conversation log，不再实时拉 Discord history。
         ai_messages = self.db.get_recent_ai_messages(str(message.channel.id), limit=20)
@@ -258,7 +276,7 @@ class LifeTrackerBot(commands.Bot):
     def _record_sent_message(self, sent: discord.Message, role: str = "assistant") -> None:
         """Record a Discord message sent by Hiyori into the raw conversation log."""
         try:
-            self.db.add_conversation_message(
+            row_id = self.db.add_conversation_message(
                 discord_message_id=str(sent.id),
                 channel_id=str(sent.channel.id),
                 guild_id=str(sent.guild.id) if sent.guild else None,
@@ -274,6 +292,7 @@ class LifeTrackerBot(commands.Bot):
                 ),
                 metadata={"message_type": str(sent.type)},
             )
+            _spawn_embedding_task(self.db, row_id, str(sent.channel.id))
         except Exception as e:
             logger.warning(f"⚠️ 写入 outbound conversation log 失败: {e}")
 
@@ -777,7 +796,9 @@ async def _record_sent_chunk(db: Database | None, sent: discord.Message, role: s
             ),
             metadata={"message_type": str(sent.type)},
         )
+        row_id = result
         if inspect.isawaitable(result):
-            await result
+            row_id = await result
+        _spawn_embedding_task(db, row_id, str(sent.channel.id))
     except Exception as e:
         logger.warning(f"⚠️ 写入 outbound conversation log 失败: {e}")

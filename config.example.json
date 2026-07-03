@@ -39,6 +39,13 @@
         "base_url": "",
         "model": "gpt-4o"
       }
+    },
+    "embedding": {
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "api_key": "",
+      "model": "embedding-3",
+      "dimensions": 1024,
+      "note": "对话日志语义检索用；留空 api_key 即禁用。OpenAI 兼容 /embeddings 端点"
     }
   },
   "server": {

@@ -6,8 +6,11 @@ AI 引擎公共模块
 - 工具执行
 - chat / scheduled_action 高层流程
 """
+import asyncio
+
 from bot.tools import POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, TOOLS
 from bot.prompts import build_prompt, PromptParts
+from bot import embeddings
 from bot.weather import is_morning, get_weather_brief
 from bot.google_calendar import CalendarNotConfigured, CalendarQueryError, get_calendar_context
 from bot.database import Database
@@ -66,7 +69,8 @@ def format_tool_calls_summary(called_names: list[str], called_args: list[dict] |
 
 def _build_prompt(db: Database, mode: str, provider: str = "claude",
                   weather: str | None = None,
-                  calendar: str | None = None) -> PromptParts:
+                  calendar: str | None = None,
+                  relevant_history: list[dict] | None = None) -> PromptParts:
     """
     从 DB 取数据，构建完整的 PromptParts 对象。
 
@@ -91,6 +95,7 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
         provider=provider,
         sections=db.get_prompt_sections(),
         memories=memories or None,
+        relevant_history=relevant_history or None,
         today_timeline=today_timeline or None,
         weather=weather,
         calendar=calendar,
@@ -241,7 +246,11 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
         return {"success": False, "message": f"未找到 event_id={args['event_id']}"}
 
     elif tool_name == "save_memory":
-        memory_id = db.add_memory(args["content"])
+        memory_id = db.add_memory(
+            args["content"],
+            memory_type=args.get("memory_type") or None,
+            valid_until=args.get("valid_until") or None,
+        )
         return {"status": "ok", "memory_id": memory_id}
 
     elif tool_name == "delete_memory":
@@ -249,7 +258,12 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
         return {"status": "ok"}
 
     elif tool_name == "update_memory":
-        db.update_memory(args["memory_id"], args["content"])
+        fields = {"content": args["content"]}
+        if "memory_type" in args:
+            fields["memory_type"] = args["memory_type"]
+        if "valid_until" in args:
+            fields["valid_until"] = args["valid_until"] or None
+        db.update_memory(args["memory_id"], **fields)
         return {"status": "ok"}
 
     elif tool_name == "add_deadline":
@@ -320,9 +334,27 @@ async def chat(db: Database, messages: list[dict],
     weather = await get_weather_brief() if is_morning() else None
     calendar = await get_calendar_context()
 
+    # memory v3 Part B2：用当前用户消息做语义检索，捞出工作窗口外的相关历史片段。
+    # channel_id 直接用 config.CHANNEL_ID——bot 是单频道的（on_message 已过滤）。
+    # exclude_recent=20 与 discord_bot 的 get_recent_ai_messages(limit=20) 对齐；
+    # 检索失败/禁用时 relevant_history 为 None，聊天流程不受影响。
+    relevant_history = None
+    if config.EMBEDDING_ENABLED and messages:
+        query_embedding = await embeddings.embed_text(messages[-1]["content"])
+        if query_embedding:
+            try:
+                # to_thread：全表 cosine 扫描是同步 CPU 工作，别阻塞 event loop
+                relevant_history = await asyncio.to_thread(
+                    db.get_relevant_conversation_snippets,
+                    query_embedding, str(config.CHANNEL_ID),
+                    model=config.EMBEDDING_MODEL, limit=5, exclude_recent=20,
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ 历史片段检索失败（跳过注入）: {type(e).__name__}: {e}")
+
     # 构建 PromptParts（静态 + 动态上下文一步到位）
     prompt = _build_prompt(db, "chat", provider=preset.provider, weather=weather,
-                           calendar=calendar)
+                           calendar=calendar, relevant_history=relevant_history)
 
     trace.start(trigger="chat", model=preset.model, provider=preset.provider,
                 prompt_parts=prompt, messages=messages)
@@ -338,10 +370,10 @@ async def chat(db: Database, messages: list[dict],
         # 备份 AI 回复到 DB
         db.add_message("assistant", reply)
 
-        trace.finalize(final_text=reply)
+        trace.finalize(final_text=reply, db=db)
         return reply
     except Exception as e:
-        trace.finalize(error=f"{type(e).__name__}: {e}")
+        trace.finalize(error=f"{type(e).__name__}: {e}", db=db)
         raise
 
 
@@ -427,8 +459,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
 
         if final_reply:
             db.add_message("assistant", final_reply)
-        trace.finalize(final_text=final_reply)
+        trace.finalize(final_text=final_reply, db=db)
         return final_reply
     except Exception as e:
-        trace.finalize(error=f"{type(e).__name__}: {e}")
+        trace.finalize(error=f"{type(e).__name__}: {e}", db=db)
         raise

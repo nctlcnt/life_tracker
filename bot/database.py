@@ -8,6 +8,8 @@ import json
 from datetime import datetime
 from typing import Optional
 
+from bot.embeddings import CONTEXT_MESSAGES, cosine_similarity, recency_weight
+
 
 class Database:
     def __init__(self, db_path: str):
@@ -55,7 +57,10 @@ class Database:
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 reply_to_message_id TEXT,
-                metadata_json TEXT
+                metadata_json TEXT,
+                embedding TEXT,             -- JSON float 数组，后台异步补写，NULL = 还没算/失败
+                embedding_context TEXT,     -- 实际拿去 embed 的拼接文本（含前几条消息上下文）
+                embedding_model TEXT        -- 算这条 embedding 用的模型，检索时只比对同模型的行
             );
 
             CREATE INDEX IF NOT EXISTS idx_conversation_messages_channel_created
@@ -128,6 +133,34 @@ class Database:
                 value TEXT NOT NULL DEFAULT '',
                 updated_at TEXT DEFAULT (datetime('now'))
             );
+
+            -- AI 行为可追溯性：每次 AI 调用（chat/scheduled_action）一行，
+            -- 复用 bot/trace.py 的 run 生命周期，finalize() 时落库。
+            CREATE TABLE IF NOT EXISTS ai_runs (
+                id TEXT PRIMARY KEY,
+                trigger TEXT NOT NULL,
+                model TEXT,
+                provider TEXT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT,
+                error TEXT,
+                final_text TEXT
+            );
+
+            -- 每次工具调用一行，关联到 ai_runs。
+            CREATE TABLE IF NOT EXISTS tool_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL REFERENCES ai_runs(id),
+                round_n INTEGER,
+                tool_name TEXT NOT NULL,
+                arguments_json TEXT,
+                result_json TEXT,
+                success INTEGER,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tool_calls_run_id ON tool_calls(run_id);
         """)
         conn.commit()
         # 兼容已有数据库：尝试加列，已存在则忽略
@@ -163,6 +196,24 @@ class Database:
             pass
         try:
             conn.execute("ALTER TABLE events DROP COLUMN status")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            conn.execute("ALTER TABLE memories ADD COLUMN memory_type TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            conn.execute("ALTER TABLE memories ADD COLUMN valid_until TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        # memory v3 Part B2：对话日志 embedding 检索
+        try:
+            conn.execute("ALTER TABLE conversation_messages ADD COLUMN embedding TEXT")
+            conn.execute("ALTER TABLE conversation_messages ADD COLUMN embedding_context TEXT")
+            conn.execute("ALTER TABLE conversation_messages ADD COLUMN embedding_model TEXT")
         except sqlite3.OperationalError:
             pass
 
@@ -524,8 +575,8 @@ class Database:
                                  author_id: str | None = None,
                                  author_name: str | None = None,
                                  reply_to_message_id: str | None = None,
-                                 metadata: dict | None = None) -> bool:
-        """保存一条 Discord 会话消息。返回是否新增，重复 message id 会被忽略。"""
+                                 metadata: dict | None = None) -> int | None:
+        """保存一条 Discord 会话消息。返回新行 id；重复 message id 会被忽略并返回 None。"""
         if role not in {"user", "assistant", "system"}:
             raise ValueError(f"invalid conversation role: {role}")
         if not channel_id:
@@ -554,9 +605,9 @@ class Database:
             )
         )
         conn.commit()
-        changed = cursor.rowcount > 0
+        row_id = cursor.lastrowid if cursor.rowcount > 0 else None
         conn.close()
-        return changed
+        return row_id
 
     def get_recent_conversation_messages(self, channel_id: str, limit: int = 20) -> list[dict]:
         """按频道获取最近的 Discord 会话消息，返回时间正序。"""
@@ -606,6 +657,130 @@ class Database:
             if content:
                 messages.append({"role": role, "content": content})
         return messages
+
+    # ============ 对话日志 embedding 检索（memory v3 Part B2）============
+
+    def get_conversation_messages_upto(self, channel_id: str, upto_id: int,
+                                       limit: int = 5) -> list[dict]:
+        """取该 channel 中 id <= upto_id 的最近 limit 条，时间正序。
+        embed_and_store 拼接上下文用（最后一条即 upto_id 本身）。"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            """
+            SELECT id, role, author_name, content, created_at
+            FROM conversation_messages
+            WHERE channel_id = ? AND id <= ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (str(channel_id), upto_id, limit)
+        ).fetchall()
+        conn.close()
+        return [dict(row) for row in reversed(rows)]
+
+    def update_conversation_embedding(self, row_id: int, embedding: list[float],
+                                      context: str, model: str) -> None:
+        """后台 embedding 任务算完后写回该行。"""
+        conn = self._get_conn()
+        conn.execute(
+            """
+            UPDATE conversation_messages
+            SET embedding = ?, embedding_context = ?, embedding_model = ?
+            WHERE id = ?
+            """,
+            (json.dumps(embedding), context, model, row_id)
+        )
+        conn.commit()
+        conn.close()
+
+    def get_relevant_conversation_snippets(self, query_embedding: list[float],
+                                           channel_id: str, *, model: str,
+                                           limit: int = 5,
+                                           exclude_recent: int = 20,
+                                           min_relevance: float = 0.55) -> list[dict]:
+        """
+        语义检索历史对话片段，按 relevance(cosine) + 0.1 * recency(0.995^小时) 打分取 top。
+
+        - 排除该 channel 最近 exclude_recent 条：它们已经在 AI 的工作窗口里，
+          再注入就是重复内容（调用方应传入与 get_recent_ai_messages 一致的窗口大小）
+        - 只比对同一 embedding_model 的行：换 embedding 模型后旧向量维度/空间不兼容，
+          直接当没有 embedding 处理，等后台任务用新模型逐渐补齐
+        - min_relevance / recency 权重按智谱 embedding-3 + 真实对话数据实测校准：
+          该模型下任意无关中文配对 cosine 就有 0.45~0.52（地板高），有意义的相关是
+          0.65+，所以阈值 0.55；recency 只配 0.1——它只该在相关度接近时偏向最近的，
+          实测 0.25 会让"最近但一般相关"压过"三周前但高度相关"。换模型需重新校准
+        - 同段对话去重：id 相差 <= CONTEXT_MESSAGES 的命中行是同一段对话
+          （embedding_context 互相重叠），只保留一条；保留 id 最大的——
+          context 是向前拼接的，id 大的行覆盖整段内容——分数沿用簇内最高
+        - 全表暴力扫描 O(N)，当前不到一千条毫无压力；几万条以上再考虑
+          限制扫描窗口或 sqlite-vec（见 docs/memory v3.md §3）
+        """
+        conn = self._get_conn()
+        window_row = conn.execute(
+            """
+            SELECT MIN(id) AS min_id FROM (
+                SELECT id FROM conversation_messages
+                WHERE channel_id = ?
+                ORDER BY id DESC LIMIT ?
+            )
+            """,
+            (str(channel_id), exclude_recent)
+        ).fetchone()
+        window_start = window_row["min_id"] if window_row else None
+        if window_start is None:
+            conn.close()
+            return []
+        rows = conn.execute(
+            """
+            SELECT id, role, content, created_at, embedding, embedding_context
+            FROM conversation_messages
+            WHERE channel_id = ? AND embedding IS NOT NULL
+              AND embedding_model = ? AND id < ?
+            """,
+            (str(channel_id), model, window_start)
+        ).fetchall()
+        conn.close()
+
+        scored = []
+        for row in rows:
+            try:
+                emb = json.loads(row["embedding"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            relevance = cosine_similarity(query_embedding, emb)
+            if relevance < min_relevance:
+                continue
+            score = relevance + 0.1 * recency_weight(row["created_at"])
+            scored.append((score, relevance, row))
+        scored.sort(key=lambda t: t[0], reverse=True)
+
+        picked: list[dict] = []
+        for score, relevance, row in scored:
+            cluster = next(
+                (p for p in picked if abs(row["id"] - p["id"]) <= CONTEXT_MESSAGES),
+                None,
+            )
+            if cluster is not None:
+                # 同段对话已有代表：id 更大的行 context 覆盖更全，换内容、保留高分
+                if row["id"] > cluster["id"]:
+                    cluster.update(
+                        id=row["id"], role=row["role"], content=row["content"],
+                        created_at=row["created_at"],
+                        embedding_context=row["embedding_context"],
+                    )
+                continue
+            if len(picked) >= limit:
+                continue  # 已满仍继续遍历，让后续行有机会合并进已选簇
+            picked.append({
+                "id": row["id"],
+                "role": row["role"],
+                "content": row["content"],
+                "created_at": row["created_at"],
+                "embedding_context": row["embedding_context"],
+                "score": round(score, 4),
+                "relevance": round(relevance, 4),
+            })
+        return picked
 
     # ============ 提醒队列 ============
 
@@ -827,35 +1002,60 @@ class Database:
             return None
         return min(reminders, key=lambda r: r[0])[1]
 
+    # ============ AI 可追溯性（ai_runs / tool_calls） ============
+
+    def save_ai_run(self, *, run_id: str, trigger: str, model: str | None,
+                     provider: str | None, started_at: str, finished_at: str,
+                     status: str, error: str | None, final_text: str | None,
+                     tool_calls: list[dict]) -> None:
+        """写入一次 AI run 及其工具调用记录（bot/trace.py finalize() 调用）。"""
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT OR REPLACE INTO ai_runs
+               (id, trigger, model, provider, started_at, finished_at, status, error, final_text)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (run_id, trigger, model, provider, started_at, finished_at, status, error, final_text),
+        )
+        for tc in tool_calls:
+            conn.execute(
+                """INSERT INTO tool_calls
+                   (run_id, round_n, tool_name, arguments_json, result_json, success)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (run_id, tc.get("round_n"), tc["tool_name"], tc.get("arguments_json"),
+                 tc.get("result_json"), tc.get("success")),
+            )
+        conn.commit()
+        conn.close()
+
     # ============ 记忆系统 ============
 
-    def get_all_memories(self) -> list[dict]:
-        """获取所有记忆，按时间倒序，最多20条"""
+    def get_all_memories(self, include_expired: bool = False) -> list[dict]:
+        """获取记忆，按时间倒序。
+
+        这张表现在只用来存长期不变的事实（偏好/身份信息），不再有数量上限。
+        默认只返回未过期的（valid_until 为 NULL = 永久，或还没到期）供 prompt 使用；
+        include_expired=True 给管理界面看全部，方便手动整理。
+        """
         conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM memories ORDER BY created_at DESC LIMIT 20"
-        ).fetchall()
+        if include_expired:
+            rows = conn.execute("SELECT * FROM memories ORDER BY created_at DESC").fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM memories
+                   WHERE valid_until IS NULL OR valid_until > datetime('now')
+                   ORDER BY created_at DESC"""
+            ).fetchall()
         conn.close()
         return [dict(r) for r in rows]
 
-    def add_memory(self, content: str, source: str = 'ai') -> int:
-        """
-        添加记忆。超过20条时自动清理最旧的。
-        优先删 ai 来源的，保留 user 来源的。
-        """
+    def add_memory(self, content: str, source: str = 'ai',
+                    memory_type: str | None = None,
+                    valid_until: str | None = None) -> int:
+        """添加一条记忆。memory_type/valid_until 可选；valid_until 为 None 表示永久有效。"""
         conn = self._get_conn()
-        count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-        if count >= 20:
-            conn.execute("""
-                DELETE FROM memories WHERE id = (
-                    SELECT id FROM memories
-                    ORDER BY source = 'user' ASC, created_at ASC
-                    LIMIT 1
-                )
-            """)
         cursor = conn.execute(
-            "INSERT INTO memories (content, source) VALUES (?, ?)",
-            (content, source)
+            "INSERT INTO memories (content, source, memory_type, valid_until) VALUES (?, ?, ?, ?)",
+            (content, source, memory_type, valid_until)
         )
         conn.commit()
         memory_id = cursor.lastrowid
@@ -869,12 +1069,21 @@ class Database:
         conn.commit()
         conn.close()
 
-    def update_memory(self, memory_id: int, content: str):
-        """更新记忆内容，同时刷新 created_at 防止被自动清理"""
+    def update_memory(self, memory_id: int, **fields) -> None:
+        """更新记忆的部分字段（content / memory_type / valid_until）。
+
+        只更新 fields 里实际传入的键；某个键传 None 表示显式清空该字段
+        （比如把 valid_until 设回永久）。
+        """
+        allowed = {"content", "memory_type", "valid_until"}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
         conn = self._get_conn()
         conn.execute(
-            "UPDATE memories SET content = ?, created_at = datetime('now') WHERE id = ?",
-            (content, memory_id)
+            f"UPDATE memories SET {set_clause} WHERE id = ?",
+            (*updates.values(), memory_id),
         )
         conn.commit()
         conn.close()
