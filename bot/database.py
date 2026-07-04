@@ -5,10 +5,35 @@
 import sqlite3
 import os
 import json
-from datetime import datetime
+from datetime import datetime, time, timezone
 from typing import Optional
 
 from bot.embeddings import CONTEXT_MESSAGES, cosine_similarity, recency_weight
+
+
+def _normalize_memory_valid_until(value: str | None) -> str | None:
+    """Normalize memory expiry to SQLite UTC datetime text, or None for permanent."""
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    try:
+        if len(raw) == 10:
+            # Frontend date inputs send YYYY-MM-DD. Treat that as valid through the
+            # end of the selected UTC day, not expired at that day's midnight.
+            dt = datetime.combine(datetime.fromisoformat(raw).date(), time.max)
+        else:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt.isoformat(sep=" ", timespec="seconds")
+    except ValueError:
+        # Keep unparseable values untouched so existing callers can still see/edit
+        # what was supplied; the SELECT path uses datetime() and won't rely on
+        # lexicographic ordering for these strings.
+        return raw
 
 
 class Database:
@@ -1042,7 +1067,10 @@ class Database:
         else:
             rows = conn.execute(
                 """SELECT * FROM memories
-                   WHERE valid_until IS NULL OR valid_until > datetime('now')
+                   -- valid_until is normalized on write to SQLite UTC datetime text.
+                   -- Use datetime() anyway so ISO inputs from older rows do not fall
+                   -- back to fragile lexicographic string comparison.
+                   WHERE valid_until IS NULL OR datetime(valid_until) > datetime('now')
                    ORDER BY created_at DESC"""
             ).fetchall()
         conn.close()
@@ -1052,10 +1080,11 @@ class Database:
                     memory_type: str | None = None,
                     valid_until: str | None = None) -> int:
         """添加一条记忆。memory_type/valid_until 可选；valid_until 为 None 表示永久有效。"""
+        normalized_valid_until = _normalize_memory_valid_until(valid_until)
         conn = self._get_conn()
         cursor = conn.execute(
             "INSERT INTO memories (content, source, memory_type, valid_until) VALUES (?, ?, ?, ?)",
-            (content, source, memory_type, valid_until)
+            (content, source, memory_type, normalized_valid_until)
         )
         conn.commit()
         memory_id = cursor.lastrowid
@@ -1079,6 +1108,8 @@ class Database:
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return
+        if "valid_until" in updates:
+            updates["valid_until"] = _normalize_memory_valid_until(updates["valid_until"])
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         conn = self._get_conn()
         conn.execute(
