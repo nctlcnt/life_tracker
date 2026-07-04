@@ -375,6 +375,82 @@
   border-color: var(--foreground);
 }
 
+/* ── LT-129 整体模板编辑（主区 + 折叠的其他模板） ── */
+.prompt-admin-page {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+.prompt-main-textarea {
+  min-height: 62vh;
+}
+
+.placeholder-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+.placeholder-chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 11px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.placeholder-chip:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.placeholder-chip.included {
+  background: var(--muted);
+  color: var(--foreground);
+  border-color: var(--border-strong);
+  cursor: default;
+}
+.placeholder-chip.included::after {
+  content: ' ✓';
+  color: var(--ok);
+}
+.placeholder-warn {
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.prompt-others {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+.prompt-others > summary {
+  padding: 12px 16px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted-foreground);
+  user-select: none;
+}
+.prompt-others[open] > summary {
+  border-bottom: 1px solid var(--border);
+  color: var(--foreground);
+}
+.prompt-others > .prompt-admin {
+  padding: 18px;
+}
+.prompt-others .prompt-textarea {
+  min-height: 44vh;
+}
+
 .admin-msg { padding: 32px; color: var(--muted-foreground); font-size: 14px; }
 .admin-msg.err { color: var(--warn); }
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import './admin.css';
 
 interface Preset {
@@ -33,6 +33,8 @@ interface PromptSection {
   current_value: string;
   updated_at: string | null;
   empty: boolean;
+  // 已内联进 main_template 的旧散文 section：API 保留读写，UI 不再展示
+  hidden?: boolean;
 }
 
 interface PromptsResp {
@@ -98,12 +100,8 @@ async function putJson(url: string, body: unknown) {
 }
 
 const PROMPT_HINTS: Record<string, string> = {
-  identity: '人格与角色定位，属于静态 system block。',
-  user_model: '用户画像，属于静态 system block。',
-  system_mechanics: '工具轮次、时间戳、SILENT 等硬规则。',
-  communication: '对话语气和表达风格。',
-  protocols: '状态专项反应。当前代码默认仍会注入这一段。',
-  tools: '跨工具决策和各工具使用策略。',
+  main_template: '完整 system prompt：人格/规则散文直接写在这里，系统知识用占位符注入。',
+  tools: '跨工具决策和各工具使用策略；经 {tools} 注入主模板（工具多轮的中间轮自动省略）。',
   proactive_gemini: 'Gemini 主动轮询模板，必须保留 {timestamp}。',
   proactive_claude: 'Claude/OpenAI/Relay 主动轮询模板，必须保留 {timestamp}。',
   reminder: 'Reminder 到点后的跟进模板，必须保留 {timestamp} 和 {action}。',
@@ -111,6 +109,20 @@ const PROMPT_HINTS: Record<string, string> = {
   morning: '早间开启模板；当前仅供后续调用点使用。',
   weather_report: '天气总结模板，必须保留 {weather_data}。',
 };
+
+// main_template 里可用的占位符：名称 → 说明。顺序 = 推荐排列
+// （稳定 → 易变，保持 prompt cache 前缀命中率）。
+const PLACEHOLDER_DOCS: [string, string][] = [
+  ['tools', '工具使用策略（下方可单独编辑）'],
+  ['projects', '现有项目列表'],
+  ['memories', '长期记忆（你现在记着的事）'],
+  ['relevant_history', '语义检索的历史对话片段'],
+  ['today_timeline', '今天完整 timeline'],
+  ['pending_reminders', '待触发的 reminder 队列'],
+  ['deadlines', '待完成的 deadline'],
+  ['weather', '今日天气（仅早晨注入）'],
+  ['calendar', 'Google Calendar 今天+7天'],
+];
 
 export function AdminPanel() {
   const [tab, setTab] = useState<'presets' | 'prompts'>('presets');
@@ -311,19 +323,14 @@ export function AdminPanel() {
 
 function PromptAdmin() {
   const [data, setData] = useState<PromptsResp | null>(null);
-  const [selectedKey, setSelectedKey] = useState<string>('');
-  const [draft, setDraft] = useState('');
   const [err, setErr] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
 
   const load = async () => {
     try {
       const r = await fetch('/api/admin/prompts');
       if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
-      const j: PromptsResp = await r.json();
-      setData(j);
+      setData(await r.json());
       setErr(null);
-      setSelectedKey(prev => prev || j.sections[0]?.key || '');
     } catch (e) {
       setErr(String(e));
     }
@@ -331,7 +338,138 @@ function PromptAdmin() {
 
   useEffect(() => { load(); }, []);
 
-  const selected = data?.sections.find(s => s.key === selectedKey) ?? data?.sections[0];
+  if (err && !data) return <div className="admin-msg err">加载失败: {err}</div>;
+  if (!data) return <div className="admin-msg">加载中…</div>;
+
+  const main = data.sections.find(s => s.key === 'main_template');
+  const others = data.sections.filter(s => !s.hidden && s.key !== 'main_template');
+
+  return (
+    <div className="prompt-admin-page">
+      {err && <div className="admin-msg err">{err}</div>}
+      {main
+        ? <MainTemplateEditor section={main} onSaved={load} />
+        : <div className="admin-msg err">main_template section 不存在（后端未迁移？）</div>}
+
+      <details className="prompt-others">
+        <summary>其他模板（tools / 调度小模板 / dispatch）</summary>
+        <SectionListEditor sections={others} onSaved={load} />
+      </details>
+    </div>
+  );
+}
+
+function MainTemplateEditor({ section, onSaved }: {
+  section: PromptSection;
+  onSaved: () => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(section.current_value);
+  const [err, setErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => { setDraft(section.current_value); }, [section.current_value]);
+
+  const dirty = draft !== section.current_value;
+  const missingTools = !draft.includes('{tools}');
+
+  const insertAtCursor = (token: string) => {
+    const ta = taRef.current;
+    const start = ta?.selectionStart ?? draft.length;
+    const end = ta?.selectionEnd ?? start;
+    setDraft(draft.slice(0, start) + token + draft.slice(end));
+    requestAnimationFrame(() => {
+      if (!ta) return;
+      ta.focus();
+      const pos = start + token.length;
+      ta.setSelectionRange(pos, pos);
+    });
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setErr(null);
+    try {
+      await putJson('/api/admin/prompts/main_template', { value: draft });
+      await onSaved();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <main className="prompt-editor prompt-main-editor">
+      <div className="prompt-editor-head">
+        <div>
+          <h2>整体 Prompt 模板</h2>
+          <p>{PROMPT_HINTS.main_template}</p>
+        </div>
+        <div className="prompt-editor-actions">
+          <button className="admin-btn" onClick={onSaved} disabled={saving}>Reload</button>
+          <button className="admin-btn primary" onClick={save}
+                  disabled={saving || !dirty || !draft.trim()}>
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+
+      {err && <div className="admin-msg err">{err}</div>}
+
+      <div className="placeholder-bar">
+        {PLACEHOLDER_DOCS.map(([name, doc]) => {
+          const token = `{${name}}`;
+          const included = draft.includes(token);
+          return (
+            <button
+              key={name}
+              type="button"
+              className={`placeholder-chip ${included ? 'included' : ''}`}
+              title={`${doc}${included ? '' : '（未使用，点击在光标处插入）'}`}
+              onClick={() => !included && insertAtCursor(token)}
+            >
+              {token}
+            </button>
+          );
+        })}
+      </div>
+      {missingTools && (
+        <div className="placeholder-warn">
+          ⚠ 模板里没有 {'{tools}'}：AI 将看不到任何工具使用策略（可以保存，但请确认是有意为之）
+        </div>
+      )}
+
+      <div className="prompt-meta">
+        <span className={`tag ${section.empty ? 'tag-fallback' : 'tag-active'}`}>
+          {section.empty ? 'empty' : 'DB managed'}
+        </span>
+        <span>{draft.length.toLocaleString()} chars</span>
+        {section.updated_at && <span>updated {section.updated_at}</span>}
+        {dirty && <span>unsaved changes</span>}
+      </div>
+
+      <textarea
+        ref={taRef}
+        className="prompt-textarea prompt-main-textarea"
+        value={draft}
+        spellCheck={false}
+        onChange={(e) => setDraft(e.target.value)}
+      />
+    </main>
+  );
+}
+
+function SectionListEditor({ sections, onSaved }: {
+  sections: PromptSection[];
+  onSaved: () => Promise<void>;
+}) {
+  const [selectedKey, setSelectedKey] = useState<string>('');
+  const [draft, setDraft] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const selected = sections.find(s => s.key === selectedKey) ?? sections[0];
 
   useEffect(() => {
     if (selected) setDraft(selected.current_value);
@@ -343,7 +481,7 @@ function PromptAdmin() {
     setErr(null);
     try {
       await putJson(`/api/admin/prompts/${encodeURIComponent(selected.key)}`, { value: draft });
-      await load();
+      await onSaved();
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -351,18 +489,16 @@ function PromptAdmin() {
     }
   };
 
-  if (err && !data) return <div className="admin-msg err">加载失败: {err}</div>;
-  if (!data || !selected) return <div className="admin-msg">加载中…</div>;
+  if (!selected) return <div className="admin-msg">没有可编辑的 section</div>;
 
   const dirty = draft !== selected.current_value;
-  const charCount = draft.length;
 
   return (
     <div className="prompt-admin">
       {err && <div className="admin-msg err">{err}</div>}
 
       <aside className="prompt-list">
-        {data.sections.map(section => (
+        {sections.map(section => (
           <button
             key={section.key}
             className={section.key === selected.key ? 'active' : ''}
@@ -381,7 +517,7 @@ function PromptAdmin() {
             <p>{PROMPT_HINTS[selected.key] || selected.key}</p>
           </div>
           <div className="prompt-editor-actions">
-            <button className="admin-btn" onClick={load} disabled={saving}>Reload</button>
+            <button className="admin-btn" onClick={onSaved} disabled={saving}>Reload</button>
             <button className="admin-btn primary" onClick={save}
                     disabled={saving || !dirty || !draft.trim()}>
               {saving ? 'Saving…' : 'Save'}
@@ -393,7 +529,7 @@ function PromptAdmin() {
           <span className={`tag ${selected.empty ? 'tag-fallback' : 'tag-active'}`}>
             {selected.empty ? 'empty' : 'DB managed'}
           </span>
-          <span>{charCount.toLocaleString()} chars</span>
+          <span>{draft.length.toLocaleString()} chars</span>
           {selected.updated_at && <span>updated {selected.updated_at}</span>}
           {dirty && <span>unsaved changes</span>}
         </div>

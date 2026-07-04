@@ -63,27 +63,21 @@ def _coerce(obj: Any) -> Any:
 
 
 def _serialize_prompt(p: PromptParts | None) -> dict | None:
+    """schema 2（LT-129 单一模板）：记录模板原文、占位符展开值和渲染后的分块。
+
+    旧 JSONL 里的 schema（block1_static/.../block4_dynamic 无版本标）由
+    TraceViewer 做兼容渲染，这里不再产出。
+    """
     if p is None:
         return None
     return {
-        "block1_static": {
-            "identity": p.identity,
-            "user_model": p.user_model,
-            "system_mechanics": p.system_mechanics,
-            "communication": p.communication,
-            "protocols": p.protocols,
-            "tools_section": p.tools or "",
-        },
-        "block2_projects": p.projects,
-        "block3_memories": p.memories,
-        "block3_relevant_history": p.relevant_history,
-        "block4_dynamic": {
-            "today_timeline": p.today_timeline,
-            "pending_reminders": p.pending_reminders,
-            "deadlines": p.deadlines,
-            "weather": p.weather,
-            "calendar": p.calendar,
-        },
+        "schema": 2,
+        "template": p.template,
+        "values": dict(p.values),
+        "blocks": [
+            {"i": i, "tier": tier, "chars": len(text), "text": text}
+            for i, (tier, text) in enumerate(p.render_blocks())
+        ],
     }
 
 

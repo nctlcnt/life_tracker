@@ -264,7 +264,10 @@ class Database:
         """)
 
         from bot.prompts import PROMPT_SECTION_LABELS
-        from bot.prompt_store import initialize_prompts_if_empty
+        from bot.prompt_store import (
+            initialize_prompts_if_empty,
+            migrate_main_template_if_missing,
+        )
         for key, label in PROMPT_SECTION_LABELS.items():
             conn.execute(
                 """
@@ -275,6 +278,11 @@ class Database:
                 (key, label),
             )
         initialize_prompts_if_empty(conn)
+        # LT-129：存量库从旧结构化 section 合成 main_template（fresh 库上面
+        # 一步已灌默认集，这里是 no-op）
+        if migrate_main_template_if_missing(conn):
+            from bot.logger import get_logger
+            get_logger(__name__).info("✅ [LT-129] main_template 已从旧结构化 prompt section 合成")
 
         conn.commit()
         conn.close()

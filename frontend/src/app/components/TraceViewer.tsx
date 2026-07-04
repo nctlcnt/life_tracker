@@ -3,7 +3,8 @@ import './trace.css';
 
 // ── Types ─────────────────────────────────────────────────────
 
-interface PromptParts {
+// LT-129 之前的 trace schema（无版本标），旧 JSONL 记录仍按这个渲染
+interface LegacyPromptParts {
   block1_static: {
     identity: string;
     user_model: string;
@@ -14,13 +15,25 @@ interface PromptParts {
   };
   block2_projects: string;
   block3_memories: string;
+  block3_relevant_history?: string;
   block4_dynamic: {
-    ongoing: string;
+    today_timeline: string;
     pending_reminders: string;
     deadlines: string;
     weather: string;
+    calendar?: string;
   };
 }
+
+// LT-129 单一模板 schema：模板原文 + 占位符展开值 + 渲染后的分块
+interface PromptBlocksV2 {
+  schema: 2;
+  template: string;
+  values: Record<string, string>;
+  blocks: { i: number; tier: number; chars: number; text: string }[];
+}
+
+type PromptParts = PromptBlocksV2 | LegacyPromptParts;
 
 interface ToolCall {
   name: string;
@@ -149,6 +162,8 @@ function contentToText(c: unknown): string {
 
 function PromptPartsView({ parts }: { parts: PromptParts | null }) {
   if (!parts) return <div className="trace-block-empty">无 prompt（轻量调用）</div>;
+  if ('blocks' in parts) return <PromptBlocksV2View parts={parts} />;
+
   const blocks: Array<{ label: string; text: string }> = [
     { label: 'Block 1 · Identity', text: parts.block1_static.identity },
     { label: 'Block 1 · User Model', text: parts.block1_static.user_model },
@@ -158,10 +173,12 @@ function PromptPartsView({ parts }: { parts: PromptParts | null }) {
     { label: 'Block 1 · Tools Section', text: parts.block1_static.tools_section },
     { label: 'Block 2 · Projects', text: parts.block2_projects },
     { label: 'Block 3 · Memories', text: parts.block3_memories },
-    { label: 'Block 4 · Ongoing', text: parts.block4_dynamic.ongoing },
+    { label: 'Block 3 · Relevant History', text: parts.block3_relevant_history ?? '' },
+    { label: 'Block 4 · Today Timeline', text: parts.block4_dynamic.today_timeline },
     { label: 'Block 4 · Pending Reminders', text: parts.block4_dynamic.pending_reminders },
     { label: 'Block 4 · Deadlines', text: parts.block4_dynamic.deadlines },
     { label: 'Block 4 · Weather', text: parts.block4_dynamic.weather },
+    { label: 'Block 4 · Calendar', text: parts.block4_dynamic.calendar ?? '' },
   ];
   return (
     <>
@@ -175,6 +192,46 @@ function PromptPartsView({ parts }: { parts: PromptParts | null }) {
           )}
         </div>
       ))}
+    </>
+  );
+}
+
+function PromptBlocksV2View({ parts }: { parts: PromptBlocksV2 }) {
+  return (
+    <>
+      {parts.blocks.map(b => (
+        <div className="trace-block" key={b.i}>
+          <div className="trace-block-head">
+            Block {b.i + 1}
+            <span className="trace-tier-tag">tier {b.tier}</span>
+            <span className="trace-block-chars">{b.chars.toLocaleString()} chars</span>
+          </div>
+          <div className="trace-block-text">{b.text}</div>
+        </div>
+      ))}
+
+      <details className="trace-collapsible">
+        <summary>占位符展开值（{Object.keys(parts.values).length}）</summary>
+        <div className="trace-collapsible-body">
+          {Object.entries(parts.values).map(([name, text]) => (
+            <div className="trace-block" key={name}>
+              <div className="trace-block-head">{'{' + name + '}'}</div>
+              {text ? (
+                <div className="trace-block-text">{text}</div>
+              ) : (
+                <div className="trace-block-empty">（空）</div>
+              )}
+            </div>
+          ))}
+        </div>
+      </details>
+
+      <details className="trace-collapsible">
+        <summary>模板原文（{parts.template.length.toLocaleString()} chars）</summary>
+        <div className="trace-collapsible-body">
+          <div className="trace-block-text">{parts.template}</div>
+        </div>
+      </details>
     </>
   );
 }
@@ -282,7 +339,7 @@ function TraceItem({ entry }: { entry: TraceEntry }) {
           )}
 
           <details className="trace-collapsible">
-            <summary>Prompt 组成（4 层 block）</summary>
+            <summary>Prompt 组成</summary>
             <div className="trace-collapsible-body">
               <PromptPartsView parts={entry.prompt_parts} />
             </div>

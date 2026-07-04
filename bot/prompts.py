@@ -5,10 +5,15 @@ Prompt text is stored in SQLite (`prompt_sections`) and edited through the
 admin UI. This module only keeps stable section keys, prompt composition, and
 small non-user-specific runtime hints.
 
-架构（6 个正交 section，chat / poll 完全共用）：
-- IDENTITY / USER_MODEL / SYSTEM_MECHANICS / COMMUNICATION / PROTOCOLS / TOOLS
-- PromptParts dataclass 按变化频率分四层（静态 / 稳定上下文 / 记忆 / 高频动态），
-  对应 Anthropic cache_control 的 4 个上限，build_prompt() 一步构建。
+架构（LT-129：单一整体模板 + 占位符注入）：
+- `main_template` section = 完整 system prompt 正文，人格/规则散文直接写在里面，
+  系统知识通过 9 个占位符注入（{tools} {projects} {memories} {relevant_history}
+  {today_timeline} {pending_reminders} {deadlines} {weather} {calendar}）。
+- 渲染时按占位符的 cache tier 把模板切成 ≤4 个单调段（PLACEHOLDER_TIERS），
+  对应 Anthropic cache_control 的 4 个上限——默认模板排序下分块结果与旧的
+  四层 PromptParts 完全一致，模板乱序时仍正确、只是 cache 效率下降。
+- 占位符替换只认 _MAIN_PLACEHOLDER_RE 里的已知 token，字面 {}（颜文字、
+  JSON 示例）原样保留；占位符的值不做二次扫描。
 
 ⚠️ 静态 prompt **不随 mode 变化**——chat / poll 共享完全相同的 system prompt，
    最大化 1h ephemeral cache 命中率。模式差异通过 scheduler 模板
@@ -17,7 +22,7 @@ small non-user-specific runtime hints.
 各引擎消费 PromptParts 的方法：
 - Claude: prompt.to_claude_blocks() → 最多 4 个 cached system block
 - Gemini/Relay: prompt.flatten() → 单个字符串
-- 中间轮省 token: prompt.concise().flatten()（去掉 TOOLS 段）
+- 中间轮省 token: prompt.concise().flatten()（{tools} 展开为空）
 
 """
 from __future__ import annotations
@@ -28,6 +33,7 @@ from dataclasses import dataclass
 
 
 PROMPT_SECTION_LABELS = {
+    "main_template": "MAIN_TEMPLATE",
     "identity": "IDENTITY",
     "user_model": "USER_MODEL",
     "system_mechanics": "SYSTEM_MECHANICS",
@@ -52,6 +58,44 @@ def empty_prompt_sections() -> dict[str, str]:
     return {key: "" for key in PROMPT_SECTION_LABELS}
 
 
+# ── main_template 占位符注册表 ──────────────────────────────────
+#
+# tier = cache 分块层级（1 稳定 → 4 高频）。render_blocks() 按"从头到当前
+# 位置见过的最大 tier"切段，默认模板排序下与旧四层 block 划分逐字节一致。
+PLACEHOLDER_TIERS: dict[str, int] = {
+    "tools": 1,
+    "projects": 2,
+    "memories": 3,
+    "relevant_history": 3,
+    "today_timeline": 4,
+    "pending_reminders": 4,
+    "deadlines": 4,
+    "weather": 4,
+    "calendar": 4,
+}
+MAIN_TEMPLATE_PLACEHOLDERS = frozenset(PLACEHOLDER_TIERS)
+
+# 已内联进 main_template 正文的旧散文 section（DB 行保留、UI 隐藏，用于回滚）。
+# 不含 tools：concise() 需要在工具多轮中间轮抽掉它，所以保持独立 section。
+LEGACY_STRUCTURED_KEYS = ("identity", "user_model", "system_mechanics",
+                          "communication", "protocols")
+
+_MAIN_PLACEHOLDER_RE = re.compile(r"\{(" + "|".join(PLACEHOLDER_TIERS) + r")\}")
+
+
+def synthesize_main_template(sections: dict[str, str]) -> str:
+    """从旧结构化 section 合成等价的 main_template。
+
+    迁移和运行时 fallback（main_template 为空）共用：5 段散文按旧 Block 1
+    顺序内联，9 个占位符按旧 Block 1-4 顺序排列，渲染结果与旧拼装逐字节一致。
+    """
+    parts = [p for k in LEGACY_STRUCTURED_KEYS if (p := (sections.get(k) or "").strip())]
+    parts += ["{tools}", "{projects}", "{memories}", "{relevant_history}",
+              "{today_timeline}", "{pending_reminders}", "{deadlines}",
+              "{weather}", "{calendar}"]
+    return "\n\n".join(parts)
+
+
 # ══════════════════════════════════════════════════════════════
 # PromptParts dataclass + build_prompt()
 # ══════════════════════════════════════════════════════════════
@@ -73,114 +117,78 @@ def _join_nonempty(*parts: str) -> str:
 @dataclass
 class PromptParts:
     """
-    按变化频率分四层的结构化 prompt（对应 Anthropic 4 个 cache_control 上限）。
+    单一整体模板 + 占位符展开值（LT-129）。
 
-    Block 1 (static)：identity + user_model + system_mechanics + communication +
-           protocols + tools（几乎不变，chat / poll 完全相同）
-    Block 2 (stable context)：projects（项目列表几乎不增删）
-    Block 3 (memories)：memories（比 projects 变化略频繁，独立成 block 避免
-           因记忆更新连带 invalidate Block 2 的 cache）
-    Block 4 (volatile)：today_timeline + pending_reminders + deadlines + weather + calendar（高频变化）
-
-    pending_reminders 注入 Block 4 的目的：让 AI 一眼看到队列里已有什么 follow-up，
-    避免被聊天历史带回去重复 set 同一件事；也让"主动 follow-up"策略有兜底。
+    template 是 main_template 原文（含 {memories} 等占位符），values 是 9 个
+    占位符的已格式化文本（可为空串）。render_blocks() 按 PLACEHOLDER_TIERS
+    把渲染结果切成 ≤4 个单调段——占位符按稳定→易变排列时，切段结果与旧的
+    静态/projects/memories/动态四层完全一致：
+    - 记忆更新只失效 memories 所在段，动态数据更新只失效尾段，
+      前缀段保持 Anthropic ephemeral cache 命中。
+    - pending_reminders 注入尾段的目的：让 AI 一眼看到队列里已有什么
+      follow-up，避免被聊天历史带回去重复 set 同一件事。
 
     Gemini/Relay 用 flatten() 拍平成单个字符串（不参与 prompt caching）。
     """
     mode: str  # "chat" | "poll"，仅用于调用方上游决策（如 DB 取数），不影响 prompt 内容
+    template: str
+    values: dict[str, str]
 
-    # 静态层（chat / poll 完全共用）
-    identity: str
-    user_model: str
-    system_mechanics: str
-    communication: str
-    protocols: str
-    tools: str | None  # None = concise 模式（中间轮省 token）
+    def render_blocks(self) -> list[tuple[int, str]]:
+        """渲染模板并按 cache tier 切段，返回 [(tier, text), ...]（≤4 段，非空）。
 
-    # 半动态层（拆成两个 block 以隔离 invalidate 影响面）
-    projects: str = ""
-    memories: str = ""
-    # 语义检索到的历史对话片段（memory v3 Part B2），随每条用户消息变化。
-    # 并入 Block 3 而非新增第 5 个 block：Anthropic cache_control 上限 4 个，
-    # 代价是 Block 3 基本每轮 cache miss，Block 1/2/4 不受影响。
-    relevant_history: str = ""
+        切段规则：占位符替换的同时，追踪"从头到当前位置见过的最大 tier"，
+        tier 上升就开新段；段间的字面文本归前一段（【】标题紧跟其数据）。
+        tier 单调递增 ∈ {1..4}，所以最多 4 段。占位符的值只替换一次、
+        不参与二次扫描（值里出现 {memories} 字样不会被展开）。
+        """
+        segments: list[list[str]] = [[]]
+        tiers: list[int] = [1]
+        pos = 0
+        for m in _MAIN_PLACEHOLDER_RE.finditer(self.template):
+            segments[-1].append(self.template[pos:m.start()])
+            name = m.group(1)
+            tier = PLACEHOLDER_TIERS[name]
+            if tier > tiers[-1]:
+                segments.append([])
+                tiers.append(tier)
+            segments[-1].append(self.values.get(name, ""))
+            pos = m.end()
+        segments[-1].append(self.template[pos:])
 
-    # 动态层
-    today_timeline: str = ""
-    pending_reminders: str = ""
-    deadlines: str = ""
-    weather: str = ""
-    calendar: str = ""
-
-    def static_text(self) -> str:
-        """Block 1：所有静态段落。"""
-        parts = [
-            self.identity,
-            self.user_model,
-            self.system_mechanics,
-            self.communication,
-            self.protocols,
-        ]
-        if self.tools:
-            parts.append(self.tools)
-        return _join_nonempty(*parts)
-
-    def stable_context_text(self) -> str:
-        """Block 2：projects（低频变化）。"""
-        return self.projects
-
-    def memories_text(self) -> str:
-        """Block 3：memories + 检索到的历史片段（单独成 block，避免牵连 Block 2）。"""
-        return _join_nonempty(self.memories, self.relevant_history)
-
-    def dynamic_text(self) -> str:
-        """Block 4：today_timeline + pending_reminders + deadlines + weather + calendar（高频变化）。"""
-        return _join_nonempty(
-            self.today_timeline,
-            self.pending_reminders,
-            self.deadlines,
-            self.weather,
-            self.calendar,
-        )
+        out = []
+        for tier, parts in zip(tiers, segments):
+            # 空占位符留下的连续空行压回双换行 + 段级 strip，
+            # 与旧 _join_nonempty 跳过空段的行为逐字节等价
+            text = _CLEANUP_RE.sub("\n\n", "".join(parts)).strip()
+            if text:
+                out.append((tier, text))
+        return out
 
     def flatten(self) -> str:
         """拍平为单个字符串（Gemini / Relay 用）。"""
-        return _join_nonempty(
-            self.static_text(),
-            self.stable_context_text(),
-            self.memories_text(),
-            self.dynamic_text(),
-        )
+        return _join_nonempty(*(text for _, text in self.render_blocks()))
 
     def to_claude_blocks(self) -> list[dict]:
         """
         构建 Anthropic system blocks（最多 4 个 cached block，上限即 cache_control 最大值）。
 
-        顺序 = 稳定 → 易变，前缀匹配最大化命中：
-        - Block 1: 静态（identity/user_model/.../tools）
-        - Block 2: projects（稳定上下文）
-        - Block 3: memories（单独块，记忆更新不影响 Block 2）
-        - Block 4: today_timeline + deadlines + weather + calendar（高频变化，失效只影响此块）
+        顺序 = 稳定 → 易变（render_blocks 的 tier 单调性保证），
+        前缀匹配最大化命中。
         """
-        blocks = []
-        for text in (
-            self.static_text(),
-            self.stable_context_text(),
-            self.memories_text(),
-            self.dynamic_text(),
-        ):
-            if text:
-                blocks.append({
-                    "type": "text",
-                    "text": text,
-                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
-                })
-        return blocks
+        return [
+            {
+                "type": "text",
+                "text": text,
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
+            }
+            for _, text in self.render_blocks()
+        ]
 
     def concise(self) -> PromptParts:
-        """返回去掉 tools 段的副本（中间轮省 token）。"""
+        """返回 {tools} 展开为空的副本（中间轮省 token）。"""
         c = copy.copy(self)
-        c.tools = None
+        c.values = dict(self.values, tools="")
         return c
 
 
@@ -352,22 +360,23 @@ def build_prompt(
         for key, value in sections.items():
             if key in prompt_sections and value:
                 prompt_sections[key] = value.strip()
+    # main_template 为空时（迁移未跑/回滚窗口）现场从旧结构化 section 合成，
+    # 保证任何数据状态下都能渲染出与旧拼装一致的 prompt
+    template = prompt_sections["main_template"] or synthesize_main_template(prompt_sections)
     return PromptParts(
         mode=mode,
-        identity=prompt_sections["identity"],
-        user_model=prompt_sections["user_model"],
-        system_mechanics=prompt_sections["system_mechanics"],
-        communication=prompt_sections["communication"],
-        protocols=prompt_sections["protocols"],
-        tools=prompt_sections["tools"],
-        memories=_format_memories(memories),
-        relevant_history=_format_relevant_history(relevant_history),
-        deadlines=_format_deadlines(deadlines),
-        projects=_format_projects(projects),
-        today_timeline=_format_today_timeline(today_timeline),
-        pending_reminders=_format_pending_reminders(pending_reminders),
-        weather=_format_weather(weather),
-        calendar=_format_calendar(calendar),
+        template=template,
+        values={
+            "tools": prompt_sections["tools"],
+            "projects": _format_projects(projects),
+            "memories": _format_memories(memories),
+            "relevant_history": _format_relevant_history(relevant_history),
+            "today_timeline": _format_today_timeline(today_timeline),
+            "pending_reminders": _format_pending_reminders(pending_reminders),
+            "deadlines": _format_deadlines(deadlines),
+            "weather": _format_weather(weather),
+            "calendar": _format_calendar(calendar),
+        },
     )
 
 

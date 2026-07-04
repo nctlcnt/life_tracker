@@ -300,6 +300,22 @@ details.trace-collapsible .trace-collapsible-body {
   color: var(--muted-foreground);
   text-transform: uppercase;
   letter-spacing: 0.08em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.trace-tier-tag {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 9px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.trace-block-chars {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: 0;
 }
 .trace-block-text {
   font-size: 12px;

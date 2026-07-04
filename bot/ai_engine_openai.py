@@ -28,26 +28,22 @@ logger = get_logger(__name__)
 
 
 def _section_fingerprints(prompt: PromptParts | None) -> list[dict]:
-    """对 PromptParts 4 个逻辑 block 各算 char_count + sha256[:8]，用于 cache 命中追踪。
+    """对渲染后的各 block 算 char_count + sha256[:8]，用于 cache 命中追踪。
 
     OpenAI 的 prompt cache 是 prefix-based 且自动的，不像 Anthropic 有显式 block 边界；
     这里的 fingerprint 仅用于调试时快速判断"哪段内容变了"。
     """
     if prompt is None:
         return []
-    prints = []
-    for i, text in enumerate((
-        prompt.static_text(),
-        prompt.stable_context_text(),
-        prompt.memories_text(),
-        prompt.dynamic_text(),
-    )):
-        prints.append({
+    return [
+        {
             "i": i,
+            "tier": tier,
             "chars": len(text),
             "hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:8],
-        })
-    return prints
+        }
+        for i, (tier, text) in enumerate(prompt.render_blocks())
+    ]
 
 
 # 懒加载客户端缓存：按 (api_key, base_url) 存储

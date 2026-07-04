@@ -81,20 +81,31 @@ def build_big_worker_parts(
     s = empty_prompt_sections()
     if sections:
         s.update({k: v for k, v in sections.items() if k in s})
+    # 人格/调性留空：模板只保留系统机制散文 + 工具与数据占位符
+    template = _join_nonempty(
+        s["system_mechanics"],
+        "{tools}",
+        "{projects}",
+        "{memories}",
+        "{today_timeline}",
+        "{pending_reminders}",
+        "{deadlines}",
+        "{weather}",
+    )
     return PromptParts(
         mode="chat",
-        identity="",
-        user_model="",
-        system_mechanics=s["system_mechanics"],
-        communication="",  # 不需要语气
-        protocols="",  # 不需要状态判断 (那归人格层)
-        tools=_join_nonempty(s["tools"], s["dispatch_big_worker_output"]),
-        projects=projects,
-        memories=memories,
-        today_timeline=today_timeline,
-        pending_reminders=pending_reminders,
-        deadlines=deadlines,
-        weather=weather,
+        template=template,
+        values={
+            "tools": _join_nonempty(s["tools"], s["dispatch_big_worker_output"]),
+            "projects": projects,
+            "memories": memories,
+            "relevant_history": "",
+            "today_timeline": today_timeline,
+            "pending_reminders": pending_reminders,
+            "deadlines": deadlines,
+            "weather": weather,
+            "calendar": "",
+        },
     )
 
 

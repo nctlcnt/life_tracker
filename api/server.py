@@ -3,6 +3,7 @@ FastAPI 接口模块
 给前端提供数据
 """
 import os
+import re
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -462,9 +463,25 @@ _PROMPT_REQUIRED_PLACEHOLDERS = {
     "weather_report": {"weather_data"},
 }
 
+# main_template 疑似占位符 token：只把"小写字母+下划线"的花括号当拼写错误拦，
+# 其他字面 {}（颜文字、JSON 示例、大写/中文/带空格）一律放行——渲染器本来
+# 就只替换白名单 token
+_MAIN_TEMPLATE_TOKEN_RE = re.compile(r"\{([a-z_]+)\}")
+
 
 def _validate_prompt_template(key: str, value: str):
     import string
+    if key == "main_template":
+        from bot.prompts import MAIN_TEMPLATE_PLACEHOLDERS
+        unknown = set(_MAIN_TEMPLATE_TOKEN_RE.findall(value)) - MAIN_TEMPLATE_PLACEHOLDERS
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail="unknown placeholder(s): "
+                       f"{', '.join(sorted(unknown))}（可用: "
+                       f"{', '.join(sorted(MAIN_TEMPLATE_PLACEHOLDERS))}）",
+            )
+        return  # 没有必需占位符：删掉某个占位符 = 主动选择不注入该知识
     required = _PROMPT_REQUIRED_PLACEHOLDERS.get(key, set())
     try:
         used = {
@@ -651,7 +668,7 @@ async def admin_test_preset(body: dict):
 @app.get("/api/admin/prompts")
 async def admin_list_prompts():
     """列出可编辑 prompt sections。正文来自 DB，不提交到 Git。"""
-    from bot.prompts import PROMPT_SECTION_LABELS
+    from bot.prompts import LEGACY_STRUCTURED_KEYS, PROMPT_SECTION_LABELS
     rows = {row["key"]: row for row in db.list_prompt_sections()}
     sections = []
     for key, label in PROMPT_SECTION_LABELS.items():
@@ -664,6 +681,9 @@ async def admin_list_prompts():
             "current_value": value,
             "updated_at": row["updated_at"] if row else None,
             "empty": not bool(value.strip()),
+            # 已内联进 main_template 的旧散文 section：UI 隐藏，API 保留读写
+            # 作为回滚/急救通道
+            "hidden": key in LEGACY_STRUCTURED_KEYS,
         })
     return {"sections": sections}
 

@@ -8,7 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from bot.prompts import PROMPT_SECTION_LABELS
+from bot.prompts import (
+    LEGACY_STRUCTURED_KEYS,
+    PROMPT_SECTION_LABELS,
+    synthesize_main_template,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,13 +41,11 @@ def load_prompt_file(path: str | os.PathLike[str]) -> dict[str, str]:
     if unknown:
         raise PromptSeedError(f"{p} contains unknown prompt section(s): {', '.join(unknown)}")
 
-    missing = sorted(set(PROMPT_SECTION_LABELS) - set(sections))
-    if missing:
-        raise PromptSeedError(f"{p} is missing prompt section(s): {', '.join(missing)}")
-
+    # missing key 不再报错（LT-129 新增 main_template 后，历史备份 JSON 缺它
+    # 属于正常情况）：缺的填空串，启动时的迁移钩子会自动合成
     normalized: dict[str, str] = {}
     for key in PROMPT_SECTION_LABELS:
-        value = sections.get(key)
+        value = sections.get(key, "")
         if not isinstance(value, str):
             raise PromptSeedError(f"{p} section '{key}' must be a string")
         normalized[key] = value.strip()
@@ -125,4 +127,43 @@ def initialize_prompts_if_empty(
 
     sections = load_prompt_file(prompt_path)
     apply_prompt_sections(conn, sections, overwrite=True)
+    return True
+
+
+def migrate_main_template_if_missing(conn: sqlite3.Connection) -> bool:
+    """LT-129 迁移：main_template 为空且旧结构化 section 有内容时，
+    用 DB 里的实际内容合成等价模板写入。
+
+    幂等；唯一写操作是 upsert main_template 一行，旧 section 行原样保留
+    （UI 隐藏但 API 可读写），git revert 代码即可完整回滚。
+    fresh DB 不走这里：initialize_prompts_if_empty 已灌入含 main_template
+    的默认集，本函数因 main_template 非空直接返回。
+    """
+    row = conn.execute(
+        "SELECT value FROM prompt_sections WHERE key = 'main_template'"
+    ).fetchone()
+    if row and (row[0] or "").strip():
+        return False
+
+    legacy: dict[str, str] = {}
+    for key in (*LEGACY_STRUCTURED_KEYS, "tools"):
+        r = conn.execute(
+            "SELECT value FROM prompt_sections WHERE key = ?", (key,)
+        ).fetchone()
+        legacy[key] = (r[0] if r else "") or ""
+    if not any(v.strip() for v in legacy.values()):
+        return False  # 全空：没有可迁移的内容（理论上被 initialize 挡住了）
+
+    template = synthesize_main_template(legacy)
+    conn.execute(
+        """
+        INSERT INTO prompt_sections (key, label, value, updated_at)
+        VALUES ('main_template', ?, ?, datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET
+            label = excluded.label,
+            value = excluded.value,
+            updated_at = datetime('now')
+        """,
+        (PROMPT_SECTION_LABELS["main_template"], template),
+    )
     return True
