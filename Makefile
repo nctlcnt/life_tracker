@@ -3,12 +3,14 @@
 ## ── Local development ────────────────────────────────────────────────────────
 
 # Build image from source and start (rebuilds when source changes)
+# NOTE: compose.yaml is the server prod stack (Dockge-managed); local dev must
+# pass -f explicitly, otherwise compose picks compose.yaml over docker-compose.yml.
 dev:
-	docker compose up --build
+	docker compose -f docker-compose.yml up --build
 
 # Stop local containers
 down:
-	docker compose down
+	docker compose -f docker-compose.yml down
 
 # Build image without starting
 build:
@@ -16,7 +18,7 @@ build:
 
 # Tail logs from running container
 logs:
-	docker compose logs -f
+	docker compose -f docker-compose.yml logs -f
 
 ## ── Release workflow ─────────────────────────────────────────────────────────
 
@@ -44,6 +46,8 @@ deploy:
 
 # Build the image from the working tree and restart prod — skips ghcr.io entirely.
 # No version tag, no rollback archive. Use for fast iteration on the server.
+# Uses compose.yaml (the Dockge-managed prod stack; .env -> .env.prod is picked up
+# automatically), so Dockge and make always agree on what prod is.
 deploy-local:
-	docker compose --env-file .env.prod -f docker-compose.prod.yml -f docker-compose.local.yml up -d --build
+	docker compose up -d --build
 	@echo "Deployed local build (life-tracker:local)"

@@ -1,3 +1,7 @@
+# MOVED: superseded by /home/ubuntu/stacks/life-tracker-staging/compose.yaml
+# (Dockge-managed). Kept for reference only — do not `docker compose up` from
+# this file; it fights the Dockge stack over the same project name.
+#
 # Staging stack — coexists with prod on the same VPS for testing local code changes.
 # Builds from source (the git clone on the server), uses a second Discord bot,
 # an isolated SQLite DB, and a separate port. Never touches prod's data/ or config.json.

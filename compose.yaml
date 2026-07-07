@@ -1,0 +1,38 @@
+# 生产栈的唯一权威文件,由 Dockge 管理(Dockge 优先读取 compose.yaml)。
+# 内容 = docker-compose.prod.yml + docker-compose.local.yml 的合并(本地构建模式)。
+# 环境变量来自 .env(软链到 .env.prod)。
+#
+# 部署:docker compose up -d --build   (或 make deploy-local,或 Dockge UI)
+# ghcr.io 锁版本部署仍走:make deploy VERSION=vX.Y.Z(docker-compose.prod.yml)
+services:
+  app:
+    image: life-tracker:local
+    build: .
+    pull_policy: never
+    ports:
+      - "${BIND:-0.0.0.0}:${API_PORT:-8080}:${API_PORT:-8080}"
+    volumes:
+      - ./data:/app/data
+      - ./config.json:/app/config.json
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:${API_PORT:-8080}/api/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+
+  litestream:
+    image: litestream/litestream:0.3.13
+    volumes:
+      - ./data:/data
+      - ./litestream.yml:/etc/litestream.yml:ro
+    environment:
+      - LITESTREAM_ACCESS_KEY_ID
+      - LITESTREAM_SECRET_ACCESS_KEY
+      - R2_BUCKET
+      - R2_ENDPOINT
+    command: replicate
+    restart: unless-stopped
