@@ -348,6 +348,7 @@ async def chat(db: Database, messages: list[dict],
                     db.get_relevant_conversation_snippets,
                     query_embedding, str(config.CHANNEL_ID),
                     model=config.EMBEDDING_MODEL, limit=5, exclude_recent=20,
+                    min_relevance=config.EMBEDDING_MIN_RELEVANCE,
                 )
             except Exception as e:
                 logger.warning(f"⚠️ 历史片段检索失败（跳过注入）: {type(e).__name__}: {e}")

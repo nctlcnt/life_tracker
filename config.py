@@ -292,6 +292,9 @@ EMBEDDING_BASE_URL: str = _embedding.get("base_url", "")
 EMBEDDING_MODEL: str = _embedding.get("model", "")
 # 部分端点（如 Ollama）不支持 dimensions 参数，置 null/0 即不传
 EMBEDDING_DIMENSIONS: int = int(_embedding.get("dimensions", 0) or 0)
+# 语义检索的相关度阈值，与 embedding 模型强绑定——换模型必须跑
+# scripts/calibrate_embedding_threshold.py 重校准后一起改（缺省 0.55 = 智谱 embedding-3 校准值）
+EMBEDDING_MIN_RELEVANCE: float = float(_embedding.get("min_relevance", 0.55) or 0.55)
 EMBEDDING_ENABLED: bool = bool(EMBEDDING_API_KEY and EMBEDDING_MODEL)
 
 # ── 服务器 ─────────────────────────────────────────────────────────────

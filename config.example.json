@@ -45,6 +45,7 @@
       "api_key": "",
       "model": "embedding-3",
       "dimensions": 1024,
+      "min_relevance": 0.55,
       "note": "对话日志语义检索用；留空 api_key 即禁用。OpenAI 兼容 /embeddings 端点"
     }
   },

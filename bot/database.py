@@ -738,10 +738,12 @@ class Database:
           再注入就是重复内容（调用方应传入与 get_recent_ai_messages 一致的窗口大小）
         - 只比对同一 embedding_model 的行：换 embedding 模型后旧向量维度/空间不兼容，
           直接当没有 embedding 处理，等后台任务用新模型逐渐补齐
-        - min_relevance / recency 权重按智谱 embedding-3 + 真实对话数据实测校准：
-          该模型下任意无关中文配对 cosine 就有 0.45~0.52（地板高），有意义的相关是
-          0.65+，所以阈值 0.55；recency 只配 0.1——它只该在相关度接近时偏向最近的，
-          实测 0.25 会让"最近但一般相关"压过"三周前但高度相关"。换模型需重新校准
+        - min_relevance 与 embedding 模型强绑定，跟着 config 的 ai.embedding.min_relevance
+          走（调用方显式传入），换模型必须跑 scripts/calibrate_embedding_threshold.py 重校准。
+          已校准值：智谱 embedding-3 → 0.55（无关地板 0.45~0.52，相关 0.65+）；
+          Qwen/Qwen3-VL-Embedding-8B → 0.50（2026-07-08 校准：无关地板 0.37~0.48，
+          相关命中 0.55~0.82）。recency 只配 0.1——它只该在相关度接近时偏向最近的，
+          实测 0.25 会让"最近但一般相关"压过"三周前但高度相关"
         - 同段对话去重：id 相差 <= CONTEXT_MESSAGES 的命中行是同一段对话
           （embedding_context 互相重叠），只保留一条；保留 id 最大的——
           context 是向前拼接的，id 大的行覆盖整段内容——分数沿用簇内最高
