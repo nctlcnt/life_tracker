@@ -144,26 +144,42 @@ class Scheduler:
         except Exception as send_error:
             logger.warning(f"⚠️ Google Calendar 健康提醒发送失败: {send_error}")
 
+    def poll_enabled(self) -> bool:
+        """随机轮询开关（app_state 持久化，/poll 命令切换）。缺省为开。"""
+        return self.db.get_state("poll_enabled") != "0"
+
     async def _timer_loop(self):
         """
         内存倒计时循环，负责：
-        - 随机轮询：以"上次 AI 调用 + 45-55min 随机"为基准
-        - 睡前提醒（每晚 22:30-23:30 和 23:30-00:00 各一次）
+        - 随机轮询：以"上次 AI 调用 + 45-55min 随机"为基准（可用 /poll 开关）
+        - 睡前提醒（每晚 22:30-23:30 和 23:30-00:00 各一次，不受开关影响）
 
         notify_ai_call_done() 触发的 _timer_event 会唤醒 sleep，
-        让循环根据新的基准时间重算下次 poll。
+        让循环根据新的基准时间重算下次 poll；/poll 切换后也靠它即时生效。
         """
         while self._running:
-            # 下次 poll = 上次 AI 调用时刻 + 45-55min 随机
-            poll_seconds = random.randint(POLL_INTERVAL_MIN, POLL_INTERVAL_MAX)
-            next_poll = self._last_ai_call_ts + timedelta(seconds=poll_seconds)
-
             # 计算今晚的睡前提醒时间
             bedtimes = self._calc_bedtimes(datetime.now())
+            all_times = [(t, "bedtime") for t in bedtimes]
 
-            # 合并所有待触发时间，取最早的
-            all_times = [(next_poll, "poll")] + [(t, "bedtime") for t in bedtimes]
+            if self.poll_enabled():
+                # 下次 poll = 上次 AI 调用时刻 + 45-55min 随机
+                poll_seconds = random.randint(POLL_INTERVAL_MIN, POLL_INTERVAL_MAX)
+                next_poll = self._last_ai_call_ts + timedelta(seconds=poll_seconds)
+                all_times.append((next_poll, "poll"))
+            else:
+                logger.info("🔕 随机轮询已关闭（/poll on 可重新打开）")
+
             all_times.sort(key=lambda x: x[0])
+
+            if not all_times:
+                # 轮询关闭且今晚睡前提醒都已过：干等到被唤醒或半小时后重查
+                self._timer_event.clear()
+                try:
+                    await asyncio.wait_for(self._timer_event.wait(), timeout=1800)
+                except asyncio.TimeoutError:
+                    pass
+                continue
 
             next_time, action_type = all_times[0]
             wait = max((next_time - datetime.now()).total_seconds(), 1)
@@ -211,6 +227,9 @@ class Scheduler:
 
     async def _do_proactive_check(self, timestamp: str):
         """执行随机轮询。AI 忙或用户正在输入时直接跳过，进入下一轮倒计时。"""
+        if not self.poll_enabled():
+            logger.info("⏭️ 轮询已关闭，跳过（sleep 期间被切换）")
+            return
         if self._ai_lock.locked():
             logger.info("⏭️ AI 正在思考，跳过本次轮询")
             return
