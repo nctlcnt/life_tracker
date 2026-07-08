@@ -10,7 +10,7 @@ from bot.prompts import build_tool_round_hint, PromptParts
 from bot.database import Database
 from bot.ai_provider_error import AIProviderError
 from bot.ai_engine_base import (
-    _execute_tool,
+    _execute_tool_async,
     chat as _base_chat, scheduled_action as _base_scheduled_action,
     simple_completion as _base_simple_completion,
 )
@@ -170,7 +170,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                 except json.JSONDecodeError:
                     func_args = {}
 
-                result = _execute_tool(db, func_name, func_args)
+                result = await _execute_tool_async(db, func_name, func_args)
                 called_names.append(func_name)
                 tc_id = tc.get("id", "")
                 trace_tool_calls.append({"name": func_name, "input": func_args, "id": tc_id})

@@ -129,6 +129,50 @@ def _ensure_valid_messages(messages: list[dict]) -> list[dict]:
     return merged
 
 
+async def _execute_tool_async(db: Database, tool_name: str, args: dict) -> dict:
+    """
+    工具执行的统一入口（各引擎调用这里）。
+
+    search_history 要调 embedding API，必须走 async 路径（同步 HTTP 会阻塞
+    event loop，卡住 Discord 心跳）；其余工具都是本地 DB 操作，委托同步 _execute_tool。
+    """
+    if tool_name == "search_history":
+        return await _search_history(db, args)
+    return _execute_tool(db, tool_name, args)
+
+
+async def _search_history(db: Database, args: dict) -> dict:
+    """AI 主动语义检索历史对话（poll 没有用户消息做锚点，让 AI 自己写 query）。"""
+    query = (args.get("query") or "").strip()
+    if not query:
+        return {"success": False, "message": "query 不能为空"}
+    if not config.EMBEDDING_ENABLED:
+        return {"success": False, "message": "语义检索未启用（embedding 未配置）"}
+    query_embedding = await embeddings.embed_text(query)
+    if not query_embedding:
+        return {"success": False, "message": "embedding 调用失败，稍后再试"}
+    snippets = await asyncio.to_thread(
+        db.get_relevant_conversation_snippets,
+        query_embedding, str(config.CHANNEL_ID),
+        model=config.EMBEDDING_MODEL, limit=5, exclude_recent=20,
+        min_relevance=config.EMBEDDING_MIN_RELEVANCE,
+    )
+    if not snippets:
+        return {"success": True, "count": 0, "snippets": [],
+                "message": "没有检索到相关历史片段（可能没聊过，或换个说法再试一次）"}
+    return {
+        "success": True,
+        "count": len(snippets),
+        "snippets": [
+            {
+                "fragment": s.get("embedding_context") or s.get("content") or "",
+                "relevance": s.get("relevance"),
+            }
+            for s in snippets
+        ],
+    }
+
+
 def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
     """执行具体的工具调用，返回结果"""
     if tool_name == "log_timeline_event":

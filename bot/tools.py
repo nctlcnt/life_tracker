@@ -293,6 +293,29 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "search_history",
+            "description": (
+                "语义检索过往对话历史（当前上下文窗口之外的旧对话）。"
+                "当你想回忆用户之前提过的具体事情——尤其是主动联系时想跟进某个话题、"
+                "但眼前上下文里没有细节——先用它查证，不要凭印象编。"
+                "query 用描述性自然语言写你想找的内容（如 'ECON5111 seminar 时间'、'上次做蛋糕'）。"
+                "返回按相关度排序的历史片段；查不到就是没聊过或记录太久远。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "想找的内容，一句描述性自然语言"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "add_deadline",
             "description": "记录一个 deadline。系统自动计算倒计时并在动态上下文中展示。",
             "parameters": {
@@ -359,16 +382,19 @@ SET_TOOL_NAMES = {
 }
 
 # 随机轮询：主要是聊天、设提醒、管记忆
+# search_history 解决 poll 没有用户消息做检索锚点的问题——AI 自己写 query 回忆
 POLL_TOOL_NAMES = {
     "set_reminder", "delete_reminder", "list_reminders",
     "save_memory", "delete_memory", "update_memory",
     "add_deadline", "complete_deadline", "delete_deadline",
+    "search_history",
 }
 
 # 提醒触发：回应提醒、管记忆、取消后续提醒（禁止 set_reminder 防死循环）
 REMINDER_TOOL_NAMES = {
     "list_reminders", "cancel_reminders", "delete_reminder",
     "save_memory", "delete_memory", "update_memory",
+    "search_history",
 }
 
 # 统一调度入口：合并轮询和提醒的工具集

@@ -11,7 +11,7 @@ from bot.prompts import build_tool_round_hint, PromptParts
 from bot.database import Database
 from bot.ai_provider_error import AIProviderError
 from bot.ai_engine_base import (
-    _execute_tool,
+    _execute_tool_async,
     chat as _base_chat, scheduled_action as _base_scheduled_action,
     simple_completion as _base_simple_completion,
 )
@@ -213,7 +213,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                 logger.info(f"🛠️ 调用工具: {tool_use.name} | {desc_first}")
                 logger.info(f"   参数: {tool_use.input}")
 
-                result = _execute_tool(db, tool_use.name, tool_use.input)
+                result = await _execute_tool_async(db, tool_use.name, tool_use.input)
                 called_names.append(tool_use.name)
                 tool_results.append({
                     "type": "tool_result",
