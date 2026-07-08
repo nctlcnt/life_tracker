@@ -139,6 +139,13 @@
 
 .admin-table td.dim { color: var(--muted-foreground); }
 .admin-table td.note-cell { min-width: 180px; }
+.checkin-table .checkin-prompt {
+  max-width: 280px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
 
 .note-input {
   width: 100%;
@@ -214,12 +221,50 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+.form-grid {
+  display: grid;
+  gap: 12px;
+}
+.form-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.form-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.form-textarea {
+  min-height: 140px;
+  resize: vertical;
+  padding: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--foreground);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.form-textarea:focus {
+  outline: none;
+  border-color: var(--foreground);
+}
+.checkin-editor-card { width: min(760px, 100%); }
+.context-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px 12px;
+  padding: 10px 0 14px;
+  font-size: 12px;
+}
 .check-row .check-control {
   display: flex;
   align-items: center;
   gap: 8px;
   min-height: 32px;
   color: var(--foreground);
+}
+
+@media (max-width: 720px) {
+  .form-grid.two,
+  .form-grid.three,
+  .context-grid {
+    grid-template-columns: 1fr;
+  }
 }
 .check-row .check-control input {
   width: 16px;

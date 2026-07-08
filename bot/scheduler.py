@@ -12,18 +12,14 @@
 """
 import asyncio
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from bot.ai_engine import scheduled_action
 from bot.database import Database
 from bot.logger import get_logger
-from bot.prompts import get_proactive_prompt, get_prompt_template
 import config
 
 logger = get_logger(__name__)
 
-# 随机轮询间隔（秒）：上次 AI 调用后 45-55min 再发起下一次 poll
-POLL_INTERVAL_MIN = 45 * 60
-POLL_INTERVAL_MAX = 55 * 60
 CALENDAR_REFRESH_HOUR = 6
 CALENDAR_REFRESH_MINUTE = 5
 REMINDER_BATCH_WINDOW = timedelta(minutes=5)
@@ -59,6 +55,9 @@ class Scheduler:
         """外部调用：任何 AI 调用完成（chat / poll / reminder / bedtime）后调用，
         重置 poll 基准时间。chat 路径需要 Discord Bot 显式调用。"""
         self._last_ai_call_ts = datetime.now()
+        for check_in in self.db.list_check_ins(enabled_only=True):
+            if check_in.get("schedule_type") == "after_ai_call":
+                self.db.set_check_in_last_scheduled(check_in["id"], None)
         self._timer_event.set()
 
     async def start(self):
@@ -146,6 +145,9 @@ class Scheduler:
 
     def poll_enabled(self) -> bool:
         """随机轮询开关（app_state 持久化，/poll 命令切换）。缺省为开。"""
+        check_in = self.db.get_check_in("random_poll")
+        if check_in is not None:
+            return bool(check_in.get("enabled"))
         return self.db.get_state("poll_enabled") != "0"
 
     async def _timer_loop(self):
@@ -158,17 +160,7 @@ class Scheduler:
         让循环根据新的基准时间重算下次 poll；/poll 切换后也靠它即时生效。
         """
         while self._running:
-            # 计算今晚的睡前提醒时间
-            bedtimes = self._calc_bedtimes(datetime.now())
-            all_times = [(t, "bedtime") for t in bedtimes]
-
-            if self.poll_enabled():
-                # 下次 poll = 上次 AI 调用时刻 + 45-55min 随机
-                poll_seconds = random.randint(POLL_INTERVAL_MIN, POLL_INTERVAL_MAX)
-                next_poll = self._last_ai_call_ts + timedelta(seconds=poll_seconds)
-                all_times.append((next_poll, "poll"))
-            else:
-                logger.info("🔕 随机轮询已关闭（/poll on 可重新打开）")
+            all_times = self._calc_checkin_times(datetime.now())
 
             all_times.sort(key=lambda x: x[0])
 
@@ -181,10 +173,10 @@ class Scheduler:
                     pass
                 continue
 
-            next_time, action_type = all_times[0]
+            next_time, check_in = all_times[0]
             wait = max((next_time - datetime.now()).total_seconds(), 1)
 
-            label = "轮询" if action_type == "poll" else "睡前提醒"
+            label = check_in.get("label") or check_in.get("name") or "check-in"
             logger.info(f"🔄 下次{label}在 {next_time.strftime('%H:%M:%S')} ({int(wait)}s 后)")
 
             # sleep 到时机；期间若有 AI 调用完成会通过 _timer_event 提前唤醒重算
@@ -202,82 +194,160 @@ class Scheduler:
 
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-            if action_type == "poll":
-                await self._do_proactive_check(timestamp)
-            else:
-                await self._do_bedtime_reminder(timestamp)
+            await self._do_check_in(check_in, timestamp)
 
-    def _calc_bedtimes(self, now: datetime) -> list[datetime]:
-        """计算今晚的睡前提醒时间（过了的不返回）"""
-        today = now.date()
+    def _calc_checkin_times(self, now: datetime) -> list[tuple[datetime, dict]]:
+        """Calculate future fire times for enabled configurable check-ins."""
+        out: list[tuple[datetime, dict]] = []
+        for check_in in self.db.list_check_ins(enabled_only=True):
+            schedule_type = check_in.get("schedule_type")
+            if schedule_type == "after_ai_call":
+                if not self.db.ttl_followup_enabled():
+                    continue
+                min_minutes = int(check_in.get("interval_min_minutes") or 45)
+                max_minutes = int(check_in.get("interval_max_minutes") or min_minutes)
+                if max_minutes < min_minutes:
+                    max_minutes = min_minutes
+                next_time = self._scheduled_after_ai_call_time(check_in)
+                if next_time is None:
+                    seconds = random.randint(min_minutes * 60, max_minutes * 60)
+                    next_time = self._last_ai_call_ts + timedelta(seconds=seconds)
+                    self.db.set_check_in_last_scheduled(
+                        check_in["id"], next_time.isoformat(timespec="seconds")
+                    )
+                if next_time > now:
+                    out.append((next_time, check_in))
+                continue
 
-        t1_start = datetime.combine(today, datetime.min.time().replace(hour=22, minute=30))
-        t1_end = datetime.combine(today, datetime.min.time().replace(hour=23, minute=30))
-        t2_start = datetime.combine(today, datetime.min.time().replace(hour=23, minute=30))
-        t2_end = datetime.combine(today + timedelta(days=1), datetime.min.time())
+            if schedule_type == "window":
+                next_time = self._next_window_checkin_time(check_in, now)
+                if next_time is not None:
+                    out.append((next_time, check_in))
+        return out
 
-        times = []
-        t1 = t1_start + timedelta(seconds=random.randint(0, int((t1_end - t1_start).total_seconds())))
-        t2 = t2_start + timedelta(seconds=random.randint(0, int((t2_end - t2_start).total_seconds())))
+    def _scheduled_after_ai_call_time(self, check_in: dict) -> datetime | None:
+        raw = check_in.get("last_scheduled_for")
+        if not raw:
+            return None
+        try:
+            scheduled = Database.normalize_local_time(raw)
+        except (TypeError, ValueError):
+            return None
+        if scheduled <= self._last_ai_call_ts:
+            return None
+        return scheduled
 
-        for t in [t1, t2]:
-            if t > now:
-                times.append(t)
-        return times
+    def _next_window_checkin_time(self, check_in: dict, now: datetime) -> datetime | None:
+        days = check_in.get("days_of_week")
+        start_raw = check_in.get("time_start") or "09:00"
+        end_raw = check_in.get("time_end") or start_raw
+        for offset in range(0, 8):
+            day = now.date() + timedelta(days=offset)
+            if days is not None and day.weekday() not in days:
+                continue
+            start = datetime.combine(day, self._parse_hhmm(start_raw))
+            end = datetime.combine(day, self._parse_hhmm(end_raw))
+            if end <= start:
+                end += timedelta(days=1)
+            if self._already_fired_for_window(check_in, start, end):
+                continue
+            scheduled = self._scheduled_for_window(check_in, start, end)
+            if scheduled is None:
+                span = max(int((end - start).total_seconds()), 0)
+                scheduled = start + timedelta(seconds=random.randint(0, span))
+                self.db.set_check_in_last_scheduled(
+                    check_in["id"], scheduled.isoformat(timespec="seconds")
+                )
+                check_in["last_scheduled_for"] = scheduled.isoformat(timespec="seconds")
+            if scheduled > now:
+                return scheduled
+        return None
+
+    @staticmethod
+    def _parse_hhmm(value: str) -> time:
+        hour, minute = value.split(":", 1)
+        return time(hour=int(hour), minute=int(minute))
+
+    @staticmethod
+    def _scheduled_for_window(check_in: dict, start: datetime, end: datetime) -> datetime | None:
+        raw = check_in.get("last_scheduled_for")
+        if not raw:
+            return None
+        try:
+            scheduled = Database.normalize_local_time(raw)
+        except (TypeError, ValueError):
+            return None
+        if start <= scheduled <= end:
+            return scheduled
+        return None
+
+    @staticmethod
+    def _already_fired_for_window(check_in: dict, start: datetime, end: datetime) -> bool:
+        raw = check_in.get("last_fired_at")
+        if not raw:
+            return False
+        try:
+            fired = Database.normalize_local_time(raw)
+        except (TypeError, ValueError):
+            return False
+        return start <= fired <= end
 
     async def _do_proactive_check(self, timestamp: str):
         """执行随机轮询。AI 忙或用户正在输入时直接跳过，进入下一轮倒计时。"""
-        if not self.poll_enabled():
-            logger.info("⏭️ 轮询已关闭，跳过（sleep 期间被切换）")
-            return
-        if self._ai_lock.locked():
-            logger.info("⏭️ AI 正在思考，跳过本次轮询")
-            return
-        if self.is_user_typing():
-            logger.info("⏭️ 用户正在输入，跳过本次轮询")
-            return
-        async with self._ai_lock:
-            try:
-                sections = self.db.get_prompt_sections()
-                prompt = get_proactive_prompt(
-                    config.get_active().provider,
-                    sections,
-                ).format(timestamp=timestamp)
-                # poll 路径只判断"要不要说话"，历史拉短一点省 token
-                history = self.db.get_recent_ai_messages(str(config.CHANNEL_ID), limit=8)
-                reply = await scheduled_action(
-                    self.db, prompt, timestamp, history,
-                    send_callback=self.send, allow_silent=True,
-                    trigger="poll"
-                )
-                if reply:
-                    logger.info(f"📤 主动发送: {reply[:50]}...")
-            except Exception as e:
-                logger.exception(f"❌ 轮询出错: {e}")
-            finally:
-                # 不管 AI 说没说话，cache 钱已付，重置基准
-                self.notify_ai_call_done()
+        check_in = self.db.get_check_in("random_poll")
+        if check_in:
+            await self._do_check_in(check_in, timestamp)
 
     async def _do_bedtime_reminder(self, timestamp: str):
         """执行睡前提醒"""
+        check_in = self.db.get_check_in("bedtime_1")
+        if check_in:
+            await self._do_check_in(check_in, timestamp)
+
+    async def _do_check_in(self, check_in: dict, timestamp: str):
+        """Execute a configurable system check-in."""
+        name = check_in.get("name") or "check_in"
+        if not check_in.get("enabled"):
+            logger.info(f"⏭️ check-in 已关闭，跳过: {name}")
+            return
+        if name == "random_poll" and self.is_user_typing():
+            logger.info("⏭️ 用户正在输入，跳过本次随机 check-in")
+            return
+        should_mark_fired = False
         async with self._ai_lock:
             try:
-                prompt = get_prompt_template(
-                    "bedtime",
-                    self.db.get_prompt_sections(),
-                ).format(timestamp=timestamp)
-                history = self.db.get_recent_ai_messages(str(config.CHANNEL_ID), limit=20)
+                prompt = self._render_check_in_prompt(check_in, timestamp)
+                history_limit = 8 if name == "random_poll" else 20
+                history = self.db.get_recent_ai_messages(str(config.CHANNEL_ID), limit=history_limit)
                 reply = await scheduled_action(
                     self.db, prompt, timestamp, history,
                     send_callback=self.send,
-                    trigger="bedtime"
+                    allow_silent=bool(check_in.get("allow_silent", True)),
+                    trigger="check_in",
+                    tool_profile=check_in.get("tool_profile") or "poll",
+                    check_in_name=name,
+                    context_config=check_in.get("context_config") or {},
                 )
+                should_mark_fired = True
                 if reply:
-                    logger.info(f"😴 睡前提醒: {reply[:50]}...")
+                    logger.info(f"📋 check-in {name}: {reply[:50]}...")
             except Exception as e:
-                logger.exception(f"❌ 睡前提醒出错: {e}")
+                logger.exception(f"❌ check-in 出错 [{name}]: {e}")
             finally:
+                if should_mark_fired:
+                    self.db.mark_check_in_fired(check_in["id"])
                 self.notify_ai_call_done()
+
+    @staticmethod
+    def _render_check_in_prompt(check_in: dict, timestamp: str) -> str:
+        template = check_in.get("prompt_template") or ""
+        values = {
+            "timestamp": timestamp,
+            "name": check_in.get("name") or "",
+            "label": check_in.get("label") or check_in.get("name") or "",
+            "instructions": check_in.get("instructions") or "",
+        }
+        return template.format(**values)
 
     # ── Reminder 循环：数据库提醒，倒计时 + Event 唤醒 ────────
 
@@ -348,7 +418,8 @@ class Scheduler:
                 reply = await scheduled_action(
                     self.db, prompt, timestamp, history,
                     send_callback=self.send,
-                    trigger="reminder"
+                    trigger="reminder",
+                    tool_profile="reminder_safe",
                 )
                 if reply and "[SILENT]" not in reply:
                     logger.info(f"🔔 提醒发送: {reply[:50]}...")

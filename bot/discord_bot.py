@@ -684,7 +684,7 @@ def _tz_command(bot: LifeTrackerBot) -> app_commands.Command:
 
 
 def _poll_command(bot: LifeTrackerBot) -> app_commands.Command:
-    """/poll [on|off] — 无参显示状态；切换随机轮询开关（持久化到 app_state）。"""
+    """/poll [on|off] — 无参显示状态；切换 random_poll check-in。"""
 
     @app_commands.command(name="poll", description="查看或切换随机轮询（主动找你聊天）；睡前提醒和 reminder 不受影响")
     @app_commands.describe(switch="on 打开 / off 关闭，留空显示当前状态")
@@ -695,21 +695,25 @@ def _poll_command(bot: LifeTrackerBot) -> app_commands.Command:
     async def poll(interaction: discord.Interaction, switch: str | None = None):
         if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
             return
-        enabled = bot.db.get_state("poll_enabled") != "0"
+        check_in = bot.db.get_check_in("random_poll")
+        enabled = bool(check_in.get("enabled")) if check_in else bot.db.get_state("poll_enabled") != "0"
         if switch is None:
-            state = "🔔 开启（45-55 分钟随机间隔）" if enabled else "🔕 关闭"
-            await interaction.response.send_message(f"随机轮询当前状态: {state}")
+            ttl = "TTL follow-up 开" if bot.db.ttl_followup_enabled() else "TTL follow-up 关"
+            state = f"🔔 开启（{ttl}）" if enabled else f"🔕 关闭（{ttl}）"
+            await interaction.response.send_message(f"`random_poll` check-in 当前状态: {state}")
             return
         turn_on = switch == "on"
         bot.db.set_state("poll_enabled", "1" if turn_on else "0")
+        if check_in:
+            bot.db.update_check_in("random_poll", enabled=turn_on)
         # 唤醒 timer 循环即时生效；打开时顺便把基准重置到现在（45-55min 后才第一次 poll）
         if bot.on_ai_call_done:
             bot.on_ai_call_done()
         logger.info(f"🔀 随机轮询 → {'开' if turn_on else '关'}")
         if turn_on:
-            await interaction.response.send_message("✅ 随机轮询已打开，45-55 分钟后开始")
+            await interaction.response.send_message("✅ `random_poll` check-in 已打开")
         else:
-            await interaction.response.send_message("🔕 随机轮询已关闭（睡前提醒和 reminder 不受影响）")
+            await interaction.response.send_message("🔕 `random_poll` check-in 已关闭（其他 check-in 和 reminder 不受影响）")
 
     return poll
 

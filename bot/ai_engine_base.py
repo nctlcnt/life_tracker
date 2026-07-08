@@ -27,6 +27,7 @@ _TRIGGER_LABELS = {
     "poll": "🔄 随机轮询",
     "reminder": "🔔 提醒触发",
     "bedtime": "😴 睡前提醒",
+    "check_in": "📋 Check-in",
 }
 
 # 按工具名索引描述（取描述的第一句话作为简要说明）
@@ -70,25 +71,35 @@ def format_tool_calls_summary(called_names: list[str], called_args: list[dict] |
 def _build_prompt(db: Database, mode: str, provider: str = "claude",
                   weather: str | None = None,
                   calendar: str | None = None,
-                  relevant_history: list[dict] | None = None) -> PromptParts:
+                  relevant_history: list[dict] | None = None,
+                  context_config: dict | None = None) -> PromptParts:
     """
     从 DB 取数据，构建完整的 PromptParts 对象。
 
     mode:     "chat"（用户对话）或 "poll"（调度主动聊天）
     provider: AI 引擎标识，透传给 build_prompt（预留 provider-specific prompt 扩展）
     """
-    memories = db.get_all_memories()
-    today_timeline = db.get_today_events()
+    context_config = context_config or {}
+
+    def include(key: str) -> bool:
+        return context_config.get(key, True)
+
+    memories = db.get_all_memories() if include("include_memories") else []
+    today_timeline = db.get_today_events() if include("include_today_timeline") else []
 
     # Deadline：先自动过期，再取 active
-    db.expire_past_deadlines()
-    deadlines = db.get_active_deadlines()
+    deadlines = []
+    if include("include_deadlines"):
+        db.expire_past_deadlines()
+        deadlines = db.get_active_deadlines()
 
-    projects = db.get_all_project_names()
+    projects = db.get_all_project_names() if include("include_projects") else []
 
     # pending reminders 注入 Block 4：让 AI 看到自己已设的 follow-up 队列，
     # 避免被聊天历史带回去重复 set 同一件事。
-    pending_reminders = db.list_active_reminders()
+    pending_reminders = db.list_active_reminders() if include("include_pending_reminders") else []
+    if not include("include_relevant_history"):
+        relevant_history = None
 
     return build_prompt(
         mode,
@@ -427,7 +438,10 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            preset: Preset,
                            send_callback=None,
                            allow_silent: bool = False,
-                           trigger: str | None = None) -> str | None:
+                           trigger: str | None = None,
+                           tool_profile: str | None = None,
+                           check_in_name: str | None = None,
+                           context_config: dict | None = None) -> str | None:
     """
     统一的调度入口：处理主动聊天、提醒触发、睡前提醒等所有非用户消息的 AI 调用。
 
@@ -441,6 +455,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     """
     # 日志：标明触发源
     label = _TRIGGER_LABELS.get(trigger, f"📋 调度({trigger})")
+    if check_in_name:
+        label = f"{label} [{check_in_name}]"
     logger.info(f"{label} ▸ scheduled_action 开始 [{timestamp}]")
 
     # 注：历史为空不代表"没聊过"——也可能是 bot 刚重启或 Discord 历史拉取失败。
@@ -448,12 +464,19 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     # 动态上下文自主决定要不要说话。真觉得没得说，它可以返回 [SILENT]。
 
     # 早上时段查天气
-    weather = await get_weather_brief() if is_morning() else None
-    calendar = await get_calendar_context()
+    context_config = context_config or {}
+    include_weather = context_config.get("include_weather", True)
+    include_calendar = context_config.get("include_calendar", True)
+    weather = await get_weather_brief() if include_weather and is_morning() else None
+    calendar = await get_calendar_context() if include_calendar else None
 
-    prompt_parts = _build_prompt(db, "poll", provider=preset.provider, weather=weather,
-                                 calendar=calendar)
+    prompt_parts = _build_prompt(
+        db, "poll", provider=preset.provider, weather=weather,
+        calendar=calendar, context_config=context_config,
+    )
 
+    if check_in_name:
+        prompt = f"[check_in:{check_in_name}]\n{prompt}"
     messages = [
         *history,
         {"role": "user", "content": prompt}
@@ -461,10 +484,19 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     messages = _ensure_valid_messages(messages)
 
     tool_names = None
-    if trigger == "reminder":
+    profile = tool_profile
+    if profile is None:
+        if trigger == "reminder":
+            profile = "reminder_safe"
+        elif trigger in {"poll", "bedtime", "check_in"}:
+            profile = "poll"
+
+    if profile == "reminder_safe":
         tool_names = REMINDER_TOOL_NAMES
-    elif trigger in {"poll", "bedtime"}:
+    elif profile == "poll":
         tool_names = POLL_TOOL_NAMES
+    elif profile == "none":
+        tool_names = set()
 
     trace.start(trigger=trigger or "scheduled", model=preset.model, provider=preset.provider,
                 prompt_parts=prompt_parts, messages=messages)

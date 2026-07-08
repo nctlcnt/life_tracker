@@ -41,6 +41,34 @@ interface PromptsResp {
   sections: PromptSection[];
 }
 
+interface CheckIn {
+  id: number;
+  name: string;
+  label: string;
+  enabled: boolean;
+  schedule_type: 'window' | 'after_ai_call';
+  time_start: string | null;
+  time_end: string | null;
+  days_of_week: number[] | null;
+  interval_min_minutes: number | null;
+  interval_max_minutes: number | null;
+  prompt_template: string;
+  instructions?: string;
+  context_config?: Record<string, boolean>;
+  tool_profile: 'poll' | 'reminder_safe' | 'none';
+  allow_silent: boolean;
+  last_scheduled_for: string | null;
+  last_fired_at: string | null;
+  built_in: boolean;
+}
+
+interface CheckInsResp {
+  check_ins: CheckIn[];
+  settings: {
+    ttl_followup_enabled: boolean;
+  };
+}
+
 interface FormData {
   name: string;
   provider: string;
@@ -51,7 +79,34 @@ interface FormData {
   note: string;
 }
 
+interface CheckInFormData {
+  name: string;
+  label: string;
+  enabled: boolean;
+  schedule_type: 'window' | 'after_ai_call';
+  time_start: string;
+  time_end: string;
+  days_of_week: string;
+  interval_min_minutes: string;
+  interval_max_minutes: string;
+  prompt_template: string;
+  instructions: string;
+  tool_profile: 'poll' | 'reminder_safe' | 'none';
+  allow_silent: boolean;
+  context_config: Record<string, boolean>;
+}
+
 const PROVIDERS = ['claude', 'openai', 'relay', 'gemini'] as const;
+const CHECK_IN_CONTEXT_KEYS = [
+  'include_projects',
+  'include_memories',
+  'include_relevant_history',
+  'include_today_timeline',
+  'include_pending_reminders',
+  'include_deadlines',
+  'include_weather',
+  'include_calendar',
+] as const;
 
 const emptyForm: FormData = {
   name: '',
@@ -125,7 +180,7 @@ const PLACEHOLDER_DOCS: [string, string][] = [
 ];
 
 export function AdminPanel() {
-  const [tab, setTab] = useState<'presets' | 'prompts'>('presets');
+  const [tab, setTab] = useState<'presets' | 'prompts' | 'checkins'>('presets');
   const [data, setData] = useState<PresetsResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -210,6 +265,8 @@ export function AdminPanel() {
                     onClick={() => setTab('presets')}>Presets</button>
             <button className={tab === 'prompts' ? 'active' : ''}
                     onClick={() => setTab('prompts')}>Prompts</button>
+            <button className={tab === 'checkins' ? 'active' : ''}
+                    onClick={() => setTab('checkins')}>Check-ins</button>
           </div>
         </div>
         <div className="admin-actions">
@@ -227,6 +284,8 @@ export function AdminPanel() {
 
       {tab === 'prompts' ? (
         <PromptAdmin />
+      ) : tab === 'checkins' ? (
+        <CheckInAdmin />
       ) : !data ? (
         <div className={`admin-msg ${err ? 'err' : ''}`}>
           {err ? `加载失败: ${err}` : '加载中…'}
@@ -317,6 +376,399 @@ export function AdminPanel() {
       )}
         </>
       )}
+    </div>
+  );
+}
+
+function fmtSchedule(checkIn: CheckIn) {
+  if (checkIn.schedule_type === 'after_ai_call') {
+    const min = checkIn.interval_min_minutes ?? 45;
+    const max = checkIn.interval_max_minutes ?? min;
+    return `after AI call + ${min}-${max}m`;
+  }
+  const time = checkIn.time_start === checkIn.time_end
+    ? (checkIn.time_start ?? '—')
+    : `${checkIn.time_start ?? '—'}-${checkIn.time_end ?? '—'}`;
+  if (!checkIn.days_of_week || checkIn.days_of_week.length === 0) return `daily ${time}`;
+  return `${checkIn.days_of_week.join(',')} · ${time}`;
+}
+
+function CheckInAdmin() {
+  const [data, setData] = useState<CheckInsResp | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [editor, setEditor] = useState<{ mode: 'add' | 'edit'; original?: CheckIn } | null>(null);
+
+  const load = async () => {
+    try {
+      const r = await fetch('/api/check-ins');
+      if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+      setData(await r.json());
+      setErr(null);
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const patchCheckIn = async (id: number, body: unknown) => {
+    setBusy(String(id));
+    try {
+      await patchJson(`/api/check-ins/${id}`, body);
+      await load();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const setTtl = async (enabled: boolean) => {
+    setBusy('ttl');
+    try {
+      await patchJson('/api/settings/check-ins', { ttl_followup_enabled: enabled });
+      await load();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const saveCheckIn = async (form: CheckInFormData) => {
+    const body = checkInFormToBody(form);
+    if (editor?.mode === 'edit' && editor.original) {
+      await patchJson(`/api/check-ins/${editor.original.id}`, body);
+    } else {
+      await postJson('/api/check-ins', body);
+    }
+    setEditor(null);
+    await load();
+  };
+
+  const deleteCheckIn = async (checkIn: CheckIn) => {
+    if (checkIn.built_in) return;
+    if (!window.confirm(`Delete check-in "${checkIn.name}"?`)) return;
+    setBusy(String(checkIn.id));
+    try {
+      await delJson(`/api/check-ins/${checkIn.id}`);
+      await load();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (err && !data) return <div className="admin-msg err">加载失败: {err}</div>;
+  if (!data) return <div className="admin-msg">加载中…</div>;
+
+  return (
+    <div className="checkin-admin">
+      {err && <div className="admin-msg err">{err}</div>}
+
+      <div className="admin-summary">
+        <span className="badge"><b>TTL follow-up</b>{data.settings.ttl_followup_enabled ? 'on' : 'off'}</span>
+        <button
+          className="admin-btn"
+          disabled={busy === 'ttl'}
+          onClick={() => setTtl(!data.settings.ttl_followup_enabled)}
+        >
+          {data.settings.ttl_followup_enabled ? 'Turn off TTL' : 'Turn on TTL'}
+        </button>
+        <button className="admin-btn primary" onClick={() => setEditor({ mode: 'add' })}>
+          + Add check-in
+        </button>
+        <button className="admin-btn" onClick={load}>Refresh</button>
+      </div>
+
+      <table className="admin-table checkin-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Enabled</th>
+            <th>Schedule</th>
+            <th>Profile</th>
+            <th>Silent</th>
+            <th>Last fired</th>
+            <th>Next picked</th>
+            <th>Prompt</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.check_ins.map(checkIn => (
+            <tr key={checkIn.id}>
+              <td>
+                <div className="name">{checkIn.label}</div>
+                <div className="mono dim">{checkIn.name}{checkIn.built_in ? ' · built-in' : ''}</div>
+              </td>
+              <td>
+                <button
+                  className={`admin-btn ${checkIn.enabled ? 'primary' : ''}`}
+                  disabled={busy === String(checkIn.id)}
+                  onClick={() => patchCheckIn(checkIn.id, { enabled: !checkIn.enabled })}
+                >
+                  {checkIn.enabled ? 'On' : 'Off'}
+                </button>
+              </td>
+              <td>{fmtSchedule(checkIn)}</td>
+              <td><span className="tag tag-fallback">{checkIn.tool_profile}</span></td>
+              <td>{checkIn.allow_silent ? 'prompt-driven' : 'off'}</td>
+              <td className="mono dim">{checkIn.last_fired_at ?? '—'}</td>
+              <td className="mono dim">{checkIn.last_scheduled_for ?? '—'}</td>
+              <td className="checkin-prompt">
+                {checkIn.prompt_template.slice(0, 140)}
+                {checkIn.prompt_template.length > 140 ? '…' : ''}
+              </td>
+              <td className="actions">
+                <button className="admin-btn" onClick={() => setEditor({ mode: 'edit', original: checkIn })}>
+                  Edit
+                </button>
+                <button
+                  className="admin-btn warn"
+                  disabled={checkIn.built_in || busy === String(checkIn.id)}
+                  onClick={() => deleteCheckIn(checkIn)}
+                >
+                  Delete
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {editor && (
+        <CheckInEditor
+          mode={editor.mode}
+          original={editor.original}
+          onCancel={() => setEditor(null)}
+          onSubmit={saveCheckIn}
+        />
+      )}
+    </div>
+  );
+}
+
+function defaultContextConfig() {
+  return Object.fromEntries(CHECK_IN_CONTEXT_KEYS.map(key => [key, true])) as Record<string, boolean>;
+}
+
+function checkInToForm(checkIn?: CheckIn): CheckInFormData {
+  if (!checkIn) {
+    return {
+      name: '',
+      label: '',
+      enabled: true,
+      schedule_type: 'window',
+      time_start: '09:00',
+      time_end: '09:15',
+      days_of_week: '',
+      interval_min_minutes: '45',
+      interval_max_minutes: '55',
+      prompt_template: 'Current timestamp: {timestamp}\n\n{instructions}',
+      instructions: '',
+      tool_profile: 'poll',
+      allow_silent: true,
+      context_config: defaultContextConfig(),
+    };
+  }
+  return {
+    name: checkIn.name,
+    label: checkIn.label,
+    enabled: checkIn.enabled,
+    schedule_type: checkIn.schedule_type,
+    time_start: checkIn.time_start ?? '09:00',
+    time_end: checkIn.time_end ?? checkIn.time_start ?? '09:15',
+    days_of_week: checkIn.days_of_week?.join(',') ?? '',
+    interval_min_minutes: String(checkIn.interval_min_minutes ?? 45),
+    interval_max_minutes: String(checkIn.interval_max_minutes ?? checkIn.interval_min_minutes ?? 55),
+    prompt_template: checkIn.prompt_template,
+    instructions: checkIn.instructions ?? '',
+    tool_profile: checkIn.tool_profile,
+    allow_silent: checkIn.allow_silent,
+    context_config: { ...defaultContextConfig(), ...(checkIn.context_config ?? {}) },
+  };
+}
+
+function checkInFormToBody(form: CheckInFormData) {
+  const days = form.days_of_week.trim()
+    ? form.days_of_week.split(',').map(v => Number(v.trim())).filter(v => !Number.isNaN(v))
+    : null;
+  return {
+    name: form.name.trim(),
+    label: form.label.trim() || form.name.trim(),
+    enabled: form.enabled,
+    schedule_type: form.schedule_type,
+    time_start: form.schedule_type === 'window' ? form.time_start : null,
+    time_end: form.schedule_type === 'window' ? form.time_end : null,
+    days_of_week: form.schedule_type === 'window' ? days : null,
+    interval_min_minutes: form.schedule_type === 'after_ai_call' ? form.interval_min_minutes : null,
+    interval_max_minutes: form.schedule_type === 'after_ai_call' ? form.interval_max_minutes : null,
+    prompt_template: form.prompt_template,
+    instructions: form.instructions,
+    tool_profile: form.tool_profile,
+    allow_silent: form.allow_silent,
+    context_config: form.context_config,
+  };
+}
+
+function CheckInEditor({
+  mode, original, onCancel, onSubmit,
+}: {
+  mode: 'add' | 'edit';
+  original?: CheckIn;
+  onCancel: () => void;
+  onSubmit: (form: CheckInFormData) => Promise<void>;
+}) {
+  const [form, setForm] = useState<CheckInFormData>(() => checkInToForm(original));
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const update = <K extends keyof CheckInFormData>(key: K, value: CheckInFormData[K]) => {
+    setForm(prev => ({ ...prev, [key]: value }));
+  };
+  const updateContext = (key: string, checked: boolean) => {
+    setForm(prev => ({ ...prev, context_config: { ...prev.context_config, [key]: checked } }));
+  };
+  const submit = async () => {
+    setSubmitting(true);
+    setErr(null);
+    try {
+      await onSubmit(form);
+    } catch (e) {
+      setErr(String(e));
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal-card checkin-editor-card" onClick={(e) => e.stopPropagation()}>
+        <h2>{mode === 'add' ? 'Add check-in' : `Edit · ${original?.name}`}</h2>
+
+        <div className="form-grid two">
+          <label className="form-row">
+            <span>Name</span>
+            <input type="text" value={form.name} disabled={mode === 'edit'}
+                   onChange={(e) => update('name', e.target.value)} />
+          </label>
+          <label className="form-row">
+            <span>Label</span>
+            <input type="text" value={form.label}
+                   onChange={(e) => update('label', e.target.value)} />
+          </label>
+        </div>
+
+        <div className="form-grid two">
+          <label className="form-row">
+            <span>Schedule</span>
+            <select value={form.schedule_type}
+                    onChange={(e) => update('schedule_type', e.target.value as CheckInFormData['schedule_type'])}>
+              <option value="window">Time window</option>
+              <option value="after_ai_call">After AI call</option>
+            </select>
+          </label>
+          <label className="form-row">
+            <span>Tool profile</span>
+            <select value={form.tool_profile}
+                    onChange={(e) => update('tool_profile', e.target.value as CheckInFormData['tool_profile'])}>
+              <option value="poll">poll</option>
+              <option value="reminder_safe">reminder_safe</option>
+              <option value="none">none</option>
+            </select>
+          </label>
+        </div>
+
+        {form.schedule_type === 'window' ? (
+          <div className="form-grid three">
+            <label className="form-row">
+              <span>Start</span>
+              <input type="time" value={form.time_start}
+                     onChange={(e) => update('time_start', e.target.value)} />
+            </label>
+            <label className="form-row">
+              <span>End</span>
+              <input type="time" value={form.time_end}
+                     onChange={(e) => update('time_end', e.target.value)} />
+            </label>
+            <label className="form-row">
+              <span>Days</span>
+              <input type="text" value={form.days_of_week}
+                     placeholder="blank = daily, or 0,1,2"
+                     onChange={(e) => update('days_of_week', e.target.value)} />
+            </label>
+          </div>
+        ) : (
+          <div className="form-grid two">
+            <label className="form-row">
+              <span>Min minutes</span>
+              <input type="number" min="1" value={form.interval_min_minutes}
+                     onChange={(e) => update('interval_min_minutes', e.target.value)} />
+            </label>
+            <label className="form-row">
+              <span>Max minutes</span>
+              <input type="number" min="1" value={form.interval_max_minutes}
+                     onChange={(e) => update('interval_max_minutes', e.target.value)} />
+            </label>
+          </div>
+        )}
+
+        <div className="form-grid two">
+          <label className="form-row check-row">
+            <span>Enabled</span>
+            <label className="check-control">
+              <input type="checkbox" checked={form.enabled}
+                     onChange={(e) => update('enabled', e.target.checked)} />
+              <span>Run this check-in</span>
+            </label>
+          </label>
+          <label className="form-row check-row">
+            <span>Silent</span>
+            <label className="check-control">
+              <input type="checkbox" checked={form.allow_silent}
+                     onChange={(e) => update('allow_silent', e.target.checked)} />
+              <span>Allow [SILENT]</span>
+            </label>
+          </label>
+        </div>
+
+        <label className="form-row">
+          <span>Instructions</span>
+          <input type="text" value={form.instructions}
+                 placeholder="available as {instructions}"
+                 onChange={(e) => update('instructions', e.target.value)} />
+        </label>
+
+        <label className="form-row">
+          <span>Prompt template</span>
+          <textarea className="form-textarea" value={form.prompt_template}
+                    spellCheck={false}
+                    onChange={(e) => update('prompt_template', e.target.value)} />
+          <span className="form-hint">Available placeholders: {'{timestamp}'}, {'{name}'}, {'{label}'}, {'{instructions}'}</span>
+        </label>
+
+        <div className="context-grid">
+          {CHECK_IN_CONTEXT_KEYS.map(key => (
+            <label key={key} className="check-control">
+              <input type="checkbox" checked={form.context_config[key] ?? true}
+                     onChange={(e) => updateContext(key, e.target.checked)} />
+              <span>{key.replace('include_', '')}</span>
+            </label>
+          ))}
+        </div>
+
+        {err && <div className="form-err">{err}</div>}
+
+        <div className="modal-actions">
+          <button className="admin-btn" onClick={onCancel} disabled={submitting}>Cancel</button>
+          <button className="admin-btn primary" onClick={submit}
+                  disabled={submitting || !form.name.trim() || !form.prompt_template.trim()}>
+            {submitting ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

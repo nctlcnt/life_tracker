@@ -159,6 +159,31 @@ class Database:
                 updated_at TEXT DEFAULT (datetime('now'))
             );
 
+            -- 可配置系统 check-in。用于长期/重复的主动触发项；
+            -- 一次性 reminders 仍保留在 reminders 表。
+            CREATE TABLE IF NOT EXISTS check_ins (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                label TEXT NOT NULL,
+                enabled INTEGER DEFAULT 1,
+                schedule_type TEXT NOT NULL,
+                time_start TEXT,
+                time_end TEXT,
+                days_of_week TEXT,
+                interval_min_minutes INTEGER,
+                interval_max_minutes INTEGER,
+                prompt_template TEXT NOT NULL DEFAULT '',
+                instructions TEXT DEFAULT '',
+                context_config_json TEXT,
+                tool_profile TEXT NOT NULL DEFAULT 'poll',
+                allow_silent INTEGER DEFAULT 1,
+                last_scheduled_for TEXT,
+                last_fired_at TEXT,
+                built_in INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+
             -- AI 行为可追溯性：每次 AI 调用（chat/scheduled_action）一行，
             -- 复用 bot/trace.py 的 run 生命周期，finalize() 时落库。
             CREATE TABLE IF NOT EXISTS ai_runs (
@@ -252,6 +277,20 @@ class Database:
         except sqlite3.OperationalError:
             pass
 
+        for stmt in (
+            "ALTER TABLE check_ins ADD COLUMN instructions TEXT DEFAULT ''",
+            "ALTER TABLE check_ins ADD COLUMN context_config_json TEXT",
+            "ALTER TABLE check_ins ADD COLUMN allow_silent INTEGER DEFAULT 1",
+            "ALTER TABLE check_ins ADD COLUMN last_scheduled_for TEXT",
+            "ALTER TABLE check_ins ADD COLUMN last_fired_at TEXT",
+            "ALTER TABLE check_ins ADD COLUMN built_in INTEGER DEFAULT 0",
+            "ALTER TABLE check_ins ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
+
         # 一次性兼容迁移：项目曾经只存在于 events.project_name。
         # 新版本改为用户手动项目表后，需要把已有历史项目注册进去，避免升级后 Project Overview 变空。
         conn.execute("""
@@ -284,8 +323,128 @@ class Database:
             from bot.logger import get_logger
             get_logger(__name__).info("✅ [LT-129] main_template 已从旧结构化 prompt section 合成")
 
+        self._ensure_default_check_ins(conn)
+
         conn.commit()
         conn.close()
+
+    def _ensure_default_check_ins(self, conn: sqlite3.Connection) -> None:
+        """Seed built-in configurable check-ins without overwriting user edits."""
+        rows = conn.execute("SELECT key, value FROM prompt_sections").fetchall()
+        sections = {row["key"]: row["value"] for row in rows}
+        state_row = conn.execute(
+            "SELECT value FROM app_state WHERE key = 'poll_enabled'"
+        ).fetchone()
+        random_poll_enabled = state_row["value"] if state_row else None
+        if random_poll_enabled is None:
+            random_poll_enabled = "1"
+
+        defaults = [
+            {
+                "name": "random_poll",
+                "label": "Random poll",
+                "enabled": 1 if random_poll_enabled != "0" else 0,
+                "schedule_type": "after_ai_call",
+                "interval_min_minutes": 45,
+                "interval_max_minutes": 55,
+                "prompt_template": sections.get("proactive_claude") or sections.get("proactive_gemini") or (
+                    "Current timestamp: {timestamp}\n\n"
+                    "Decide whether to proactively message the user. If there is nothing useful to say, respond with [SILENT]."
+                ),
+                "tool_profile": "poll",
+                "allow_silent": 1,
+            },
+            {
+                "name": "morning",
+                "label": "Morning check-in",
+                "enabled": 0,
+                "schedule_type": "window",
+                "time_start": "08:00",
+                "time_end": "09:00",
+                "prompt_template": sections.get("morning") or (
+                    "Current timestamp: {timestamp}\n\n"
+                    "This is a morning check-in. If useful, help the user orient around today's known commitments and one practical next step. If not useful, respond with [SILENT]."
+                ),
+                "tool_profile": "poll",
+                "allow_silent": 1,
+            },
+            {
+                "name": "bedtime_1",
+                "label": "Bedtime check-in 1",
+                "enabled": 1,
+                "schedule_type": "window",
+                "time_start": "22:30",
+                "time_end": "23:30",
+                "prompt_template": sections.get("bedtime") or (
+                    "Current timestamp: {timestamp}\n\n"
+                    "This is a bedtime check-in. If useful, help the user close the day with a brief summary or one practical next step. If not useful, respond with [SILENT]."
+                ),
+                "tool_profile": "poll",
+                "allow_silent": 1,
+            },
+            {
+                "name": "bedtime_2",
+                "label": "Bedtime check-in 2",
+                "enabled": 1,
+                "schedule_type": "window",
+                "time_start": "23:30",
+                "time_end": "00:00",
+                "prompt_template": sections.get("bedtime") or (
+                    "Current timestamp: {timestamp}\n\n"
+                    "This is a bedtime check-in. If useful, help the user close the day with a brief summary or one practical next step. If not useful, respond with [SILENT]."
+                ),
+                "tool_profile": "poll",
+                "allow_silent": 1,
+            },
+        ]
+
+        default_context = json.dumps({
+            "include_projects": True,
+            "include_memories": True,
+            "include_relevant_history": True,
+            "include_today_timeline": True,
+            "include_pending_reminders": True,
+            "include_deadlines": True,
+            "include_weather": True,
+            "include_calendar": True,
+        })
+
+        for item in defaults:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO check_ins (
+                    name, label, enabled, schedule_type, time_start, time_end,
+                    days_of_week, interval_min_minutes, interval_max_minutes,
+                    prompt_template, instructions, context_config_json,
+                    tool_profile, allow_silent, built_in
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    item["name"],
+                    item["label"],
+                    item["enabled"],
+                    item["schedule_type"],
+                    item.get("time_start"),
+                    item.get("time_end"),
+                    None,
+                    item.get("interval_min_minutes"),
+                    item.get("interval_max_minutes"),
+                    item["prompt_template"],
+                    "",
+                    default_context,
+                    item["tool_profile"],
+                    item["allow_silent"],
+                ),
+            )
+
+        conn.execute(
+            """
+            INSERT INTO app_state (key, value, updated_at)
+            VALUES ('checkin_ttl_followup_enabled', '1', datetime('now'))
+            ON CONFLICT(key) DO NOTHING
+            """
+        )
 
     # ============ Prompt 管理 ============
 
@@ -333,6 +492,195 @@ class Database:
         conn.commit()
         conn.close()
         return current is None or current["value"] != v
+
+    # ============ Check-in 管理 ============
+
+    CHECK_IN_SCHEDULE_TYPES = {"window", "after_ai_call"}
+    CHECK_IN_TOOL_PROFILES = {"poll", "reminder_safe", "none"}
+
+    @staticmethod
+    def _decode_check_in(row: sqlite3.Row) -> dict:
+        item = dict(row)
+        for key in ("enabled", "allow_silent", "built_in"):
+            item[key] = bool(item.get(key))
+        for key, default in (
+            ("days_of_week", None),
+            ("context_config_json", {}),
+        ):
+            raw = item.get(key)
+            if raw:
+                try:
+                    item[key] = json.loads(raw)
+                except json.JSONDecodeError:
+                    item[key] = default
+            else:
+                item[key] = default
+        item["context_config"] = item.pop("context_config_json")
+        return item
+
+    @staticmethod
+    def _encode_json(value, default):
+        if value is None:
+            value = default
+        return json.dumps(value)
+
+    def list_check_ins(self, enabled_only: bool = False) -> list[dict]:
+        """List configured check-ins, built-ins first."""
+        conn = self._get_conn()
+        if enabled_only:
+            rows = conn.execute(
+                """
+                SELECT * FROM check_ins
+                WHERE enabled = 1
+                ORDER BY built_in DESC, id ASC
+                """
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM check_ins ORDER BY built_in DESC, id ASC"
+            ).fetchall()
+        conn.close()
+        return [self._decode_check_in(row) for row in rows]
+
+    def get_check_in(self, check_in_id_or_name) -> Optional[dict]:
+        conn = self._get_conn()
+        if isinstance(check_in_id_or_name, int) or str(check_in_id_or_name).isdigit():
+            row = conn.execute(
+                "SELECT * FROM check_ins WHERE id = ?",
+                (int(check_in_id_or_name),),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM check_ins WHERE name = ?",
+                (str(check_in_id_or_name),),
+            ).fetchone()
+        conn.close()
+        return self._decode_check_in(row) if row else None
+
+    def create_check_in(self, **fields) -> int:
+        name = (fields.get("name") or "").strip()
+        label = (fields.get("label") or name).strip()
+        prompt_template = (fields.get("prompt_template") or "").strip()
+        schedule_type = (fields.get("schedule_type") or "").strip()
+        tool_profile = (fields.get("tool_profile") or "poll").strip()
+        if not name:
+            raise ValueError("name required")
+        if not prompt_template:
+            raise ValueError("prompt_template required")
+        if schedule_type not in self.CHECK_IN_SCHEDULE_TYPES:
+            raise ValueError(f"invalid schedule_type: {schedule_type}")
+        if tool_profile not in self.CHECK_IN_TOOL_PROFILES:
+            raise ValueError(f"invalid tool_profile: {tool_profile}")
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """
+            INSERT INTO check_ins (
+                name, label, enabled, schedule_type, time_start, time_end,
+                days_of_week, interval_min_minutes, interval_max_minutes,
+                prompt_template, instructions, context_config_json,
+                tool_profile, allow_silent, built_in
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            """,
+            (
+                name,
+                label,
+                1 if fields.get("enabled", True) else 0,
+                schedule_type,
+                fields.get("time_start"),
+                fields.get("time_end"),
+                self._encode_json(fields.get("days_of_week"), None),
+                fields.get("interval_min_minutes"),
+                fields.get("interval_max_minutes"),
+                prompt_template,
+                fields.get("instructions") or "",
+                self._encode_json(fields.get("context_config"), {}),
+                tool_profile,
+                1 if fields.get("allow_silent", True) else 0,
+            ),
+        )
+        conn.commit()
+        check_in_id = cursor.lastrowid
+        conn.close()
+        return check_in_id
+
+    def update_check_in(self, check_in_id_or_name, **fields) -> bool:
+        allowed = {
+            "label", "enabled", "schedule_type", "time_start", "time_end",
+            "days_of_week", "interval_min_minutes", "interval_max_minutes",
+            "prompt_template", "instructions", "context_config",
+            "tool_profile", "allow_silent", "last_scheduled_for",
+            "last_fired_at",
+        }
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return False
+        if "schedule_type" in updates and updates["schedule_type"] not in self.CHECK_IN_SCHEDULE_TYPES:
+            raise ValueError(f"invalid schedule_type: {updates['schedule_type']}")
+        if "tool_profile" in updates and updates["tool_profile"] not in self.CHECK_IN_TOOL_PROFILES:
+            raise ValueError(f"invalid tool_profile: {updates['tool_profile']}")
+        if "context_config" in updates:
+            updates["context_config_json"] = self._encode_json(updates.pop("context_config"), {})
+        if "days_of_week" in updates:
+            updates["days_of_week"] = self._encode_json(updates["days_of_week"], None)
+        for key in ("enabled", "allow_silent"):
+            if key in updates:
+                updates[key] = 1 if updates[key] else 0
+        updates["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+        set_clause = ", ".join(f"{key} = ?" for key in updates)
+        values = list(updates.values())
+        conn = self._get_conn()
+        if isinstance(check_in_id_or_name, int) or str(check_in_id_or_name).isdigit():
+            values.append(int(check_in_id_or_name))
+            cursor = conn.execute(
+                f"UPDATE check_ins SET {set_clause} WHERE id = ?",
+                values,
+            )
+        else:
+            values.append(str(check_in_id_or_name))
+            cursor = conn.execute(
+                f"UPDATE check_ins SET {set_clause} WHERE name = ?",
+                values,
+            )
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
+    def delete_check_in(self, check_in_id_or_name) -> bool:
+        """Delete custom check-ins. Built-ins are preserved and should be disabled."""
+        conn = self._get_conn()
+        if isinstance(check_in_id_or_name, int) or str(check_in_id_or_name).isdigit():
+            cursor = conn.execute(
+                "DELETE FROM check_ins WHERE id = ? AND built_in = 0",
+                (int(check_in_id_or_name),),
+            )
+        else:
+            cursor = conn.execute(
+                "DELETE FROM check_ins WHERE name = ? AND built_in = 0",
+                (str(check_in_id_or_name),),
+            )
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
+    def set_check_in_last_scheduled(self, check_in_id: int, scheduled_for: str | None) -> None:
+        self.update_check_in(check_in_id, last_scheduled_for=scheduled_for)
+
+    def mark_check_in_fired(self, check_in_id: int, fired_at: str | None = None) -> None:
+        self.update_check_in(
+            check_in_id,
+            last_fired_at=fired_at or datetime.now().isoformat(timespec="seconds"),
+            last_scheduled_for=None,
+        )
+
+    def ttl_followup_enabled(self) -> bool:
+        return self.get_state("checkin_ttl_followup_enabled") != "0"
+
+    def set_ttl_followup_enabled(self, enabled: bool) -> None:
+        self.set_state("checkin_ttl_followup_enabled", "1" if enabled else "0")
 
     # ============ 时间轴事件 ============
 

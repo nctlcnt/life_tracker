@@ -80,10 +80,15 @@ async def chat(db, messages: list[dict],
 async def scheduled_action(db, prompt: str, timestamp: str,
                            history: list[dict],
                            send_callback=None, allow_silent: bool = False,
-                           trigger: str | None = None) -> str | None:
+                           trigger: str | None = None,
+                           tool_profile: str | None = None,
+                           check_in_name: str | None = None,
+                           context_config: dict | None = None) -> str | None:
     return await _run_with_fallback(
         "scheduled_action", db, prompt, timestamp, history,
         send_callback=send_callback, allow_silent=allow_silent, trigger=trigger,
+        tool_profile=tool_profile, check_in_name=check_in_name,
+        context_config=context_config,
     )
 
 

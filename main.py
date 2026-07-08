@@ -30,7 +30,7 @@ from bot.timezone_state import init_timezone
 init_timezone(config.TIMEZONE)
 
 from bot.database import Database
-from api.server import app as fastapi_app, set_database
+from api.server import app as fastapi_app, set_check_in_changed_callback, set_database
 from bot import test_mode
 
 
@@ -77,6 +77,7 @@ async def main(test: bool = False, api_only: bool = False):
             is_user_typing_callback=bot.is_user_typing,
         )
         db._on_reminder_added = scheduler.notify_new_reminder
+        set_check_in_changed_callback(scheduler.notify_ai_call_done)
         # chat 完成后通知 scheduler 重置 poll 基准（避免 45-55min 内再轮询）
         bot.on_ai_call_done = scheduler.notify_ai_call_done
 

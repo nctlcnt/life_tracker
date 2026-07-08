@@ -4,6 +4,7 @@ FastAPI 接口模块
 """
 import os
 import re
+import sqlite3
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -24,11 +25,22 @@ app.add_middleware(
 
 # 数据库实例会在 main.py 启动时注入
 db: Database | None = None
+_check_in_changed_callback = None
 
 
 def set_database(database: Database):
     global db
     db = database
+
+
+def set_check_in_changed_callback(callback):
+    global _check_in_changed_callback
+    _check_in_changed_callback = callback
+
+
+def _notify_check_in_changed():
+    if _check_in_changed_callback:
+        _check_in_changed_callback()
 
 
 @app.get("/api/calendar/oauth/callback", response_class=HTMLResponse)
@@ -201,6 +213,145 @@ async def get_reminders(status: str = None, done: int = None):
         ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ── Configurable check-ins ─────────────────────────────────────────────
+
+_CHECK_IN_TEMPLATE_TOKENS = {"timestamp", "name", "label", "instructions"}
+_HHMM_RE = re.compile(r"^\d{2}:\d{2}$")
+
+
+def _validate_hhmm(value: str | None, field: str) -> None:
+    if value is None:
+        return
+    if not _HHMM_RE.match(value):
+        raise HTTPException(status_code=400, detail=f"{field} must be HH:MM")
+    hour, minute = value.split(":", 1)
+    if not (0 <= int(hour) <= 23 and 0 <= int(minute) <= 59):
+        raise HTTPException(status_code=400, detail=f"{field} must be a valid HH:MM")
+
+
+def _validate_check_in_template(value: str) -> None:
+    import string
+    try:
+        used = {
+            field_name
+            for _, field_name, _, _ in string.Formatter().parse(value)
+            if field_name
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"invalid format braces: {e}")
+    unknown = used - _CHECK_IN_TEMPLATE_TOKENS
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown placeholder(s): {', '.join(sorted(unknown))}",
+        )
+
+
+def _check_in_fields_from_body(body: dict, *, partial: bool = False) -> dict:
+    fields = {}
+    allowed = {
+        "name", "label", "enabled", "schedule_type", "time_start", "time_end",
+        "days_of_week", "interval_min_minutes", "interval_max_minutes",
+        "prompt_template", "instructions", "context_config",
+        "tool_profile", "allow_silent",
+    }
+    for key in allowed:
+        if key in body:
+            fields[key] = body[key]
+    if not partial:
+        for required in ("name", "schedule_type", "prompt_template"):
+            if not (fields.get(required) or "").strip():
+                raise HTTPException(status_code=400, detail=f"{required} required")
+
+    if "schedule_type" in fields and fields["schedule_type"] not in Database.CHECK_IN_SCHEDULE_TYPES:
+        raise HTTPException(status_code=400, detail=f"invalid schedule_type: {fields['schedule_type']}")
+    if "tool_profile" in fields and fields["tool_profile"] not in Database.CHECK_IN_TOOL_PROFILES:
+        raise HTTPException(status_code=400, detail=f"invalid tool_profile: {fields['tool_profile']}")
+    for key in ("time_start", "time_end"):
+        _validate_hhmm(fields.get(key), key)
+    if "days_of_week" in fields and fields["days_of_week"] is not None:
+        days = fields["days_of_week"]
+        if not isinstance(days, list) or any(day not in range(7) for day in days):
+            raise HTTPException(status_code=400, detail="days_of_week must be a list of integers 0-6")
+    for key in ("interval_min_minutes", "interval_max_minutes"):
+        if key in fields and fields[key] is not None:
+            try:
+                fields[key] = int(fields[key])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"{key} must be an integer")
+            if fields[key] < 1:
+                raise HTTPException(status_code=400, detail=f"{key} must be positive")
+    if "prompt_template" in fields:
+        fields["prompt_template"] = (fields.get("prompt_template") or "").strip()
+        if not fields["prompt_template"]:
+            raise HTTPException(status_code=400, detail="prompt_template required")
+        _validate_check_in_template(fields["prompt_template"])
+    return fields
+
+
+@app.get("/api/check-ins")
+async def list_check_ins():
+    return {
+        "check_ins": db.list_check_ins(),
+        "settings": {
+            "ttl_followup_enabled": db.ttl_followup_enabled(),
+        },
+    }
+
+
+@app.post("/api/check-ins")
+async def create_check_in(body: dict):
+    fields = _check_in_fields_from_body(body)
+    try:
+        check_in_id = db.create_check_in(**fields)
+    except sqlite3.IntegrityError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _notify_check_in_changed()
+    return {"ok": True, "id": check_in_id}
+
+
+@app.patch("/api/check-ins/{check_in_id}")
+async def update_check_in(check_in_id: str, body: dict):
+    fields = _check_in_fields_from_body(body, partial=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="no fields to update")
+    try:
+        changed = db.update_check_in(check_in_id, **fields)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not changed:
+        raise HTTPException(status_code=404, detail=f"check-in not found: {check_in_id}")
+    _notify_check_in_changed()
+    return {"ok": True, "changed": changed}
+
+
+@app.delete("/api/check-ins/{check_in_id}")
+async def delete_check_in(check_in_id: str):
+    changed = db.delete_check_in(check_in_id)
+    if not changed:
+        raise HTTPException(
+            status_code=404,
+            detail=f"custom check-in not found or built-in cannot be deleted: {check_in_id}",
+        )
+    _notify_check_in_changed()
+    return {"ok": True, "deleted": check_in_id}
+
+
+@app.get("/api/settings/check-ins")
+async def get_check_in_settings():
+    return {"ttl_followup_enabled": db.ttl_followup_enabled()}
+
+
+@app.patch("/api/settings/check-ins")
+async def update_check_in_settings(body: dict):
+    if "ttl_followup_enabled" in body:
+        db.set_ttl_followup_enabled(bool(body["ttl_followup_enabled"]))
+        _notify_check_in_changed()
+    return {"ok": True, "ttl_followup_enabled": db.ttl_followup_enabled()}
 
 
 @app.get("/api/todos")

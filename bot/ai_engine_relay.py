@@ -30,11 +30,17 @@ async def chat(db: Database, messages: list[dict], preset: Preset,
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            history: list[dict], preset: Preset,
                            send_callback=None, allow_silent: bool = False,
-                           trigger: str | None = None) -> str | None:
+                           trigger: str | None = None,
+                           tool_profile: str | None = None,
+                           check_in_name: str | None = None,
+                           context_config: dict | None = None) -> str | None:
     return await _base_scheduled_action(db, prompt, timestamp, history, _call_with_tools,
                                         preset,
                                         send_callback=send_callback,
-                                        allow_silent=allow_silent, trigger=trigger)
+                                        allow_silent=allow_silent, trigger=trigger,
+                                        tool_profile=tool_profile,
+                                        check_in_name=check_in_name,
+                                        context_config=context_config)
 
 
 async def simple_completion(prompt: str, preset: Preset) -> str:
