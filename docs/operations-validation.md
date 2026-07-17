@@ -14,22 +14,23 @@
 
 ## 当前基线
 
-最后更新：2026-07-11 13:33 UTC
+最后更新：2026-07-17 04:20 UTC
 
 | 检查项 | 最近执行时间（UTC） | 状态 | 结果/证据 | 下次动作 |
 |---|---|---|---|---|
-| Python 全部自动测试 | 2026-07-11 13:17 | PASS | `.venv/bin/python -m pytest -q`：37 passed，1.33s | 每次部署前重跑 |
-| 前端生产构建 | 2026-07-11 13:17 | PASS | `npm run build`：Vite 6.3.5，2037 modules transformed | 每次部署前重跑 |
-| npm 干净安装 | 2026-07-11 12:06 | PASS | `npm ci` 安装 287 packages；报告 5 个 audit findings | 审查 audit findings；依赖变更后重跑 |
-| npm Docker builder | 2026-07-11 12:08 | PASS | Docker `frontend-builder` 完成 `npm ci` 和 Vite build | Dockerfile/依赖变更后重跑 |
-| Production health endpoint | 2026-07-11 13:17 | PASS | `GET http://127.0.0.1:8080/api/health` → `{"status":"ok"}` | 每次部署后重跑 |
-| Production 容器状态 | 2026-07-11 13:18 | PASS | app Up 4 days `(healthy)`；Litestream Up 4 days | 每次部署后重跑 |
-| SQLite quick check | 2026-07-11 13:19 | PASS | `PRAGMA quick_check` → `ok`；journal mode=`wal` | 每次部署后重跑 |
-| Litestream 写入 R2 | 2026-07-11 12:58 | PASS | 日志有 `wal segment written`，且随后成功从同一 replica 恢复到最新 index | 每次部署后检查复制；每季度恢复演练 |
-| 本地 SQLite 快照恢复 | 未知 | NOT TESTED | 本次验证的是 R2/Litestream 恢复，不是本地 `.backup` 文件恢复 | 下次高风险部署前演练 |
+| Python 全部自动测试 | 2026-07-17 04:04 | PASS | `.venv/bin/python -m pytest -q`：46 passed，2.26s | 每次部署前重跑 |
+| 前端生产构建 | 2026-07-17 03:58 | PASS | `npm ci` + `npm run build`：Vite 6.3.5，构建 4.51s | 每次部署前重跑 |
+| npm 干净安装 | 2026-07-17 03:58 | PASS | `npm ci` 安装 287 packages；audit findings 与 07-11 相同，仍待审查 | 审查 audit findings；依赖变更后重跑 |
+| npm Docker builder | 2026-07-17 04:08 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功（含 frontend-builder） | Dockerfile/依赖变更后重跑 |
+| Production health endpoint | 2026-07-17 04:15 | PASS | `GET http://127.0.0.1:8080/api/health` → `{"status":"ok"}` | 每次部署后重跑 |
+| Production 容器状态 | 2026-07-17 04:15 | PASS | app 重建后 Up `(healthy)`；Litestream Up 10 days | 每次部署后重跑 |
+| SQLite quick check | 2026-07-17 04:16 | PASS | `PRAGMA quick_check` → `ok`；journal mode=`wal` | 每次部署后重跑 |
+| Litestream 写入 R2 | 2026-07-17 04:08 | PASS | 部署后日志连续 `wal segment written`（position 0000024b/0000024c） | 每次部署后检查复制；每季度恢复演练 |
+| 本地 SQLite 快照恢复 | 未知 | NOT TESTED | 部署前快照 `pre-deploy-20260717.db` quick_check=ok，但未演练恢复启动 | 下次高风险部署前演练 |
 | R2/Litestream 完整恢复 | 2026-07-11 13:30 | PASS | 从 R2 恢复到全新 `/tmp` 路径；integrity check、数据新鲜度和 API-only smoke test 均通过 | 2026-10 前重跑，或 Litestream/R2 变更后立即重跑 |
-| 网络监听/路由审计 | 2026-07-11 13:16 | BLOCKED | 受限执行环境无法连接 systemd bus，`infra audit` 给出与实际 health 冲突的假阴性 | 在正常宿主 shell 运行 `infra audit` 并记录 |
+| 网络监听/路由审计 | 2026-07-17 04:18 | PASS | 宿主 shell 运行 `infra audit`：life-tracker 监听 `127.0.0.1:8080` 无异常；5 个告警均属其他栈（staging 8081 未注销、llm-gateway 8403-8405、未登记进程 54951） | 每次部署后重跑 |
 | Staging 启动与隔离 | 未知 | NOT TESTED | 当前 staging compose 仍使用 `8081:8081`，可能绑定所有接口 | 修正为私有绑定后再验证 |
+| memory.md 独立异地备份 | 未知 | NOT TESTED | `data/memory.md` 已成为记忆权威存储（07-17 上线），Litestream 只覆盖 SQLite；迁移期靠 legacy 表 shadow 兜底 | LT-132 验收前建立独立备份并演练恢复 |
 
 ## 已知未闭环事项
 
@@ -65,6 +66,26 @@
 - 后续动作：2026-10 前完成下一次季度演练；JSONL 仅在成为产品数据源或出现审计保留要求时重新评估
 
 ## 每次部署记录模板
+
+### 2026-07-17 04:08 UTC — main@7d4ec52（Markdown memory + check-in 框架 + LT-130 检索修复上线）
+
+- 操作者：Claude Code（chacha 授权）
+- 部署来源：`life-tracker:local`
+- Git commit：`7d4ec52`（main）
+- 工作区是否干净：是
+- 风险分类：中（长期记忆存储从 SQLite 切换到 `data/memory.md`）
+- 部署前快照：`data/backups/pre-deploy-20260717.db`；`quick_check` → `ok`
+- Python tests：46 通过 / 0 失败
+- Frontend build：PASS
+- Production health：PASS
+- 容器状态：app 重建后 Up (healthy)；Litestream 未重建，Up 10 days
+- SQLite quick check：`ok`；journal mode=`wal`
+- Litestream 最近成功复制时间：2026-07-17 04:08:31 UTC
+- 实际监听：`127.0.0.1:8080`
+- `infra audit`：PASS（告警均属其他栈）
+- Smoke test：`/api/health` ok；`/api/memories` 返回 18 条；`/api/memory-document` 18/18 条、1136/4000 tokens、与部署前 `memories` 表逐条比对一致；`/api/check-ins` 返回 4 个内置项（enabled 状态与部署前一致）；Discord bot 上线、scheduler 正常排程
+- 异常与回滚：无异常。回滚路径 = checkout 旧 commit 重建镜像 + `pre-deploy-20260717.db` 快照；记忆可回退读 legacy `memories` 表（迁移期 shadow 保持同步）
+- 待用户验证：Discord 实测 memory CRUD 与 `search_history`（LT-130/131 收尾项）；prompt trace 确认注入的记忆不含 metadata 注释（LT-132 验收项）
 
 复制以下段落到本节顶部，保留历史记录，不要覆盖旧记录：
 
