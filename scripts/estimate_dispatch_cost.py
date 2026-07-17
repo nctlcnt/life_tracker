@@ -13,8 +13,9 @@ Phase 2 dispatch 成本离线估算
     # 最快：只跑 regex
     python -m scripts.estimate_dispatch_cost
 
-    # 过去 14 天 + 跑 Flash 判断（用名为 gemini 的 preset）
-    python -m scripts.estimate_dispatch_cost --days 14 --flash gemini
+    # 过去 14 天 + 跑 Flash 判断（任意 preset 名，走统一引擎）
+    python -m scripts.estimate_dispatch_cost --days 14 --flash <preset>
+
 
     # 导出 30 条人工标注样本
     python -m scripts.estimate_dispatch_cost --spot-check 30
@@ -153,13 +154,12 @@ def load_user_messages(days: int) -> list[dict]:
 async def flash_judge_rate(messages: list[dict], preset_name: str,
                            sample_n: int) -> tuple[int, int]:
     from config import PRESETS
-    from bot.ai_engine_gemini import simple_completion
+    from bot.ai_engine import _load_engine
 
     preset = PRESETS.get(preset_name)
     if preset is None:
         raise SystemExit(f"preset {preset_name!r} 不存在；可用：{list(PRESETS.keys())}")
-    if preset.provider != "gemini":
-        raise SystemExit(f"preset {preset_name!r} provider={preset.provider}，不是 gemini")
+    simple_completion = _load_engine(preset.provider).simple_completion
 
     sampled = random.sample(messages, min(sample_n, len(messages)))
     would = 0
@@ -227,7 +227,7 @@ def write_report(ctx: dict, out_path: Path):
             f"- Flash Lite 判断 escalate 率（sample={ctx['flash_sample']}）：**{ctx['flash_rate']:.1%}**"
         )
     else:
-        lines.append("- Flash Lite 判断：**未跑**（加 `--flash <gemini-preset-name>` 开启）")
+        lines.append("- Flash Lite 判断：**未跑**（加 `--flash <preset-name>` 开启）")
     if ctx["manual_rate"] is not None:
         lines.append(
             f"- 人工标注（n={ctx['manual_n']}）：**{ctx['manual_rate']:.1%}** ← ground truth"
@@ -314,7 +314,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--days", type=int, default=7, help="扫最近几天（默认 7）")
     ap.add_argument("--flash", metavar="PRESET",
-                    help="用哪个 gemini preset 跑 Flash 判断；不传则跳过")
+                    help="用哪个 preset 跑 Flash 判断（任意 preset）；不传则跳过")
     ap.add_argument("--flash-sample", type=int, default=100,
                     help="Flash 判断的抽样量（默认 100）")
     ap.add_argument("--spot-check", type=int, default=0,

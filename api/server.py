@@ -864,15 +864,8 @@ async def admin_test_preset(body: dict):
     if p is None:
         raise HTTPException(status_code=404, detail=f"unknown preset: {name}")
 
-    provider = p.provider.lower().strip()
-    if provider == "gemini":
-        from bot import ai_engine_gemini as engine
-    elif provider == "relay":
-        from bot import ai_engine_relay as engine
-    elif provider == "openai":
-        from bot import ai_engine_openai as engine
-    else:
-        from bot import ai_engine_claude as engine
+    from bot.ai_engine import _load_engine
+    engine = _load_engine(p.provider)
 
     t0 = time.monotonic()
     try:
