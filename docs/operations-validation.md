@@ -14,21 +14,21 @@
 
 ## 当前基线
 
-最后更新：2026-07-17 06:55 UTC
+最后更新：2026-07-17 10:02 UTC
 
 | 检查项 | 最近执行时间（UTC） | 状态 | 结果/证据 | 下次动作 |
 |---|---|---|---|---|
-| Python 全部自动测试 | 2026-07-17 06:29 | PASS | `.venv/bin/python -m pytest -q`：57 passed，2.54s | 每次部署前重跑 |
-| 前端生产构建 | 2026-07-17 06:32 | PASS | Docker frontend-builder：Vite 6.3.5，2038 modules，构建 5.26s | 每次部署前重跑 |
+| Python 全部自动测试 | 2026-07-17 10:02 | PASS | `.venv/bin/python -m pytest -q`：84 passed，4.31s（含 LT-134 引擎契约测试） | 每次部署前重跑 |
+| 前端生产构建 | 2026-07-17 09:51 | PASS | `make deploy-local` Docker frontend-builder 构建成功 | 每次部署前重跑 |
 | npm 干净安装 | 2026-07-17 03:58 | PASS | `npm ci` 安装 287 packages；audit findings 与 07-11 相同，仍待审查 | 审查 audit findings；依赖变更后重跑 |
-| npm Docker builder | 2026-07-17 06:32 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功（含 frontend-builder） | Dockerfile/依赖变更后重跑 |
-| Production health endpoint | 2026-07-17 06:37 | PASS | `/internal/health` 200；携带 API key 的 `/api/health` 200 | 每次部署后重跑 |
-| Production 容器状态 | 2026-07-17 06:33 | PASS | app 重建后 Up `(healthy)`；Litestream Up 10 days；Discord bot/scheduler 正常 | 每次部署后重跑 |
-| SQLite quick check | 2026-07-17 06:37 | PASS | `PRAGMA quick_check` → `ok`；journal mode=`wal`；部署前快照 integrity=`ok` | 每次部署后重跑 |
-| Litestream 写入 R2 | 2026-07-17 06:32 | PASS | 部署后 `wal segment written`（position 00000250/00000251） | 每次部署后检查复制；每季度恢复演练 |
+| npm Docker builder | 2026-07-17 09:51 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功（含 frontend-builder） | Dockerfile/依赖变更后重跑 |
+| Production health endpoint | 2026-07-17 09:57 | PASS | `/internal/health` 200；无 key `/api/health` 401；携带 API key 200 | 每次部署后重跑 |
+| Production 容器状态 | 2026-07-17 09:52 | PASS | app 重建后 Up `(healthy)`；Litestream Up 10 days；Discord bot（ひより#5775）/scheduler 正常 | 每次部署后重跑 |
+| SQLite quick check | 2026-07-17 09:59 | PASS | `PRAGMA quick_check` → `ok`；journal mode=`wal` | 每次部署后重跑 |
+| Litestream 写入 R2 | 2026-07-17 09:51 | PASS | 部署后 `wal segment written`（position 00000256/00000257） | 每次部署后检查复制；每季度恢复演练 |
 | 本地 SQLite 快照恢复 | 未知 | NOT TESTED | 部署前快照 `pre-deploy-20260717.db` quick_check=ok，但未演练恢复启动 | 下次高风险部署前演练 |
 | R2/Litestream 完整恢复 | 2026-07-11 13:30 | PASS | 从 R2 恢复到全新 `/tmp` 路径；integrity check、数据新鲜度和 API-only smoke test 均通过 | 2026-10 前重跑，或 Litestream/R2 变更后立即重跑 |
-| 网络监听/路由审计 | 2026-07-17 06:45 | PASS | 宿主 shell 运行 `infra audit`：life-tracker 监听 `127.0.0.1:8080` 无异常；5 个告警均属其他栈/工具进程 | 每次部署后重跑 |
+| 网络监听/路由审计 | 2026-07-17 10:00 | PASS | `infra audit`：life-tracker 监听 `127.0.0.1:8080` 无异常；5 个告警均属 staging/llm-gateway/未登记工具进程，与部署前基线一致 | 每次部署后重跑 |
 | Dashboard/API 鉴权 | 2026-07-17 06:55 | PASS | 自动验收全部通过；用户随后从真实浏览器确认登录和 Dashboard 使用“完全正常” | 每次鉴权/路由变更后重跑 |
 | Staging 启动与隔离 | 未知 | NOT TESTED | 外部 Dockge staging compose 仍使用 `8081:8081`，可能绑定所有接口 | 修正权威 compose 后再验证 |
 | memory.md 独立异地备份 | 未知 | NOT TESTED | `data/memory.md` 已成为记忆权威存储（07-17 上线），Litestream 只覆盖 SQLite；迁移期靠 legacy 表 shadow 兜底 | LT-132 验收前建立独立备份并演练恢复 |
@@ -67,6 +67,26 @@
 - 后续动作：2026-10 前完成下一次季度演练；JSONL 仅在成为产品数据源或出现审计保留要求时重新评估
 
 ## 每次部署记录模板
+
+### 2026-07-17 09:51 UTC — main@3308e78（LT-134 引擎合并：四 provider 引擎收敛为单一 OpenAI 兼容实现）
+
+- 操作者：Claude Code（用户授权「合并到main直接部署」）
+- 部署来源：`life-tracker:local`
+- Git commit：`3308e78`（main，已推送 origin）
+- 工作区是否干净：是
+- 风险分类：中（AI 引擎全量替换；无 DB schema 变更、无鉴权/路由变更）
+- 部署前快照：未拍——本次无 DB 迁移，部署不触碰数据库；部署后 `quick_check` → `ok` 补验
+- Python tests：84 通过 / 0 失败（LT-134 新增引擎/路由/trace 契约测试）
+- Frontend build：PASS（deploy-local Docker frontend-builder）
+- Production health：PASS（`/internal/health` 200；无 key `/api/health` 401；带 key 200）
+- 容器状态：app 重建后 Up (healthy)；Litestream 未重建、Up 10 days；Discord bot 上线（ひより#5775）；scheduler 正常排程（bedtime/reminder/calendar 刷新）
+- SQLite quick check：`ok`；journal mode=`wal`
+- Litestream 最近成功复制时间：2026-07-17 09:51:32 UTC
+- 实际监听：`127.0.0.1:8080`
+- `infra audit`：PASS for life-tracker；5 个告警属 staging/llm-gateway/未登记工具进程，与部署前基线一致
+- Smoke test：容器内经统一引擎实测 `POST /api/admin/presets/test`——kiro（active，4391ms）、glm（fallback，4714ms）、gemini-flash-lite-paid（已迁 Google OpenAI 兼容端点，1334ms）均 `ok=true`；公网 `life.purrden.cc` 无鉴权 401 正常
+- 配套 config.json 变更（无 git 记录）：3 个原生 Gemini preset 迁移到 `generativelanguage.googleapis.com/v1beta/openai`（同 key 同模型，迁移前逐一实测含 tools 可达）；删除过期 preset `new_api`（指向 localhost:3000 的旧部署）
+- 异常与回滚：无异常。回滚路径 = `git checkout 8c5c69d` + `make deploy-local`（无 DB 迁移可直接回退；迁移后的 Gemini preset 是 relay provider，旧代码同样能跑，config 无需随代码回退）
 
 ### 2026-07-17 06:32 UTC — main@d0fb413（LT-139 Dashboard/API 应用层鉴权上线）
 
