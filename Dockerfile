@@ -41,6 +41,6 @@ RUN mkdir -p data
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD curl -sf "http://localhost:${API_PORT:-8080}/api/health" || exit 1
+    CMD curl -sf "http://localhost:${API_PORT:-8080}/internal/health" || exit 1
 
 CMD ["python", "main.py"]

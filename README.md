@@ -50,6 +50,12 @@ cp config.example.json config.json
 
 填好 `config.json` 里的 Discord token、用户/频道 ID、AI preset、server port 等字段。
 
+Dashboard 和所有 `/api/*` 业务接口还需要应用层密钥。把至少 32 字符的
+`LIFE_TRACKER_API_KEY` 放进未提交的 `.env`；本地 HTTP 开发同时设置
+`LIFE_TRACKER_COOKIE_SECURE=false`，生产 HTTPS 保持默认 `true`。浏览器首次打开
+Dashboard 时输入该密钥，服务端会换成 30 天有效的 `HttpOnly` session cookie。
+程序化客户端直接发送 `X-API-Key` header。Google Calendar OAuth callback 保持公开。
+
 本地启动：
 
 ```bash

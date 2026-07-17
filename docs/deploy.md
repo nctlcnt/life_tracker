@@ -15,18 +15,21 @@
 | 环境变量 | `.env` → `.env.prod` 软链接 |
 | 灾备 | Litestream sidecar 持续复制 SQLite 到 Cloudflare R2 |
 | 重启策略 | app 与 Litestream 均为 `unless-stopped` |
-| 健康检查 | `http://127.0.0.1:8080/api/health` |
+| 健康检查 | 容器内 `http://127.0.0.1:8080/internal/health` |
 
 `compose.yaml` 是 Dockge 和 `make deploy-local` 共用的生产权威文件。目录中同时存在 `docker-compose.yml`，所以直接运行 `docker compose` 会提示发现多个配置文件；它会选择 `compose.yaml`。本地开发必须显式使用 `-f docker-compose.yml`。
 
 ### 网络边界
 
-API 没有应用层认证，安全边界依赖宿主绑定、WireGuard 和受控的 Cloudflare 路由：
+Dashboard/API 使用应用层 API key + `HttpOnly` session cookie 鉴权，同时保留宿主
+绑定、WireGuard 和受控 Cloudflare 路由作为网络边界：
 
 - 应用端口只允许绑定 `127.0.0.1` 或 `10.66.66.1`，禁止 `0.0.0.0`。
 - 不通过公网 IP 加端口访问服务。
 - Google Calendar OAuth 回调使用 `https://oauth.purrden.cc/api/calendar/oauth/callback`。
-- `infra overview` 当前还登记了 `life.purrden.cc → 127.0.0.1:8080`。只要该路由存在，就不能声称整个 Dashboard 是严格 WireGuard-only；应确认它有预期的访问控制，或用 `infra unpublish life.purrden.cc` 下线。
+- `infra overview` 当前还登记了 `life.purrden.cc → 127.0.0.1:8080`。公网访问先经过应用层登录；仍可额外叠加 Cloudflare Access。
+- `.env.prod` 必须有至少 32 字符的 `LIFE_TRACKER_API_KEY`，且生产保持 `LIFE_TRACKER_COOKIE_SECURE=true`。缺失或过短时所有受保护 API 会 fail closed（503），不会静默放行。
+- 所有 `/api/*` 默认受保护；仅登录/session/logout 和 Google Calendar OAuth callback 精确豁免。程序化调用发送 `X-API-Key`，浏览器登录后使用 30 天有效的签名 cookie。
 - 不手工创建 Cloudflare tunnel；发布和下线统一使用 `infra publish` / `infra unpublish`。
 
 每次部署后必须确认实际监听仍为 `127.0.0.1:8080`，并运行 `infra audit`。如果受限环境无法读取 systemd 或 socket，审计结果不得记为通过，应在正常宿主 shell 重跑。
@@ -86,7 +89,8 @@ make deploy-local
 
 ```bash
 docker compose ps
-curl -fsS http://127.0.0.1:8080/api/health
+curl -fsS http://127.0.0.1:8080/internal/health
+curl -fsS -H "X-API-Key: $LIFE_TRACKER_API_KEY" http://127.0.0.1:8080/api/health
 docker compose logs --tail 100 app
 docker compose logs --tail 100 litestream
 sqlite3 data/life_tracker.db "PRAGMA quick_check;"
@@ -96,7 +100,7 @@ infra audit
 通过标准：
 
 - app 为 `healthy`，Litestream 为 `Up`；
-- health 返回 `{"status":"ok"}`；
+- internal health 和携带 API key 的 `/api/health` 都返回 `{"status":"ok"}`；
 - 应用日志无启动 Traceback；
 - `PRAGMA quick_check` 返回 `ok`；
 - Litestream 日志有近期 `wal segment written`，且无持续上传错误；
@@ -129,7 +133,7 @@ cd /home/ubuntu/stacks/life-tracker-staging
 docker compose up -d --build
 docker compose ps
 docker compose logs --tail 100 app
-curl -fsS http://127.0.0.1:8081/api/health
+curl -fsS http://127.0.0.1:8081/internal/health
 ```
 
 快速迭代（Python 或前端代码变化）：
@@ -270,7 +274,8 @@ services:
 docker compose ps
 docker compose logs --tail 200 app
 docker compose logs --tail 200 litestream
-curl -fsS http://127.0.0.1:8080/api/health
+curl -fsS http://127.0.0.1:8080/internal/health
+curl -fsS -H "X-API-Key: $LIFE_TRACKER_API_KEY" http://127.0.0.1:8080/api/health
 sqlite3 data/life_tracker.db "PRAGMA quick_check;"
 infra overview
 infra audit

@@ -5,24 +5,29 @@ FastAPI 接口模块
 import os
 import re
 import sqlite3
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse
+from html import escape
+from fastapi import FastAPI, HTTPException, Query, Request
+from pydantic import BaseModel
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from api.auth import (
+    API_KEY_ENV,
+    SESSION_COOKIE,
+    SESSION_MAX_AGE,
+    ApiAuthMiddleware,
+    cookie_is_secure,
+    get_api_key,
+    request_is_authenticated,
+    secure_compare,
+    session_token,
+)
 from bot.database import Database
 from bot.memory import MemoryService
 from bot.merge import merge_events
 from bot import trace as ai_trace
 
 app = FastAPI(title="Life Tracker API")
-
-# 允许前端跨域请求（开发时 React 在 localhost:3000）
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 生产环境应该改为你的前端域名
-    allow_methods=["GET", "POST", "DELETE", "PATCH", "PUT"],
-    allow_headers=["*"],
-)
+app.add_middleware(ApiAuthMiddleware)
 
 # 数据库实例会在 main.py 启动时注入
 db: Database | None = None
@@ -46,6 +51,56 @@ def _notify_check_in_changed():
         _check_in_changed_callback()
 
 
+class LoginRequest(BaseModel):
+    api_key: str
+
+
+@app.post("/api/auth/login")
+async def auth_login(body: LoginRequest):
+    """Exchange the configured API key for an HttpOnly dashboard session."""
+    api_key = get_api_key()
+    if api_key is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"API authentication is not configured; set {API_KEY_ENV}",
+        )
+    candidate = body.api_key
+    if not secure_compare(candidate, api_key):
+        raise HTTPException(status_code=401, detail="invalid API key")
+
+    response = JSONResponse({"authenticated": True})
+    response.set_cookie(
+        SESSION_COOKIE,
+        session_token(api_key),
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        secure=cookie_is_secure(),
+        samesite="strict",
+        path="/",
+    )
+    return response
+
+
+@app.get("/api/auth/session")
+async def auth_session(request: Request):
+    api_key = get_api_key()
+    authenticated = bool(api_key) and request_is_authenticated(request, api_key)
+    return {"authenticated": authenticated, "configured": api_key is not None}
+
+
+@app.post("/api/auth/logout")
+async def auth_logout():
+    response = JSONResponse({"authenticated": False})
+    response.delete_cookie(
+        SESSION_COOKIE,
+        path="/",
+        secure=cookie_is_secure(),
+        httponly=True,
+        samesite="strict",
+    )
+    return response
+
+
 @app.get("/api/calendar/oauth/callback", response_class=HTMLResponse)
 async def google_calendar_oauth_callback(
     state: str = "",
@@ -55,7 +110,7 @@ async def google_calendar_oauth_callback(
     """Receive Google Calendar Web OAuth callbacks."""
     if error:
         return HTMLResponse(
-            f"<h1>Google Calendar 授权失败</h1><p>{error}</p>",
+            f"<h1>Google Calendar 授权失败</h1><p>{escape(error)}</p>",
             status_code=400,
         )
     try:
@@ -63,7 +118,8 @@ async def google_calendar_oauth_callback(
         token_file = finish_web_oauth_flow(state, code)
     except Exception as e:
         return HTMLResponse(
-            f"<h1>Google Calendar 授权失败</h1><p>{type(e).__name__}: {e}</p>",
+            f"<h1>Google Calendar 授权失败</h1>"
+            f"<p>{escape(type(e).__name__)}: {escape(str(e))}</p>",
             status_code=400,
         )
 
@@ -72,7 +128,10 @@ async def google_calendar_oauth_callback(
         refresh = refresh_calendar_context()
         refresh_line = f"<p>Calendar 缓存已刷新：{refresh.get('count', 0)} events。</p>"
     except Exception as e:
-        refresh_line = f"<p>Token 已写入，但缓存刷新失败：{type(e).__name__}: {e}</p>"
+        refresh_line = (
+            "<p>Token 已写入，但缓存刷新失败："
+            f"{escape(type(e).__name__)}: {escape(str(e))}</p>"
+        )
 
     return HTMLResponse(
         "<h1>Google Calendar 已授权</h1>"
@@ -596,7 +655,13 @@ async def list_recent_trace_tool_calls(
 
 @app.get("/api/health")
 async def health_check():
-    """健康检查"""
+    """Authenticated health check for API clients."""
+    return {"status": "ok"}
+
+
+@app.get("/internal/health", include_in_schema=False)
+async def internal_health_check():
+    """Minimal unauthenticated endpoint for the local container probe."""
     return {"status": "ok"}
 
 

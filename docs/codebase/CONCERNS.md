@@ -4,15 +4,14 @@
 
 | Severity | Concern | Evidence | Impact | Suggested action |
 |----------|---------|----------|--------|------------------|
-| high | API confidentiality depends entirely on WireGuard/private binding | `api/server.py` has no auth; `.env.prod` sets `BIND=127.0.0.1`; VPS policy allows private listeners only | This is intentional, but a binding/tunnel mistake would expose life data and admin mutations without a second barrier | Treat private binding as a tested invariant; audit listeners/routes after every deployment |
-| high | Port and bind defaults violate the supplied VPS discipline | `main.py`, `Dockerfile`, compose files, and `frontend/vite.config.ts`; `infra overview` on 2026-07-12 | Missing environment/config can fall back to 8080 or `0.0.0.0`; Vite may silently choose another port | Remove wildcard/default-port fallbacks, explicitly configure the allocated port, and enable Vite `strictPort` |
-| medium | CORS accepts every origin while Admin writes config | `api/server.py` uses `allow_origins=["*"]`; `config.py` persists preset keys | Any browser origin can mutate state if it can reach the WireGuard-only endpoint | Restrict origins within the private network as defense in depth |
+| high | Production API auth is implemented but not yet deployed | `api/auth.py`, `api/server.py`; `.env.prod` still lacks `LIFE_TRACKER_API_KEY` | The live service remains exposed through `life.purrden.cc` until the new image and secret are deployed | Configure the secret, deploy, and verify unauthenticated read/write rejection |
+| medium | Framework port defaults remain in source | `main.py`, `Dockerfile`, compose files; `infra overview` on 2026-07-17 | Missing explicit port config can still select 8080, though compose bind fallbacks are loopback-only and Vite is strict | Remove remaining framework-default port fallbacks in a coordinated deployment change |
 | high | Runtime directly imports undeclared `httpx` | `bot/weather.py`, `bot/ai_engine_relay.py`, `requirements.txt` | Fresh environments rely on a transitive dependency and may break when dependency graphs change | Add a direct, bounded `httpx` requirement and verify a clean image build/import test |
 | medium | Release CI has no automated tests | `.github/workflows/release.yml`, `pytest.ini` | A version tag can publish a multi-arch image despite backend regression or frontend behavioral failure | Run pytest and frontend build/tests before image push |
 | medium | Large high-churn modules combine responsibilities | `bot/database.py` 1,618 lines; `api/server.py` 864; `bot/discord_bot.py` 840; 90-day git churn | Changes have broad blast radius and weak focused coverage | Split by domain after characterization tests |
 | low | No automatic data archive/compaction policy | `bot/trace.py`, `bot/test_mode.py`, conversation/trace tables in `bot/database.py` | Data continues to accumulate; this is accepted for the current single-user scale | No feature is planned now; revisit only if storage or retrieval performance becomes an observed problem |
 
-The supplied VPS inventory says application listeners must bind only `127.0.0.1` or `10.66.66.1`. Current `.env.prod` correctly sets `BIND=127.0.0.1`, but compose fallback values are `0.0.0.0` and `main.py` binds Uvicorn to `0.0.0.0` inside the container. Removing/misloading `.env.prod` would expose the host-published API more broadly than policy permits.
+The supplied VPS inventory says application listeners must bind only `127.0.0.1` or `10.66.66.1`. Current `.env.prod` and compose fallback values bind published ports to `127.0.0.1`; Uvicorn still binds all interfaces inside the container, which is required for Docker port forwarding but does not publish the port by itself.
 
 ## 2) Technical Debt
 
@@ -29,9 +28,8 @@ The supplied VPS inventory says application listeners must bind only `127.0.0.1`
 
 | Risk | OWASP category | Evidence | Current mitigation | Gap |
 |------|----------------|----------|--------------------|-----|
-| Network-only API access control | A01 Broken Access Control | `api/server.py` | `.env.prod` loopback binding plus WireGuard-only access is the intentional boundary | No application-layer fallback if network publication changes |
-| Cross-origin mutation | A01 / A05 | wildcard CORS plus write routes in `api/server.py` | Browser credential mode is not enabled by CORS | Any origin can call an otherwise reachable unauthenticated endpoint |
-| Raw integration errors returned/rendered | A04 / A05 | OAuth HTML and preset test responses include exception text | API keys are masked in preset lists | Internal paths/provider messages may leak; HTML strings are not escaped |
+| API authentication rollout gap | A01 Broken Access Control | `api/auth.py`, `api/server.py`, `.env.prod` | Code fails closed and supports API key plus signed cookie | Production has not yet been rebuilt with the new code/secret |
+| Raw integration errors returned/rendered | A04 / A05 | preset test responses include provider exception text | API keys are masked; OAuth HTML is escaped | Provider messages may still expose internal operational detail to authenticated admins |
 | Plaintext credential/state files | A02 Cryptographic Failures | `config.py`, `bot/google_calendar.py` | ignored by Git; host/container filesystem boundary | No secrets manager, file-mode check, or documented rotation policy |
 | Sensitive corpus retention | A09 Logging/Monitoring Failures | `bot/trace.py`, `bot/test_mode.py` | files are ignored by Git and reachable only through the private service/filesystem | Indefinite local retention is intentional; JSONL is explicitly outside DR scope and may be lost with the host |
 

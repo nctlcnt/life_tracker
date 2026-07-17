@@ -3,14 +3,17 @@ services:
   app:
     build: .
     ports:
-      - "${API_PORT:-8080}:${API_PORT:-8080}"
+      - "127.0.0.1:${API_PORT:-8080}:${API_PORT:-8080}"
     volumes:
       # SQLite database lives outside the container so it survives rebuilds
       - ./data:/app/data
       - ./config.json:/app/config.json
+    environment:
+      - LIFE_TRACKER_API_KEY
+      - LIFE_TRACKER_COOKIE_SECURE=${LIFE_TRACKER_COOKIE_SECURE:-false}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:${API_PORT:-8080}/api/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:${API_PORT:-8080}/internal/health"]
       interval: 30s
       timeout: 10s
       start_period: 15s

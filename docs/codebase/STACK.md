@@ -52,10 +52,10 @@ The confirmed authoritative production path is the version-tag workflow: `.githu
 ## 5) Environment and Config
 
 - Application settings and secrets come from ignored `config.json`, with the committed shape in `config.example.json`. Active AI preset and timezone are persisted under `data/`.
-- Compose deployment values come from `.env`/`.env.prod`: `BIND`, `API_PORT`, `VERSION`, `R2_BUCKET`, `R2_ENDPOINT`, `LITESTREAM_ACCESS_KEY_ID`, and `LITESTREAM_SECRET_ACCESS_KEY` are evidenced by compose/Litestream configuration.
+- Compose deployment values come from `.env`/`.env.prod`: `BIND`, `API_PORT`, `VERSION`, `LIFE_TRACKER_API_KEY`, `LIFE_TRACKER_COOKIE_SECURE`, and the R2/Litestream credentials are evidenced by compose configuration.
 - The Docker runtime is `python:3.12-slim`; the frontend is built in `node:20-alpine`. The image starts one `python main.py` process and persists `/app/data` plus the mounted `/app/config.json`.
-- The deployed service port is registered as 8080 in `infra overview` (2026-07-12). `.env.prod` binds it to `127.0.0.1`; framework defaults still appear as fallbacks in source, Docker, Compose, and Vite.
-- `frontend/vite.config.ts` proxies `/api` to `127.0.0.1:8080` but does not set the VPS-required `server.strictPort: true`.
+- The deployed service port is registered as 8080 in `infra overview` (2026-07-17). `.env.prod` and compose defaults bind it to `127.0.0.1`; framework port defaults still appear in source and Docker.
+- `frontend/vite.config.ts` proxies `/api` to `127.0.0.1:8080` and enables the VPS-required `server.strictPort: true`.
 
 ## 6) Evidence
 

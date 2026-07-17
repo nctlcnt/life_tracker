@@ -33,7 +33,7 @@ services:
     build: .
     container_name: life-tracker-staging-app
     ports:
-      - "8081:8081"
+      - "127.0.0.1:8081:8081"
     volumes:
       - ./data-dev:/app/data
       - ./config.dev.json:/app/config.json
@@ -43,9 +43,12 @@ services:
       - ./main.py:/app/main.py
       - ./config.py:/app/config.py
       - ./frontend/dist:/app/frontend/dist
+    environment:
+      - LIFE_TRACKER_API_KEY
+      - LIFE_TRACKER_COOKIE_SECURE=${LIFE_TRACKER_COOKIE_SECURE:-false}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8081/api/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8081/internal/health"]
       interval: 30s
       timeout: 10s
       start_period: 15s

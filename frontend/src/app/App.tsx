@@ -7,6 +7,7 @@ import { ProjectOverview } from './components/ProjectOverview';
 import { Dashboard } from './components/Dashboard';
 import { AdminPanel } from './components/AdminPanel';
 import { TraceViewer } from './components/TraceViewer';
+import { AuthGate } from './components/AuthGate';
 import './components/dashboard.css';
 
 // ── 日期格式化 ─────────────────────────────────────────────────
@@ -33,6 +34,10 @@ function routeFromHash(): Route {
 // dashboard. Both auxiliary surfaces are kept off the main nav and only
 // reachable by typing the URL hash.
 export default function App() {
+  return <AuthGate><AuthenticatedApp /></AuthGate>;
+}
+
+function AuthenticatedApp() {
   const [route, setRoute] = useState<Route>(routeFromHash);
   useEffect(() => {
     const onHash = () => setRoute(routeFromHash());

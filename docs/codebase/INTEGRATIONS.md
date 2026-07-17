@@ -28,7 +28,7 @@ No queue, event bus, service mesh, or external APM is evidenced.
 
 ## 3) Secrets and Credentials Handling
 
-- Discord, AI, embedding, weather, and geocoding credentials live in ignored `config.json`; OAuth client/token files live under ignored `data/`; R2 keys are injected as environment variables.
+- Discord, AI, embedding, weather, and geocoding credentials live in ignored `config.json`; OAuth client/token files live under ignored `data/`; R2 keys and `LIFE_TRACKER_API_KEY` are injected as environment variables.
 - `config.example.json` contains placeholders only, and `.gitignore` excludes `config.json`, `.env*` (with examples allowed), and `data/`.
 - The Admin API masks keys on reads but can accept and persist new keys to `config.json`.
 - Rotation procedures are documented only for GHCR PAT troubleshooting. [TODO] Rotation procedures for Discord, AI, Google OAuth, weather, and R2 credentials are not documented.
