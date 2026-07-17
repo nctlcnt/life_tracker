@@ -14,21 +14,21 @@
 
 ## 当前基线
 
-最后更新：2026-07-17 10:02 UTC
+最后更新：2026-07-17 13:38 UTC
 
 | 检查项 | 最近执行时间（UTC） | 状态 | 结果/证据 | 下次动作 |
 |---|---|---|---|---|
-| Python 全部自动测试 | 2026-07-17 10:02 | PASS | `.venv/bin/python -m pytest -q`：84 passed，4.31s（含 LT-134 引擎契约测试） | 每次部署前重跑 |
-| 前端生产构建 | 2026-07-17 09:51 | PASS | `make deploy-local` Docker frontend-builder 构建成功 | 每次部署前重跑 |
+| Python 全部自动测试 | 2026-07-17 13:30 | PASS | `.venv/bin/python -m pytest -q`：114 passed，7.20s（含 LT-135 窗口/compact 测试） | 每次部署前重跑 |
+| 前端生产构建 | 2026-07-17 13:32 | PASS | `make deploy-local` Docker frontend-builder 构建成功 | 每次部署前重跑 |
 | npm 干净安装 | 2026-07-17 03:58 | PASS | `npm ci` 安装 287 packages；audit findings 与 07-11 相同，仍待审查 | 审查 audit findings；依赖变更后重跑 |
-| npm Docker builder | 2026-07-17 09:51 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功（含 frontend-builder） | Dockerfile/依赖变更后重跑 |
-| Production health endpoint | 2026-07-17 09:57 | PASS | `/internal/health` 200；无 key `/api/health` 401；携带 API key 200 | 每次部署后重跑 |
-| Production 容器状态 | 2026-07-17 09:52 | PASS | app 重建后 Up `(healthy)`；Litestream Up 10 days；Discord bot（ひより#5775）/scheduler 正常 | 每次部署后重跑 |
-| SQLite quick check | 2026-07-17 09:59 | PASS | `PRAGMA quick_check` → `ok`；journal mode=`wal` | 每次部署后重跑 |
-| Litestream 写入 R2 | 2026-07-17 09:51 | PASS | 部署后 `wal segment written`（position 00000256/00000257） | 每次部署后检查复制；每季度恢复演练 |
+| npm Docker builder | 2026-07-17 13:32 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功（含 frontend-builder） | Dockerfile/依赖变更后重跑 |
+| Production health endpoint | 2026-07-17 13:33 | PASS | `/internal/health` 200；无 key `/api/health` 401；携带 API key 200 | 每次部署后重跑 |
+| Production 容器状态 | 2026-07-17 13:33 | PASS | app 重建后 Up `(healthy)`；Litestream Up 10 days；Discord bot（ひより#5775）/scheduler 正常 | 每次部署后重跑 |
+| SQLite quick check | 2026-07-17 13:33 | PASS | `PRAGMA quick_check` → `ok`；journal mode=`wal`；部署前快照 `pre-lt135-20260717-133220.db` integrity=`ok` | 每次部署后重跑 |
+| Litestream 写入 R2 | 2026-07-17 13:33 | PASS | 部署后 `wal segment written`（position 00000261/00000262） | 每次部署后检查复制；每季度恢复演练 |
 | 本地 SQLite 快照恢复 | 未知 | NOT TESTED | 部署前快照 `pre-deploy-20260717.db` quick_check=ok，但未演练恢复启动 | 下次高风险部署前演练 |
 | R2/Litestream 完整恢复 | 2026-07-11 13:30 | PASS | 从 R2 恢复到全新 `/tmp` 路径；integrity check、数据新鲜度和 API-only smoke test 均通过 | 2026-10 前重跑，或 Litestream/R2 变更后立即重跑 |
-| 网络监听/路由审计 | 2026-07-17 10:00 | PASS | `infra audit`：life-tracker 监听 `127.0.0.1:8080` 无异常；5 个告警均属 staging/llm-gateway/未登记工具进程，与部署前基线一致 | 每次部署后重跑 |
+| 网络监听/路由审计 | 2026-07-17 13:34 | PASS | `infra audit`：life-tracker 监听 `127.0.0.1:8080` 无异常；5 个告警均属 staging/llm-gateway/未登记工具进程，与部署前基线一致 | 每次部署后重跑 |
 | Dashboard/API 鉴权 | 2026-07-17 06:55 | PASS | 自动验收全部通过；用户随后从真实浏览器确认登录和 Dashboard 使用“完全正常” | 每次鉴权/路由变更后重跑 |
 | Staging 启动与隔离 | 未知 | NOT TESTED | 外部 Dockge staging compose 仍使用 `8081:8081`，可能绑定所有接口 | 修正权威 compose 后再验证 |
 | memory.md 独立异地备份 | 未知 | NOT TESTED | `data/memory.md` 已成为记忆权威存储（07-17 上线），Litestream 只覆盖 SQLite；迁移期靠 legacy 表 shadow 兜底 | LT-132 验收前建立独立备份并演练恢复 |
@@ -67,6 +67,27 @@
 - 后续动作：2026-10 前完成下一次季度演练；JSONL 仅在成为产品数据源或出现审计保留要求时重新评估
 
 ## 每次部署记录模板
+
+### 2026-07-17 13:32 UTC — main@f9f20c8（LT-135 聊天上下文 token 窗口 + 自动 compact 上线）
+
+- 操作者：Claude Code（用户确认「要！」）
+- 部署来源：`life-tracker:local`
+- Git commit：`f9f20c8`（main，已推送 origin）
+- 工作区是否干净：是
+- 风险分类：中（聊天历史取用机制全量切换；无 DB schema 变更，复用 app_state）
+- 部署前快照：`data/backups/pre-lt135-20260717-133220.db`；`integrity_check` → `ok`
+- Python tests：114 通过 / 0 失败（新增 34 个窗口装配/compact/接线测试）
+- Frontend build：PASS（deploy-local Docker frontend-builder；AdminPanel compact 下拉 + TraceViewer 窗口展示）
+- Production health：PASS（`/internal/health` 200；无 key `/api/health` 401；带 key 200）
+- 容器状态：app 重建后 Up (healthy)；Litestream 未重建、Up 10 days；Discord bot 上线（ひより#5775）；scheduler 正常
+- SQLite quick check：`ok`；journal mode=`wal`
+- Litestream 最近成功复制时间：2026-07-17 13:33:51 UTC
+- 实际监听：`127.0.0.1:8080`
+- `infra audit`：PASS for life-tracker；5 个告警属 staging/llm-gateway/未登记工具进程，与部署前基线一致
+- Smoke test：新端点 `GET/PUT /api/admin/compact-preset` 正常（设置为 `gemini-flash-lite-paid`）；prod 数据只读装配窗口正常
+- **Bootstrap compact（受控执行）**：prod 全量历史 66,357tk（1000 条），首次装配会硬裁 714 条并在聊天中后台触发大 compact——改为部署后立即受控执行：flash-lite 一次折叠到 id=1298，摘要 963tk，装配后窗口 8,866tk（摘要 + 97 条明文），needs_compact=False、无硬裁。摘要内容人工抽查正确（学期任务/睡眠规律/健康关注点）
+- 预期变化：每次聊天请求的 history 从固定 ~20 条（1-3k tk）变为 8-20k tk 弹性窗口，prompt 总量上升属设计内（24k 预算）；compact 稳态约每 12k tk 增量触发一次
+- 异常与回滚：无异常。回滚路径 = `git checkout 8fbcf18` + `make deploy-local`（窗口/摘要状态在 app_state，旧代码不读该键，直接回退安全）
 
 ### 2026-07-17 09:51 UTC — main@3308e78（LT-134 引擎合并：四 provider 引擎收敛为单一 OpenAI 兼容实现）
 
