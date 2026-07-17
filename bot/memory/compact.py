@@ -120,8 +120,9 @@ async def run_compact(db, channel_id: str, fold_upto_id: int) -> bool:
     if fold_upto_id <= upto:
         return False  # 已被更早完成的 compact 覆盖，无事可做
 
-    folded = [m for m in db.get_ai_messages_after(channel_id, upto)
-              if m["id"] <= fold_upto_id]
+    folded = db.get_ai_messages_after(
+        channel_id, upto, upto_id=fold_upto_id,
+    )
     if not folded:
         return False
 

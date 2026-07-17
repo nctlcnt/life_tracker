@@ -108,6 +108,18 @@ def test_threshold_marks_needs_compact_with_fold_cut(db, monkeypatch):
     assert w.tail_count == 10
 
 
+def test_window_never_drops_history_beyond_legacy_thousand_row_limit(db, monkeypatch):
+    ids = [_add(db, "user", f"消息-{n}", n) for n in range(1005)]
+    monkeypatch.setattr(config, "CONTEXT_COMPACT_THRESHOLD_TOKENS", 1_000_000)
+
+    w = assemble_window(db, CHANNEL)
+
+    assert w.tail_count == 1005
+    assert w.messages[0]["content"].endswith("消息-0")
+    assert w.messages[-1]["content"].endswith("消息-1004")
+    assert w.last_message_id == ids[-1]
+
+
 def test_hard_cap_trims_oldest_plaintext(db, monkeypatch):
     ids = [_add(db, "user", "聊" * 200, n) for n in range(10)]
     monkeypatch.setattr(config, "CONTEXT_COMPACT_THRESHOLD_TOKENS", 100)

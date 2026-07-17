@@ -103,6 +103,32 @@ def test_run_compact_folds_and_persists(db, monkeypatch):
     assert "消息2" in prompt and "消息3" not in prompt
 
 
+def test_run_compact_includes_continuous_prefix_beyond_thousand_rows(db, monkeypatch):
+    ids = [_add(db, "user", f"消息-{i}", i) for i in range(1005)]
+    calls = []
+    monkeypatch.setattr(
+        "bot.ai_engine_openai_compat.simple_completion",
+        _fake_completion("完整摘要", calls),
+    )
+
+    ok = asyncio.run(run_compact(db, CHANNEL, fold_upto_id=ids[-2]))
+
+    assert ok
+    prompt = calls[0]["prompt"]
+    assert "消息-0" in prompt
+    assert "消息-1003" in prompt
+    assert "消息-1004" not in prompt
+    assert load_summary_state(db, CHANNEL)["upto_message_id"] == ids[-2]
+
+
+def test_explicit_message_page_starts_at_oldest_unprocessed_row(db):
+    ids = [_add(db, "user", f"消息-{i}", i) for i in range(6)]
+
+    page = db.get_ai_messages_after(CHANNEL, ids[0], limit=2)
+
+    assert [item["id"] for item in page] == ids[1:3]
+
+
 def test_second_compact_feeds_old_summary(db, monkeypatch):
     ids = [_add(db, "user", f"消息{i}", i) for i in range(6)]
     save_summary_state(db, CHANNEL, summary="旧摘要内容",

@@ -1048,27 +1048,29 @@ class Database:
         return messages
 
     def get_ai_messages_after(self, channel_id: str, after_id: int,
-                              limit: int = 1000) -> list[dict]:
-        """取 id > after_id 的会话消息（时间正序），供 token 窗口装配。
+                              limit: int | None = None,
+                              upto_id: int | None = None) -> list[dict]:
+        """取连续的 ``(after_id, upto_id]`` 会话消息，按 id 正序返回。
 
         返回元素带 id（compact 游标/冻结切片用），content 格式与
-        get_recent_ai_messages 一致。limit 只是防御性上界——正常情况下
-        窗口的硬裁在 token 层完成。
+        get_recent_ai_messages 一致。缺省不截断；显式 limit 时从最老的
+        未处理消息开始取，确保调用方永远拿到连续前缀，不能越过未读消息
+        推进 compact cursor。
         """
         conn = self._get_conn()
-        rows = conn.execute(
-            """
-            SELECT *
-            FROM conversation_messages
-            WHERE channel_id = ? AND id > ?
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (str(channel_id), int(after_id), limit)
-        ).fetchall()
+        where = "channel_id = ? AND id > ?"
+        params: list = [str(channel_id), int(after_id)]
+        if upto_id is not None:
+            where += " AND id <= ?"
+            params.append(int(upto_id))
+        sql = f"SELECT * FROM conversation_messages WHERE {where} ORDER BY id ASC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(max(int(limit), 0))
+        rows = conn.execute(sql, params).fetchall()
         conn.close()
         messages = []
-        for row in reversed(rows):
+        for row in rows:
             item = dict(row)
             if item.get("metadata_json"):
                 try:
