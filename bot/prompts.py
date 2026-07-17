@@ -245,7 +245,10 @@ def format_countdown(due_time_str: str) -> str:
         return "⏳ 时间格式异常"
 
 
-def _format_memories(memories: list[dict] | None) -> str:
+def _format_memories(memories: list[dict] | None,
+                     memory_markdown: str | None = None) -> str:
+    if memory_markdown and memory_markdown.strip():
+        return f"{LABEL_MEMORIES}\n{memory_markdown.strip()}"
     if not memories:
         return ""
     lines = [f"- [id={m['id']}] {m['content']}" for m in memories]
@@ -334,6 +337,7 @@ def build_prompt(
     *,
     provider: str = "claude",
     memories: list[dict] | None = None,
+    memory_markdown: str | None = None,
     relevant_history: list[dict] | None = None,
     today_timeline: list[dict] | None = None,
     weather: str | None = None,
@@ -369,7 +373,7 @@ def build_prompt(
         values={
             "tools": prompt_sections["tools"],
             "projects": _format_projects(projects),
-            "memories": _format_memories(memories),
+            "memories": _format_memories(memories, memory_markdown),
             "relevant_history": _format_relevant_history(relevant_history),
             "today_timeline": _format_today_timeline(today_timeline),
             "pending_reminders": _format_pending_reminders(pending_reminders),

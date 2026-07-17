@@ -10,7 +10,7 @@ import asyncio
 
 from bot.tools import POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, TOOLS
 from bot.prompts import build_prompt, PromptParts
-from bot import embeddings
+from bot.memory import MemoryRecallDisabled, MemoryRecallUnavailable, MemoryService
 from bot.weather import is_morning, get_weather_brief
 from bot.google_calendar import CalendarNotConfigured, CalendarQueryError, get_calendar_context
 from bot.database import Database
@@ -20,6 +20,11 @@ from config import Preset
 import config
 
 logger = get_logger(__name__)
+
+
+def _memory_service(db: Database,
+                    service: MemoryService | None = None) -> MemoryService:
+    return service or getattr(db, "_memory_service", None) or MemoryService(db)
 
 
 # 触发源标签
@@ -72,7 +77,8 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
                   weather: str | None = None,
                   calendar: str | None = None,
                   relevant_history: list[dict] | None = None,
-                  context_config: dict | None = None) -> PromptParts:
+                  context_config: dict | None = None,
+                  memory_service: MemoryService | None = None) -> PromptParts:
     """
     从 DB 取数据，构建完整的 PromptParts 对象。
 
@@ -84,7 +90,9 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
     def include(key: str) -> bool:
         return context_config.get(key, True)
 
-    memories = db.get_all_memories() if include("include_memories") else []
+    memory = _memory_service(db, memory_service)
+    memories = memory.list_durable() if include("include_memories") else []
+    memory_markdown = memory.durable_markdown() if include("include_memories") else ""
     today_timeline = db.get_today_events() if include("include_today_timeline") else []
 
     # Deadline：先自动过期，再取 active
@@ -106,6 +114,7 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
         provider=provider,
         sections=db.get_prompt_sections(),
         memories=memories or None,
+        memory_markdown=memory_markdown or None,
         relevant_history=relevant_history or None,
         today_timeline=today_timeline or None,
         weather=weather,
@@ -140,7 +149,8 @@ def _ensure_valid_messages(messages: list[dict]) -> list[dict]:
     return merged
 
 
-async def _execute_tool_async(db: Database, tool_name: str, args: dict) -> dict:
+async def _execute_tool_async(db: Database, tool_name: str, args: dict,
+                              memory_service: MemoryService | None = None) -> dict:
     """
     工具执行的统一入口（各引擎调用这里）。
 
@@ -148,26 +158,25 @@ async def _execute_tool_async(db: Database, tool_name: str, args: dict) -> dict:
     event loop，卡住 Discord 心跳）；其余工具都是本地 DB 操作，委托同步 _execute_tool。
     """
     if tool_name == "search_history":
-        return await _search_history(db, args)
-    return _execute_tool(db, tool_name, args)
+        return await _search_history(db, args, memory_service=memory_service)
+    return _execute_tool(db, tool_name, args, memory_service=memory_service)
 
 
-async def _search_history(db: Database, args: dict) -> dict:
+async def _search_history(db: Database, args: dict,
+                          memory_service: MemoryService | None = None) -> dict:
     """AI 主动语义检索历史对话（poll 没有用户消息做锚点，让 AI 自己写 query）。"""
     query = (args.get("query") or "").strip()
     if not query:
         return {"success": False, "message": "query 不能为空"}
-    if not config.EMBEDDING_ENABLED:
+    memory = _memory_service(db, memory_service)
+    try:
+        snippets = await memory.recall(
+            query, str(config.CHANNEL_ID), limit=5, exclude_recent=20
+        )
+    except MemoryRecallDisabled:
         return {"success": False, "message": "语义检索未启用（embedding 未配置）"}
-    query_embedding = await embeddings.embed_text(query)
-    if not query_embedding:
+    except MemoryRecallUnavailable:
         return {"success": False, "message": "embedding 调用失败，稍后再试"}
-    snippets = await asyncio.to_thread(
-        db.get_relevant_conversation_snippets,
-        query_embedding, str(config.CHANNEL_ID),
-        model=config.EMBEDDING_MODEL, limit=5, exclude_recent=20,
-        min_relevance=config.EMBEDDING_MIN_RELEVANCE,
-    )
     if not snippets:
         return {"success": True, "count": 0, "snippets": [],
                 "message": "没有检索到相关历史片段（可能没聊过，或换个说法再试一次）"}
@@ -184,7 +193,8 @@ async def _search_history(db: Database, args: dict) -> dict:
     }
 
 
-def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
+def _execute_tool(db: Database, tool_name: str, args: dict,
+                  memory_service: MemoryService | None = None) -> dict:
     """执行具体的工具调用，返回结果"""
     if tool_name == "log_timeline_event":
         category = args.get("category", "uncategorized")
@@ -301,7 +311,8 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
         return {"success": False, "message": f"未找到 event_id={args['event_id']}"}
 
     elif tool_name == "save_memory":
-        memory_id = db.add_memory(
+        memory = _memory_service(db, memory_service)
+        memory_id = memory.save_durable(
             args["content"],
             memory_type=args.get("memory_type") or None,
             valid_until=args.get("valid_until") or None,
@@ -309,16 +320,18 @@ def _execute_tool(db: Database, tool_name: str, args: dict) -> dict:
         return {"status": "ok", "memory_id": memory_id}
 
     elif tool_name == "delete_memory":
-        db.delete_memory(args["memory_id"])
+        memory = _memory_service(db, memory_service)
+        memory.delete_durable(args["memory_id"])
         return {"status": "ok"}
 
     elif tool_name == "update_memory":
+        memory = _memory_service(db, memory_service)
         fields = {"content": args["content"]}
         if "memory_type" in args:
             fields["memory_type"] = args["memory_type"]
         if "valid_until" in args:
             fields["valid_until"] = args["valid_until"] or None
-        db.update_memory(args["memory_id"], **fields)
+        memory.update_durable(args["memory_id"], **fields)
         return {"status": "ok"}
 
     elif tool_name == "add_deadline":
@@ -370,7 +383,8 @@ async def simple_completion(prompt: str, call_with_tools_fn, preset: Preset) -> 
 
 async def chat(db: Database, messages: list[dict],
                call_with_tools_fn, preset: Preset,
-               send_callback=None, tool_callback=None) -> str:
+               send_callback=None, tool_callback=None,
+               memory_service: MemoryService | None = None) -> str:
     """
     处理用户消息的完整流程。
     messages: 调用方（discord_bot）已经从 Discord 历史构造好的消息列表，
@@ -391,26 +405,23 @@ async def chat(db: Database, messages: list[dict],
 
     # memory v3 Part B2：用当前用户消息做语义检索，捞出工作窗口外的相关历史片段。
     # channel_id 直接用 config.CHANNEL_ID——bot 是单频道的（on_message 已过滤）。
-    # exclude_recent=20 与 discord_bot 的 get_recent_ai_messages(limit=20) 对齐；
+    # exclude_recent=20 与 MemoryService.recent_messages(limit=20) 对齐；
     # 检索失败/禁用时 relevant_history 为 None，聊天流程不受影响。
-    relevant_history = None
-    if config.EMBEDDING_ENABLED and messages:
-        query_embedding = await embeddings.embed_text(messages[-1]["content"])
-        if query_embedding:
-            try:
-                # to_thread：全表 cosine 扫描是同步 CPU 工作，别阻塞 event loop
-                relevant_history = await asyncio.to_thread(
-                    db.get_relevant_conversation_snippets,
-                    query_embedding, str(config.CHANNEL_ID),
-                    model=config.EMBEDDING_MODEL, limit=5, exclude_recent=20,
-                    min_relevance=config.EMBEDDING_MIN_RELEVANCE,
-                )
-            except Exception as e:
-                logger.warning(f"⚠️ 历史片段检索失败（跳过注入）: {type(e).__name__}: {e}")
+    memory = _memory_service(db, memory_service)
+    memory_context = await memory.build_context(
+        query=messages[-1]["content"] if messages else None,
+        channel_id=str(config.CHANNEL_ID),
+        include_memories=False,
+        include_relevant_history=True,
+        recall_limit=5,
+        exclude_recent=20,
+    )
+    relevant_history = memory_context.relevant_history
 
     # 构建 PromptParts（静态 + 动态上下文一步到位）
     prompt = _build_prompt(db, "chat", provider=preset.provider, weather=weather,
-                           calendar=calendar, relevant_history=relevant_history)
+                           calendar=calendar, relevant_history=relevant_history,
+                           memory_service=memory)
 
     trace.start(trigger="chat", model=preset.model, provider=preset.provider,
                 prompt_parts=prompt, messages=messages)
@@ -421,6 +432,7 @@ async def chat(db: Database, messages: list[dict],
             send_callback=send_callback,
             tool_callback=tool_callback,
             preset=preset,
+            memory_service=memory,
         )
 
         # 备份 AI 回复到 DB
@@ -441,7 +453,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            trigger: str | None = None,
                            tool_profile: str | None = None,
                            check_in_name: str | None = None,
-                           context_config: dict | None = None) -> str | None:
+                           context_config: dict | None = None,
+                           memory_service: MemoryService | None = None) -> str | None:
     """
     统一的调度入口：处理主动聊天、提醒触发、睡前提醒等所有非用户消息的 AI 调用。
 
@@ -454,6 +467,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     使用 build_prompt("poll")：完整时间感知 + Poll 版回复规则。
     """
     # 日志：标明触发源
+    memory_service = _memory_service(db, memory_service)
     label = _TRIGGER_LABELS.get(trigger, f"📋 调度({trigger})")
     if check_in_name:
         label = f"{label} [{check_in_name}]"
@@ -473,6 +487,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     prompt_parts = _build_prompt(
         db, "poll", provider=preset.provider, weather=weather,
         calendar=calendar, context_config=context_config,
+        memory_service=memory_service,
     )
 
     if check_in_name:
@@ -519,6 +534,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                 send_callback=_silent_filter,
                 preset=preset,
                 tool_names=tool_names,
+                memory_service=memory_service,
             )
 
             if sent_texts:
@@ -529,6 +545,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                 send_callback=send_callback,
                 preset=preset,
                 tool_names=tool_names,
+                memory_service=memory_service,
             )
 
             if reply and "[SILENT]" not in reply:

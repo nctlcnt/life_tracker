@@ -36,7 +36,7 @@ It combines a Discord bot, AI-driven logging, scheduled reminders, SQLite storag
 
 - 一个 Python 进程通过 `asyncio` 同时运行 Discord bot、scheduler 和 FastAPI。
 - FastAPI 提供 REST API，并在生产镜像中服务 `frontend/dist`。
-- SQLite 文件保存在 `data/life_tracker.db`。
+- SQLite 文件保存在 `data/life_tracker.db`；长期个人记忆保存在 `data/memory.md`。
 - 配置从 `config.json` 读取；敏感信息不提交到仓库。
 - 生产环境可选用 Litestream 将 SQLite 复制到 Cloudflare R2。
 

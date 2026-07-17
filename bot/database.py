@@ -1477,6 +1477,33 @@ class Database:
         conn.commit()
         conn.close()
 
+    def sync_memories_shadow(self, memories: list[dict]) -> None:
+        """Mirror Markdown durable memories into the legacy migration table.
+
+        The application no longer reads this table. It remains an exact shadow
+        until production validation and offsite Markdown backup are complete.
+        """
+        conn = self._get_conn()
+        conn.execute("DELETE FROM memories")
+        conn.executemany(
+            """INSERT INTO memories
+               (id, content, created_at, source, memory_type, valid_until)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [
+                (
+                    item["id"],
+                    item["content"],
+                    item.get("created_at"),
+                    item.get("source") or "ai",
+                    item.get("memory_type"),
+                    item.get("valid_until"),
+                )
+                for item in memories
+            ],
+        )
+        conn.commit()
+        conn.close()
+
     # ============ Todo ============
 
     def add_todo(self, content: str) -> int:

@@ -15,6 +15,7 @@ import random
 from datetime import datetime, time, timedelta
 from bot.ai_engine import scheduled_action
 from bot.database import Database
+from bot.memory import MemoryService
 from bot.logger import get_logger
 import config
 
@@ -28,7 +29,8 @@ REMINDER_BATCH_WINDOW = timedelta(minutes=5)
 
 
 class Scheduler:
-    def __init__(self, db: Database, send_callback, is_user_typing_callback=None):
+    def __init__(self, db: Database, send_callback, is_user_typing_callback=None,
+                 memory_service: MemoryService | None = None):
         """
         send_callback: 一个 async 函数，用于发送消息到 Discord
             例如 bot.send_proactive_message
@@ -36,6 +38,7 @@ class Scheduler:
             返回用户当前是否在输入；仅随机轮询会用来决定是否让路
         """
         self.db = db
+        self.memory = memory_service or MemoryService(db)
         self.send = send_callback
         self.is_user_typing = is_user_typing_callback or (lambda: False)
         self._running = False
@@ -318,7 +321,9 @@ class Scheduler:
             try:
                 prompt = self._render_check_in_prompt(check_in, timestamp)
                 history_limit = 8 if name == "random_poll" else 20
-                history = self.db.get_recent_ai_messages(str(config.CHANNEL_ID), limit=history_limit)
+                history = self.memory.recent_messages(
+                    str(config.CHANNEL_ID), limit=history_limit
+                )
                 reply = await scheduled_action(
                     self.db, prompt, timestamp, history,
                     send_callback=self.send,
@@ -414,7 +419,7 @@ class Scheduler:
                 ).format(
                     timestamp=timestamp, action=context_action
                 )
-                history = self.db.get_recent_ai_messages(str(config.CHANNEL_ID), limit=20)
+                history = self.memory.recent_messages(str(config.CHANNEL_ID), limit=20)
                 reply = await scheduled_action(
                     self.db, prompt, timestamp, history,
                     send_callback=self.send,

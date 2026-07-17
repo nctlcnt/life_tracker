@@ -52,6 +52,10 @@
   "server": {
     "port": 8080
   },
+  "memory": {
+    "path": "data/memory.md",
+    "token_budget": 4000
+  },
   "timezone": "Australia/Sydney",
   "weather": {
     "api_key": "",

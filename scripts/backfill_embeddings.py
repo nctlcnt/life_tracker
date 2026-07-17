@@ -10,7 +10,7 @@
   .venv/bin/python scripts/backfill_embeddings.py --dry-run      # 只统计不调 API
 
 - 只处理 embedding 为空、或 embedding_model 不等于当前配置模型的行
-- 复用 bot.embeddings.embed_and_store（与线上写入路径完全相同的拼接/落库逻辑）
+- 复用 MemoryService.embed_message（与线上写入路径完全相同的拼接/落库逻辑）
 - 幂等，可 Ctrl-C 中断后重跑续传；库是 WAL 模式，bot 在线时跑也安全
 """
 import argparse
@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import config
 from bot.database import Database
-from bot.embeddings import embed_and_store
+from bot.memory import MemoryService
 
 CONCURRENCY = 4
 
@@ -54,6 +54,7 @@ async def main() -> int:
         return 1
 
     db = Database(args.db)  # 先跑 schema migration（幂等加列），旧库才有 embedding 列可查
+    memory = MemoryService(db)
     rows = pending_rows(args.db)
     print(f"待回填: {len(rows)} 行（模型 {config.EMBEDDING_MODEL}, 库 {os.path.abspath(args.db)}）")
     if args.dry_run or not rows:
@@ -66,7 +67,7 @@ async def main() -> int:
     async def work(row_id: int, channel_id: str):
         nonlocal done
         async with sem:
-            ok = await embed_and_store(db, row_id, channel_id)
+            ok = await memory.embed_message(row_id, channel_id)
         if not ok:
             failed.append(row_id)
         done += 1

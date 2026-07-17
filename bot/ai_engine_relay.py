@@ -8,6 +8,7 @@ import re
 from bot.tools import get_tools
 from bot.prompts import build_tool_round_hint, PromptParts
 from bot.database import Database
+from bot.memory import MemoryService
 from bot.ai_provider_error import AIProviderError
 from bot.ai_engine_base import (
     _execute_tool_async,
@@ -22,9 +23,10 @@ logger = get_logger(__name__)
 
 
 async def chat(db: Database, messages: list[dict], preset: Preset,
-               send_callback=None, tool_callback=None) -> str:
+               send_callback=None, tool_callback=None, memory_service=None) -> str:
     return await _base_chat(db, messages, _call_with_tools, preset,
-                            send_callback=send_callback, tool_callback=tool_callback)
+                            send_callback=send_callback, tool_callback=tool_callback,
+                            memory_service=memory_service)
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
@@ -33,14 +35,16 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            trigger: str | None = None,
                            tool_profile: str | None = None,
                            check_in_name: str | None = None,
-                           context_config: dict | None = None) -> str | None:
+                           context_config: dict | None = None,
+                           memory_service=None) -> str | None:
     return await _base_scheduled_action(db, prompt, timestamp, history, _call_with_tools,
                                         preset,
                                         send_callback=send_callback,
                                         allow_silent=allow_silent, trigger=trigger,
                                         tool_profile=tool_profile,
                                         check_in_name=check_in_name,
-                                        context_config=context_config)
+                                        context_config=context_config,
+                                        memory_service=memory_service)
 
 
 async def simple_completion(prompt: str, preset: Preset) -> str:
@@ -50,7 +54,8 @@ async def simple_completion(prompt: str, preset: Preset) -> str:
 async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: list[dict],
                            preset: Preset,
                            send_callback=None, tool_callback=None,
-                           tool_names: set | None = None) -> str:
+                           tool_names: set | None = None,
+                           memory_service: MemoryService | None = None) -> str:
     """用 httpx 直接调用 OpenAI 兼容的中转站 API。"""
     model = preset.model
     base_url = preset.base_url.rstrip("/")
@@ -176,7 +181,9 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                 except json.JSONDecodeError:
                     func_args = {}
 
-                result = await _execute_tool_async(db, func_name, func_args)
+                result = await _execute_tool_async(
+                    db, func_name, func_args, memory_service=memory_service
+                )
                 called_names.append(func_name)
                 tc_id = tc.get("id", "")
                 trace_tool_calls.append({"name": func_name, "input": func_args, "id": tc_id})

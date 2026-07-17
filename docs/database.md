@@ -97,7 +97,18 @@ append-only 保存通过 Discord 收发的原始消息，作为后续 Context Bu
 
 ---
 
-## memories — AI 持久记忆
+## memory.md — AI 持久记忆（权威存储）
+
+长期个人记忆的 canonical source 是 `data/memory.md`。文件包含可读的 Markdown
+section，以及用于保持 API 兼容的隐藏 metadata comment（稳定 id、source、type、有效期）。
+
+- `MarkdownMemoryRepository` 使用文件锁和同目录临时文件 + `os.replace` 原子写入；
+- Prompt 读取时移除 metadata，只注入完整 Markdown 条目；
+- 默认预算为 4000 estimated tokens，超限时只按完整条目裁剪，不截断单条内容；
+- deadline、todo、reminder、timeline 和原始 conversation 仍以 SQLite 为权威来源；
+- 配置项为 `memory.path` / `memory.token_budget`，默认 `data/memory.md` / `4000`。
+
+## memories — 迁移期只读回滚影子
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -108,10 +119,10 @@ append-only 保存通过 Discord 收发的原始消息，作为后续 Context Bu
 | `memory_type` | TEXT | 自由文本分类，不强制枚举（memory v3 B1，迁移列） |
 | `valid_until` | TEXT | 过期时间；NULL = 永久（memory v3 B1，迁移列） |
 
-memory v3 B1 起本表收窄为"永久事实"（长期偏好/身份信息），日常进展交给
-conversation_messages 的自动 embedding 检索。原先的 20 条 FIFO 硬删已移除；
-`get_all_memories` 默认只返回未过期的行（`valid_until IS NULL OR > now`），
-过期记忆不删除，可在 Dashboard Memory 页手动管理。
+该表已经不再参与应用读取。Markdown migration window 内，每次 Markdown CRUD
+会把当前内容完整 shadow write 到本表，使现有 Litestream SQLite 备份仍能作为回滚来源。
+生产验证、Markdown 独立异地备份和恢复演练完成后，应按 Linear cleanup issue 删除本表
+以及 `Database` 中的 legacy CRUD/shadow 方法。
 
 ---
 

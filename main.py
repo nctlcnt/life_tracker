@@ -30,6 +30,7 @@ from bot.timezone_state import init_timezone
 init_timezone(config.TIMEZONE)
 
 from bot.database import Database
+from bot.memory import MarkdownMemoryRepository, MemoryService
 from api.server import app as fastapi_app, set_check_in_changed_callback, set_database
 from bot import test_mode
 
@@ -42,10 +43,16 @@ async def main(test: bool = False, api_only: bool = False):
     try:
         # 1. 初始化数据库
         db = Database(config.DB_PATH)
+        durable_memory = MarkdownMemoryRepository(
+            config.MEMORY_PATH,
+            legacy_repository=db,
+            token_budget=config.MEMORY_TOKEN_BUDGET,
+        )
+        memory = MemoryService(db, durable_repository=durable_memory)
         logger.info(f"📦 数据库已就绪: {config.DB_PATH}")
 
         # 2. 注入数据库到 FastAPI
-        set_database(db)
+        set_database(db, memory)
 
         # 5. 启动 FastAPI（在后台线程中运行，不阻塞事件循环）
         api_config = uvicorn.Config(
@@ -68,13 +75,14 @@ async def main(test: bool = False, api_only: bool = False):
         from bot.scheduler import Scheduler
 
         # 3. 初始化 Discord Bot
-        bot = LifeTrackerBot(db)
+        bot = LifeTrackerBot(db, memory)
 
         # 4. 初始化定时调度器
         scheduler = Scheduler(
             db,
             bot.send_proactive_message,
             is_user_typing_callback=bot.is_user_typing,
+            memory_service=memory,
         )
         db._on_reminder_added = scheduler.notify_new_reminder
         set_check_in_changed_callback(scheduler.notify_ai_call_done)

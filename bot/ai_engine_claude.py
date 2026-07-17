@@ -9,6 +9,7 @@ from anthropic import AsyncAnthropic
 from bot.tools import get_tools, to_anthropic_tools
 from bot.prompts import build_tool_round_hint, PromptParts
 from bot.database import Database
+from bot.memory import MemoryService
 from bot.ai_provider_error import AIProviderError
 from bot.ai_engine_base import (
     _execute_tool_async,
@@ -49,9 +50,10 @@ def _get_client(api_key: str) -> AsyncAnthropic:
 
 
 async def chat(db: Database, messages: list[dict], preset: Preset,
-               send_callback=None, tool_callback=None) -> str:
+               send_callback=None, tool_callback=None, memory_service=None) -> str:
     return await _base_chat(db, messages, _call_with_tools, preset,
-                            send_callback=send_callback, tool_callback=tool_callback)
+                            send_callback=send_callback, tool_callback=tool_callback,
+                            memory_service=memory_service)
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
@@ -60,14 +62,16 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            trigger: str | None = None,
                            tool_profile: str | None = None,
                            check_in_name: str | None = None,
-                           context_config: dict | None = None) -> str | None:
+                           context_config: dict | None = None,
+                           memory_service=None) -> str | None:
     return await _base_scheduled_action(db, prompt, timestamp, history, _call_with_tools,
                                         preset,
                                         send_callback=send_callback,
                                         allow_silent=allow_silent, trigger=trigger,
                                         tool_profile=tool_profile,
                                         check_in_name=check_in_name,
-                                        context_config=context_config)
+                                        context_config=context_config,
+                                        memory_service=memory_service)
 
 
 async def simple_completion(prompt: str, preset: Preset) -> str:
@@ -77,7 +81,8 @@ async def simple_completion(prompt: str, preset: Preset) -> str:
 async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: list[dict],
                            preset: Preset,
                            send_callback=None, tool_callback=None,
-                           tool_names: set | None = None) -> str:
+                           tool_names: set | None = None,
+                           memory_service: MemoryService | None = None) -> str:
     """
     调用 Anthropic Claude，处理可能的多轮 tool calling。
     中间轮的文本通过 send_callback 发送。
@@ -219,7 +224,10 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                 logger.info(f"🛠️ 调用工具: {tool_use.name} | {desc_first}")
                 logger.info(f"   参数: {tool_use.input}")
 
-                result = await _execute_tool_async(db, tool_use.name, tool_use.input)
+                result = await _execute_tool_async(
+                    db, tool_use.name, tool_use.input,
+                    memory_service=memory_service,
+                )
                 called_names.append(tool_use.name)
                 tool_results.append({
                     "type": "tool_result",

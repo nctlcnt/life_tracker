@@ -307,6 +307,15 @@ TIMEZONE: str = _cfg.get("timezone", "Australia/Sydney")
 # ── 数据库 ─────────────────────────────────────────────────────────────
 DB_PATH: str = os.path.join(os.path.dirname(__file__), "data", "life_tracker.db")
 
+# ── 长期记忆 ───────────────────────────────────────────────────────────
+_memory = _cfg.get("memory", {}) or {}
+_memory_path = _memory.get("path", "data/memory.md")
+MEMORY_PATH: str = (
+    _memory_path if os.path.isabs(_memory_path)
+    else os.path.join(os.path.dirname(__file__), _memory_path)
+)
+MEMORY_TOKEN_BUDGET: int = int(_memory.get("token_budget", 4000) or 4000)
+
 # ── 天气 ───────────────────────────────────────────────────────────────
 # tomorrow.io API；api_key 空时天气模块会静默降级（返回 None，不影响主流程）
 _weather = _cfg.get("weather", {})

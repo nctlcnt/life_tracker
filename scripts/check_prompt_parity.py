@@ -17,6 +17,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from bot.database import Database
+from bot.memory import MemoryService
 from bot.prompts import LEGACY_STRUCTURED_KEYS, build_prompt
 from tests.legacy_reference import legacy_from_formatted
 
@@ -27,11 +28,13 @@ def main() -> int:
     args = parser.parse_args()
 
     db = Database(args.db)
+    memory = MemoryService(db)
     sections = db.get_prompt_sections()
     p = build_prompt(
         "chat",
         sections=sections,
-        memories=db.get_all_memories(),
+        memories=memory.list_durable(),
+        memory_markdown=memory.durable_markdown(),
         today_timeline=db.get_today_events(),
         deadlines=db.get_active_deadlines(),
         projects=db.get_all_project_names(),

@@ -2,16 +2,14 @@
 Discord 机器人模块
 负责接收和发送 Discord 消息，注册斜杠命令
 """
-import asyncio
 import re
 import discord
-import inspect
 from dataclasses import dataclass
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timezone, timedelta
 from bot.ai_engine import chat, simple_completion
-from bot.embeddings import embed_and_store
+from bot.memory import MemoryService
 from bot.weather import get_weather_brief, get_weather_detailed, geocode_address
 from bot.prompts import get_prompt_template
 from bot.database import Database
@@ -22,23 +20,6 @@ import config
 logger = get_logger(__name__)
 _TYPING_COOLDOWN = timedelta(minutes=5)
 _LOCALHOST_CALLBACK_RE = re.compile(r"https?://localhost:\d+/\?\S*")
-
-# fire-and-forget embedding 任务的强引用，防止被 GC 提前回收
-_embedding_tasks: set[asyncio.Task] = set()
-
-
-def _spawn_embedding_task(db: Database | None, row_id: int | None, channel_id: str) -> None:
-    """conversation_messages 落库后，后台补 embedding（memory v3 Part B2）。
-    row_id 为 None（重复消息被忽略）或功能禁用时直接跳过；永不抛异常。"""
-    if db is None or row_id is None or not config.EMBEDDING_ENABLED:
-        return
-    try:
-        task = asyncio.create_task(embed_and_store(db, row_id, channel_id))
-    except RuntimeError:
-        return  # 无 running event loop（同步测试环境），跳过
-    _embedding_tasks.add(task)
-    task.add_done_callback(_embedding_tasks.discard)
-
 
 @dataclass
 class _CalendarAuthSession:
@@ -53,11 +34,12 @@ def _is_rate_limited_error(exc: Exception) -> bool:
 
 
 class LifeTrackerBot(commands.Bot):
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, memory_service: MemoryService | None = None):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
         self.db = db
+        self.memory = memory_service or MemoryService(db)
         self.last_typing_at: datetime | None = None  # 目标用户最近 typing 时刻（UTC aware）
         # typing 被 429 限流后的冷却截止时间（按 channel_id），命中时直接跳过 typing 不再撞 API
         self._typing_cooldown_until: dict[int, datetime] = {}
@@ -166,7 +148,7 @@ class LifeTrackerBot(commands.Bot):
 
         # 备份到 DB（messages 表只作备份，AI 上下文走 DB conversation log）
         self.db.add_message("user", current_content)
-        conv_row_id = self.db.add_conversation_message(
+        await self.memory.ingest_message(
             discord_message_id=str(message.id),
             channel_id=str(message.channel.id),
             guild_id=str(message.guild.id) if message.guild else None,
@@ -186,10 +168,8 @@ class LifeTrackerBot(commands.Bot):
                 "message_type": str(message.type),
             },
         )
-        _spawn_embedding_task(self.db, conv_row_id, str(message.channel.id))
-
         # AI 上下文走 DB conversation log，不再实时拉 Discord history。
-        ai_messages = self.db.get_recent_ai_messages(str(message.channel.id), limit=20)
+        ai_messages = self.memory.recent_messages(str(message.channel.id), limit=20)
 
         try:
             async def send_reply(text):
@@ -197,6 +177,7 @@ class LifeTrackerBot(commands.Bot):
                     message.channel,
                     text,
                     db=self.db,
+                    memory_service=self.memory,
                     role="assistant",
                     use_typing=not self._is_typing_cooling_down(message.channel.id),
                     on_typing_rate_limited=lambda: self._mark_typing_cooldown(
@@ -216,7 +197,10 @@ class LifeTrackerBot(commands.Bot):
 
             if self._is_typing_cooling_down(message.channel.id):
                 # typing 限流冷却期，跳过 typing 直接 chat
-                await chat(self.db, ai_messages, send_callback=send_reply, tool_callback=on_tool_call)
+                await chat(
+                    self.db, ai_messages, send_callback=send_reply,
+                    tool_callback=on_tool_call, memory_service=self.memory,
+                )
             else:
                 typing_cm = message.channel.typing()
                 try:
@@ -225,17 +209,23 @@ class LifeTrackerBot(commands.Bot):
                     if not _is_rate_limited_error(e):
                         raise
                     self._mark_typing_cooldown(message.channel.id, f"Discord typing 入口限流: {e}")
-                    await chat(self.db, ai_messages, send_callback=send_reply, tool_callback=on_tool_call)
+                    await chat(
+                        self.db, ai_messages, send_callback=send_reply,
+                        tool_callback=on_tool_call, memory_service=self.memory,
+                    )
                 else:
                     try:
-                        await chat(self.db, ai_messages, send_callback=send_reply, tool_callback=on_tool_call)
+                        await chat(
+                            self.db, ai_messages, send_callback=send_reply,
+                            tool_callback=on_tool_call, memory_service=self.memory,
+                        )
                     finally:
                         await typing_cm.__aexit__(None, None, None)
         except Exception as e:
             error_msg = f"❌ {type(e).__name__}: {e}"
             logger.exception(error_msg)
             sent = await message.channel.send(error_msg[:2000])
-            self._record_sent_message(sent, role="assistant")
+            await self._record_sent_message(sent, role="assistant")
         finally:
             # cache 钱已付，通知 scheduler 重置 poll 基准（45-55min 内不再轮询）
             if self.on_ai_call_done:
@@ -265,6 +255,7 @@ class LifeTrackerBot(commands.Bot):
                 channel,
                 text,
                 db=self.db,
+                memory_service=self.memory,
                 role="assistant",
                 use_typing=not self._is_typing_cooling_down(channel.id),
                 on_typing_rate_limited=lambda: self._mark_typing_cooldown(
@@ -274,10 +265,11 @@ class LifeTrackerBot(commands.Bot):
         except Exception as e:
             logger.exception(f"❌ 主动发送失败: {e}")
 
-    def _record_sent_message(self, sent: discord.Message, role: str = "assistant") -> None:
+    async def _record_sent_message(self, sent: discord.Message,
+                                   role: str = "assistant") -> None:
         """Record a Discord message sent by Hiyori into the raw conversation log."""
         try:
-            row_id = self.db.add_conversation_message(
+            await self.memory.ingest_message(
                 discord_message_id=str(sent.id),
                 channel_id=str(sent.channel.id),
                 guild_id=str(sent.guild.id) if sent.guild else None,
@@ -293,7 +285,6 @@ class LifeTrackerBot(commands.Bot):
                 ),
                 metadata={"message_type": str(sent.type)},
             )
-            _spawn_embedding_task(self.db, row_id, str(sent.channel.id))
         except Exception as e:
             logger.warning(f"⚠️ 写入 outbound conversation log 失败: {e}")
 
@@ -770,6 +761,7 @@ _RE_TS_PREFIX = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]\s*")
 
 async def _send_chat_chunks(target, text: str, *,
                             db: Database | None = None,
+                            memory_service: MemoryService | None = None,
                             role: str = "assistant",
                             use_typing: bool = True,
                             on_typing_rate_limited=None) -> None:
@@ -799,7 +791,7 @@ async def _send_chat_chunks(target, text: str, *,
             try:
                 for chunk in chunks:
                     sent = await target.send(chunk)
-                    await _record_sent_chunk(db, sent, role)
+                    await _record_sent_chunk(db, sent, role, memory_service)
             finally:
                 await typing_cm.__aexit__(None, None, None)
             logger.info("✅ 消息发送完成")
@@ -807,16 +799,18 @@ async def _send_chat_chunks(target, text: str, *,
 
     for chunk in chunks:
         sent = await target.send(chunk)
-        await _record_sent_chunk(db, sent, role)
+        await _record_sent_chunk(db, sent, role, memory_service)
     logger.info("✅ 消息发送完成")
 
 
-async def _record_sent_chunk(db: Database | None, sent: discord.Message, role: str) -> None:
+async def _record_sent_chunk(db: Database | None, sent: discord.Message, role: str,
+                             memory_service: MemoryService | None = None) -> None:
     """Persist a sent Discord message when a DB is available."""
-    if db is None:
+    if db is None and memory_service is None:
         return
     try:
-        result = db.add_conversation_message(
+        service = memory_service or MemoryService(db)
+        await service.ingest_message(
             discord_message_id=str(sent.id),
             channel_id=str(sent.channel.id),
             guild_id=str(sent.guild.id) if sent.guild else None,
@@ -832,9 +826,5 @@ async def _record_sent_chunk(db: Database | None, sent: discord.Message, role: s
             ),
             metadata={"message_type": str(sent.type)},
         )
-        row_id = result
-        if inspect.isawaitable(result):
-            row_id = await result
-        _spawn_embedding_task(db, row_id, str(sent.channel.id))
     except Exception as e:
         logger.warning(f"⚠️ 写入 outbound conversation log 失败: {e}")

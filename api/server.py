@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from bot.database import Database
+from bot.memory import MemoryService
 from bot.merge import merge_events
 from bot import trace as ai_trace
 
@@ -25,12 +26,14 @@ app.add_middleware(
 
 # 数据库实例会在 main.py 启动时注入
 db: Database | None = None
+memory: MemoryService | None = None
 _check_in_changed_callback = None
 
 
-def set_database(database: Database):
-    global db
+def set_database(database: Database, memory_service: MemoryService | None = None):
+    global db, memory
     db = database
+    memory = memory_service or MemoryService(database)
 
 
 def set_check_in_changed_callback(callback):
@@ -145,7 +148,29 @@ async def get_categories():
 @app.get("/api/memories")
 async def get_memories():
     """获取所有记忆，包括已过期的——Memory tab 手动整理需要看到全部。"""
-    return db.get_all_memories(include_expired=True)
+    return memory.list_durable(include_expired=True)
+
+
+@app.get("/api/memory-document")
+async def get_memory_document():
+    """Return the canonical Markdown document and prompt-budget stats."""
+    repository = memory.durable_repository
+    if not hasattr(repository, "read_document"):
+        raise HTTPException(status_code=501, detail="Markdown memory is not enabled")
+    return {"content": repository.read_document(), **memory.durable_stats()}
+
+
+@app.put("/api/memory-document")
+async def replace_memory_document(body: dict):
+    """Atomically replace the canonical Markdown document."""
+    repository = memory.durable_repository
+    if not hasattr(repository, "replace_document"):
+        raise HTTPException(status_code=501, detail="Markdown memory is not enabled")
+    try:
+        repository.replace_document(body.get("content") or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "ok", **memory.durable_stats()}
 
 
 @app.post("/api/memories")
@@ -154,7 +179,7 @@ async def create_memory(body: dict):
     content = (body.get("content") or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="content required")
-    memory_id = db.add_memory(
+    memory_id = memory.save_durable(
         content,
         source="user",
         memory_type=(body.get("memory_type") or None),
@@ -182,14 +207,14 @@ async def update_memory(memory_id: int, body: dict):
         fields["valid_until"] = body.get("valid_until") or None
     if not fields:
         raise HTTPException(status_code=400, detail="no fields to update")
-    db.update_memory(memory_id, **fields)
+    memory.update_durable(memory_id, **fields)
     return {"status": "ok"}
 
 
 @app.delete("/api/memories/{memory_id}")
 async def delete_memory(memory_id: int):
     """删除一条记忆"""
-    db.delete_memory(memory_id)
+    memory.delete_durable(memory_id)
     return {"status": "ok"}
 
 
