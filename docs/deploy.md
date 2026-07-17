@@ -1,322 +1,307 @@
-# 云上部署 / 升级
+# Life Tracker 部署与灾备
 
-线上 life-tracker 跑在一台 VPS 上的 docker compose 里，镜像从 GitHub Container Registry 拉取。本文涵盖**首次安装**、**日常升级流程**和**云上 staging 环境**。
+本文记录当前 VPS 上的真实运维方式，不是通用云服务器安装教程。测试、构建和灾备演练的最近结果统一记录在 [operations-validation.md](operations-validation.md)。
 
-## 首次安装
+## 1. 当前生产拓扑
 
-### 前置条件
+| 项目 | 当前值 |
+|---|---|
+| 仓库 | `/home/ubuntu/stacks/life_tracker` |
+| 生产编排 | Dockge 管理的 `compose.yaml` |
+| 应用镜像 | 从当前工作树构建的 `life-tracker:local` |
+| 应用监听 | 宿主 `127.0.0.1:8080` → 容器 `8080` |
+| 数据库 | `data/life_tracker.db`（SQLite WAL） |
+| 配置 | `config.json`；不得提交到 Git |
+| 环境变量 | `.env` → `.env.prod` 软链接 |
+| 灾备 | Litestream sidecar 持续复制 SQLite 到 Cloudflare R2 |
+| 重启策略 | app 与 Litestream 均为 `unless-stopped` |
+| 健康检查 | `http://127.0.0.1:8080/api/health` |
 
-- 一台运行 Ubuntu 22.04+ 的 VPS
-- 域名（可选，用于 HTTPS）
-- GitHub 仓库已推送（Actions 从这里触发构建）
+`compose.yaml` 是 Dockge 和 `make deploy-local` 共用的生产权威文件。目录中同时存在 `docker-compose.yml`，所以直接运行 `docker compose` 会提示发现多个配置文件；它会选择 `compose.yaml`。本地开发必须显式使用 `-f docker-compose.yml`。
 
-### 1. 在 GitHub 上启用包权限
+### 网络边界
 
-GitHub Actions 把镜像推送到 **GitHub Container Registry (ghcr.io)**：
+API 没有应用层认证，安全边界依赖宿主绑定、WireGuard 和受控的 Cloudflare 路由：
 
-1. 仓库 → **Settings** → **Actions** → **General** → **Workflow permissions** 选 **Read and write permissions**，保存
-2. 仓库为 Private 时，镜像也是私有的，VPS 拉取前需要 PAT：
-   - **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens**
-   - **Generate new token**，Repository access 选这个仓库
-   - Permissions 只勾 **Packages** → **Read-only**
-   - 复制 token（只显示一次）
+- 应用端口只允许绑定 `127.0.0.1` 或 `10.66.66.1`，禁止 `0.0.0.0`。
+- 不通过公网 IP 加端口访问服务。
+- Google Calendar OAuth 回调使用 `https://oauth.purrden.cc/api/calendar/oauth/callback`。
+- `infra overview` 当前还登记了 `life.purrden.cc → 127.0.0.1:8080`。只要该路由存在，就不能声称整个 Dashboard 是严格 WireGuard-only；应确认它有预期的访问控制，或用 `infra unpublish life.purrden.cc` 下线。
+- 不手工创建 Cloudflare tunnel；发布和下线统一使用 `infra publish` / `infra unpublish`。
 
-### 2. 发布第一个版本
+每次部署后必须确认实际监听仍为 `127.0.0.1:8080`，并运行 `infra audit`。如果受限环境无法读取 systemd 或 socket，审计结果不得记为通过，应在正常宿主 shell 重跑。
 
-```bash
-# 本地，确保所有改动已 commit/push
-git push origin main
+## 2. 部署策略
 
-# 打 tag 触发 GitHub Actions 构建
-make release VERSION=v1.0.0
-```
+这是单用户服务，不要求每次改动都完整走 dev → staging → release。按风险选择流程：
 
-到 GitHub → **Actions** 页面确认 workflow 跑通（约 2-5 分钟）。
+| 变更类型 | 推荐流程 |
+|---|---|
+| 文档、纯样式、低风险 UI | 本地测试/构建后直接部署 production |
+| 小范围 Python 修复、非破坏性 API 变更 | 全部自动测试 + 前端构建 + 数据库快照后直接部署 |
+| SQLite schema/migration、scheduler、Discord 消息流、AI tools/prompt 组装 | 先 staging，再部署 production |
+| 依赖大版本、网络/认证、Litestream/恢复逻辑 | staging + 恢复演练 + 明确回滚点 |
+| 希望得到不可变镜像和版本标签 | 使用 GHCR release 流程 |
 
-### 3. 在 VPS 上安装 Docker 并登录镜像仓库
+无论采用哪条路径，部署前都要查看 `git status --short`，确认没有把不相关的工作区改动带入镜像。
 
-SSH 进服务器后：
+## 3. 日常本地构建部署
 
-```bash
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER
-newgrp docker
-
-docker --version
-docker compose version
-
-# 用第一步生成的 PAT 登录 ghcr，凭证保存在 ~/.docker/config.json
-echo "<你的_PAT>" | docker login ghcr.io -u <你的GitHub用户名> --password-stdin
-```
-
-### 4. 上传 compose 与配置
+### 3.1 部署前验证
 
 ```bash
-# 服务器上 clone 仓库
-git clone git@github.com:nctlcnt/life_tracker.git ~/life-tracker
-cd ~/life-tracker
-mkdir -p data
+cd /home/ubuntu/stacks/life_tracker
 
-# 本地另开终端，把填好密钥的 config.json 拷过去
-scp config.json user@your-server:~/life-tracker/config.json
+git status --short
+.venv/bin/python -m pytest -q
+npm ci --prefix frontend
+npm run build --prefix frontend
+git diff --check
 ```
 
-或者服务器上 `cp config.example.json config.json` 后 `nano config.json` 直接填。
+`npm ci` 严格使用 `frontend/package-lock.json`。依赖未变且已经安装时，可以只运行 `npm run build --prefix frontend`，但 CI/正式发布仍应从干净安装验证。
 
-> **必须先放好 `~/life-tracker/config.json` 再起容器。** Compose 会以只读方式挂载到 `/app/config.json`，文件不存在 docker 会把它当目录创建，启动反而更乱。
+### 3.2 创建在线 SQLite 快照
 
-### 5. 起容器
+数据库处于 WAL 模式，不要用普通 `cp` 把正在写入的主文件当作可靠在线快照。使用 SQLite backup API：
 
 ```bash
-cd ~/life-tracker
-echo "VERSION=v1.0.0" > .env.prod      # 锁定版本
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
-docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs -f
+cd /home/ubuntu/stacks/life_tracker
+backup="data/life_tracker.db.bak-$(date -u +%Y%m%d-%H%M%S)"
+sqlite3 data/life_tracker.db ".backup '$backup'"
+sqlite3 "$backup" "PRAGMA integrity_check;"
 ```
 
-访问 `http://你的服务器IP:8080` 验证。
+只有输出 `ok` 才继续部署。备份属于敏感个人数据，保持在受限主机/R2 内，不要提交或上传到公开位置。
 
-### 6. （可选）Nginx + HTTPS 反代
+### 3.3 部署
 
 ```bash
-sudo apt install -y nginx certbot python3-certbot-nginx
+make deploy-local
 ```
 
-`/etc/nginx/sites-available/life-tracker`：
+它等价于使用 `compose.yaml` 从当前工作树重新构建并启动生产栈。它会直接影响 production，不会创建 Git tag，也没有自动生成的镜像回滚版本。
 
-```nginx
-server {
-    listen 80;
-    server_name your-domain.com;
-
-    location / {
-        proxy_pass         http://127.0.0.1:8080;
-        proxy_set_header   Host $host;
-        proxy_set_header   X-Real-IP $remote_addr;
-        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto $scheme;
-    }
-}
-```
+### 3.4 部署后验证
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/life-tracker /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d your-domain.com    # 自动改 nginx 配置申请证书
+docker compose ps
+curl -fsS http://127.0.0.1:8080/api/health
+docker compose logs --tail 100 app
+docker compose logs --tail 100 litestream
+sqlite3 data/life_tracker.db "PRAGMA quick_check;"
+infra audit
 ```
 
-完成后访问 `https://your-domain.com`。服务器重启后容器会自动拉起（`restart: unless-stopped`）。
+通过标准：
 
-## 部署纪律：staging first
+- app 为 `healthy`，Litestream 为 `Up`；
+- health 返回 `{"status":"ok"}`；
+- 应用日志无启动 Traceback；
+- `PRAGMA quick_check` 返回 `ok`；
+- Litestream 日志有近期 `wal segment written`，且无持续上传错误；
+- 8080 仍只监听 `127.0.0.1`；
+- 将结果追加到 `docs/operations-validation.md`。
 
-**任何未发布的工作树改动只能先上 8081 staging 测试，不能直接部署到 8080 prod。**
+## 4. Staging
 
-固定规则：
+Staging 是独立的 Dockge 栈，权威文件不在本仓库：
 
-1. 本地/服务器工作树改动 → `docker compose -f docker-compose.staging.yml up -d --build`
-2. 在 `http://<server>:8081/app/` 验证功能和 API。
-3. 验证通过后，走 release：`make release VERSION=vX.Y.Z`，等 GitHub Actions 推送 GHCR 镜像。
-4. prod 只用 registry release 镜像升级：`make deploy VERSION=vX.Y.Z`。
+```text
+/home/ubuntu/stacks/life-tracker-staging/compose.yaml
+```
 
-不要把 `docker-compose.local.yml` 或 `make deploy-local` 用在 prod 日常发布上。它会从当前工作树构建 `life-tracker:local` 并重启 8080，绕过 tag / CI / GHCR，容易把未验证的 dev 代码打到生产。
+本仓库的 `docker-compose.staging.yml` 仅为历史参考，禁止从它启动，否则会与 Dockge 栈冲突。
 
-## 镜像与版本
+Staging 使用：
 
-`docker-compose.prod.yml` 里 image 字段是：
+- 第二个 Discord bot；
+- `config.dev.json`；
+- `data-dev/life_tracker.db`；
+- 端口 8081；
+- bind-mounted 源码与 `frontend/dist`；
+- 不运行 Litestream，不复制到生产 R2。
+
+完整重建（依赖或镜像层变化）：
+
+```bash
+cd /home/ubuntu/stacks/life-tracker-staging
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail 100 app
+curl -fsS http://127.0.0.1:8081/api/health
+```
+
+快速迭代（Python 或前端代码变化）：
+
+```bash
+cd /home/ubuntu/stacks/life_tracker
+npm run build --prefix frontend
+
+cd /home/ubuntu/stacks/life-tracker-staging
+docker compose restart app
+```
+
+注意：当前 staging compose 的端口写法是 `8081:8081`，Docker 默认会绑定 `0.0.0.0`，不符合本 VPS 纪律。在再次启用 staging 前，应先改成 `127.0.0.1:8081:8081` 或按需要绑定 `10.66.66.1:8081:8081`，然后用 `infra audit` 验证。
+
+## 5. 可选：版本化 GHCR 发布
+
+需要不可变版本、跨机器部署或清晰镜像回滚点时使用：
+
+```bash
+make release VERSION=vX.Y.Z
+gh run list --workflow Release --limit 5
+make deploy VERSION=vX.Y.Z
+```
+
+Tag 会触发 GitHub Actions 构建 `linux/amd64` 和 `linux/arm64` 镜像，并推送：
+
+- `ghcr.io/nctlcnt/life_tracker:vX.Y.Z`
+- `ghcr.io/nctlcnt/life_tracker:stable`
+
+`make deploy` 使用 `docker-compose.prod.yml`，而 Dockge 的 `compose.yaml` 仍声明本地镜像 `life-tracker:local`。因此 GHCR 部署后若再从 Dockge 重建，可能切回本地镜像。使用该流程时必须记录当前部署来源，并避免把两种编排方式当成同一个状态。
+
+镜像回滚：
+
+```bash
+make deploy VERSION=vPREVIOUS
+```
+
+镜像回滚不会自动回滚数据库 schema 或数据。
+
+## 6. 灾备与恢复
+
+### 6.1 灾备层级
+
+| 层级 | 用途 | 不能替代什么 |
+|---|---|---|
+| SQLite 在线快照 | 部署前快速回滚 | 异机灾难恢复 |
+| Litestream → R2 | 主机/磁盘损坏后的异地恢复 | 已验证的恢复流程 |
+| Git tag / GHCR 镜像 | 恢复应用代码和依赖 | SQLite 数据恢复 |
+| `config.json` / OAuth 凭据 | 恢复运行配置 | 数据库或镜像 |
+
+### Trace 灾备范围决策（2026-07-12）
+
+`data/ai_traces/*.jsonl` 暂不纳入独立灾备。这是有意接受的取舍，不是遗漏：
+
+- Litestream 只复制 `life_tracker.db`，因此会保护结构化的 `ai_runs` 和 `tool_calls`；
+- JSONL 保存更完整的调试 payload，但当前不为它增加 R2 同步、归档或额外恢复流程；
+- 主机或磁盘完全损坏时，允许丢失 JSONL 历史，Trace Viewer 的日期/原始详情可能不完整；
+- 该决定不影响 conversation、timeline、memory、todo、prompt 和结构化 AI run/tool-call 数据的恢复；
+- 当 JSONL 成为产品功能的数据源、出现必须保留的审计需求，或其不可替代价值明显提高时，再重新评估备份。
+
+“Litestream 正在成功上传”只证明复制路径工作，不证明恢复一定成功。只有从 R2 恢复到全新临时路径、通过完整性检查并能启动临时实例后，才可将灾备恢复记为通过。
+
+### 6.2 本地快照回滚
+
+先停止写入者和复制进程：
+
+```bash
+cd /home/ubuntu/stacks/life_tracker
+docker compose stop app litestream
+```
+
+保留故障现场，再恢复已验证快照：
+
+```bash
+mv data/life_tracker.db data/life_tracker.db.failed-$(date -u +%Y%m%d-%H%M%S)
+rm -f data/life_tracker.db-wal data/life_tracker.db-shm
+cp data/life_tracker.db.bak-<timestamp> data/life_tracker.db
+sqlite3 data/life_tracker.db "PRAGMA integrity_check;"
+docker compose up -d app litestream
+```
+
+`rm` 仅用于与已经移走的故障数据库配套的 WAL/SHM；执行前必须确认容器已停止且主数据库已经保留。恢复后完成第 3.4 节全部检查。
+
+### 6.3 R2 恢复演练原则
+
+不要直接覆盖 production 数据库。演练必须恢复到 `/tmp` 或专用临时目录：
+
+1. 记录 production 当前时间、数据库大小和最新 Litestream 成功上传时间。
+2. 使用与 production 相同版本的 Litestream，从 R2 恢复到全新临时路径。
+3. 对恢复文件运行 `PRAGMA integrity_check`。
+4. 检查关键表存在、最近数据时间合理，并与预期恢复点比较。
+5. 使用隔离配置和未登记临时端口（如需启动服务，必须先 `infra allocate`）进行只读 smoke test。
+6. 删除临时实例前记录 RPO、恢复耗时、命令版本和结果到验证台账。
+
+具体 restore 命令依赖当前 `litestream.yml` 和 Litestream 版本。每次演练前先运行 `litestream restore -h` 核对语法，不把未经验证的示例命令直接用于 production。
+
+### 6.4 使用 staging 做隔离恢复演练
+
+Staging 可以用于恢复后的应用级 smoke test，但不要覆盖 `data-dev/`，也不要以完整 bot/scheduler 模式启动恢复库。采用“独立临时目录 + 临时 compose override + `--api-only`”：
+
+- production 的 `data/`、容器和 Litestream 全程不停止、不改写；
+- staging 原本的 `data-dev/` 和配置文件不改写；
+- 恢复库放在 `/tmp/life-tracker-drill-<timestamp>/`；
+- 演练容器挂载恢复库和 `config.dev.json`，但通过 `--api-only` 禁用 Discord 与 scheduler；
+- 演练端口必须先用 `infra allocate` 分配，并只绑定 `127.0.0.1`；结束后 `infra unregister`；
+- 演练 compose 使用独立 project name，不复用或停止正常 staging 容器。
+
+演练步骤：
+
+1. 记录 production 数据库最新业务时间、文件大小和 Litestream 最近上传时间。
+2. 用 Litestream 0.3.13 从 R2 恢复到全新临时目录。
+3. 运行 `PRAGMA integrity_check` 并比较关键表及最新时间，计算实际 RPO。
+4. 创建临时 compose 文件，挂载恢复目录到 `/app/data`，使用 `config.dev.json`，命令设为 `python main.py --api-only`。
+5. 以独立 project 启动一个临时容器，检查 health、version、timeline、memories、todos、projects、prompts 等只读端点；结构化 trace 用 SQLite `ai_runs`/`tool_calls` 验证，不要求 JSONL Trace Viewer 日期恢复。
+6. 检查容器日志没有 schema、SQLite 或启动异常。
+7. 停止并删除临时容器；确认 production 仍 healthy、Litestream 仍运行、`data/` 与 `data-dev/` 路径未被替换。
+8. 将恢复点、RPO、耗时和结果写入 `operations-validation.md`。
+
+临时 compose 的核心约束示例：
 
 ```yaml
-image: ghcr.io/nctlcnt/life_tracker:${VERSION:-stable}
+services:
+  app:
+    build: /home/ubuntu/stacks/life_tracker
+    command: ["python", "main.py", "--api-only"]
+    ports:
+      - "127.0.0.1:<allocated-port>:8081"
+    volumes:
+      - /tmp/life-tracker-drill-<timestamp>:/app/data
+      - /home/ubuntu/stacks/life_tracker/config.dev.json:/app/config.json:ro
 ```
 
-每次 `make release VERSION=vX.Y.Z` 后，GitHub Actions 同时 push 两个 tag：
+如果配置内 `server.port` 不是 8081，端口映射的容器端必须使用配置中的真实端口。演练不测试 Discord、scheduler、AI provider 或写操作；这些属于 staging 功能测试，不属于数据库可恢复性验证。
 
-| Tag | 含义 |
+## 7. 进程与故障排查
+
+```bash
+docker compose ps
+docker compose logs --tail 200 app
+docker compose logs --tail 200 litestream
+curl -fsS http://127.0.0.1:8080/api/health
+sqlite3 data/life_tracker.db "PRAGMA quick_check;"
+infra overview
+infra audit
+```
+
+常见问题：
+
+- app unhealthy：检查 `config.json`、数据库权限、端口占用和启动 Traceback。
+- Discord token 无效：应用会保留 FastAPI，日志会明确记录 bot 登录失败。
+- 主 AI provider 不可用：检查日志是否成功切换 fallback；fallback 成功不等于主 provider 健康。
+- Litestream `Up` 但没有近期上传：确认数据库最近是否有写入；有写入却无 `wal segment written` 才是异常信号。
+- `infra audit` 与 health 冲突：确认是否因当前 shell 没有 systemd/socket 权限；在正常宿主环境重跑，不能忽略。
+
+## 8. 运维验证频率
+
+| 检查 | 最低频率 |
 |---|---|
-| `:vX.Y.Z` | 不可变，永久存档 |
-| `:stable` | 始终指向最新稳定版 |
+| pytest、前端构建、`git diff --check` | 每次部署前 |
+| app health、容器状态、SQLite quick check | 每次部署后 |
+| Litestream 最新成功复制日志 | 每次部署后，至少每月一次 |
+| SQLite 在线快照并校验 | 每次高风险部署前 |
+| R2 完整恢复演练 | 每季度，或 Litestream/存储配置变更后 |
+| 网络监听和公网路由审计 | 每次网络/compose 变更后，至少每月一次 |
+| 验证台账更新 | 每次执行上述检查后立即更新 |
 
-**生产推荐 pin 显式版本**——出问题时回滚明确，不会因为下次 `pull` 自动滚版。在部署目录下放一个 `.env.prod`：
+## 9. 相关文件
 
-```bash
-echo "VERSION=v1.3.0" > .env.prod
-```
-
-后续 compose 命令统一加 `--env-file .env.prod`，或直接用 Makefile 提供的 `make deploy VERSION=...`。
-
-## 升级（routine）
-
-### 1. 备份数据库
-
-Litestream 的 R2 复制是流式的，本地再多一份文件级快照保险：
-
-```bash
-cd ~/life-tracker
-cp data/life_tracker.db data/life_tracker.db.bak-$(date +%Y%m%d-%H%M%S)
-```
-
-### 2. 切版本
-
-前置条件：对应版本已经在 staging 验证过，并且 GHCR 上已有该 release image。
-
-最简方式（推荐）：用 Makefile
-
-```bash
-make deploy VERSION=v1.3.0
-```
-
-等价于：
-
-```bash
-VERSION=v1.3.0 docker compose -f docker-compose.prod.yml pull
-VERSION=v1.3.0 docker compose -f docker-compose.prod.yml up -d
-```
-
-只 `app` 容器会被重建，`litestream` 持续运行。
-
-### 3. 验证
-
-```bash
-# 容器状态：app 应该是 Up X seconds (healthy)
-docker compose -f docker-compose.prod.yml ps
-
-# 启动日志：找 FastAPI / Discord bot 启动消息，无 Traceback
-docker compose -f docker-compose.prod.yml logs --tail 80 app
-
-# Health endpoint
-curl -sf http://localhost:8080/api/health && echo OK
-
-# 浏览器打开前端确认 UI 正常；Network 面板检查关键资源 200
-```
-
-启动到 `(healthy)` 通常 15-30 秒（compose healthcheck 间隔 30s，start_period 15s）。
-
-## 回滚
-
-发现新版有问题，直接切回上一个稳定版本：
-
-```bash
-make deploy VERSION=v1.2.0
-```
-
-如果新版动过 DB 且回滚后异常，恢复刚才的备份：
-
-```bash
-docker compose -f docker-compose.prod.yml down
-cp data/life_tracker.db.bak-<timestamp> data/life_tracker.db
-make deploy VERSION=v1.2.0
-```
-
-需要注意：恢复 DB 会丢掉新版运行期间产生的数据。如果 Litestream 已经把这段数据流到 R2，可以等 R2 那份冷却几分钟再决定如何 reconcile。
-
-## 清理
-
-升级稳定后清掉 dangling 镜像腾空间：
-
-```bash
-docker image prune -f
-```
-
-如果想保留旧版 layer 做热回滚（再次 pull 不需重新拉网络），跳过这步。
-
-## 故障排查
-
-### `pull` 报 `unauthorized` / `denied`
-
-ghcr 是私有仓库。第一次部署或 PAT 过期时需要重新登录：
-
-```bash
-echo "<你的_PAT>" | docker login ghcr.io -u <你的GitHub用户名> --password-stdin
-```
-
-PAT 在 GitHub → Settings → Developer settings → Personal access tokens 生成，scope 只勾 **read:packages**。
-
-### `up -d` 后容器一直 `unhealthy`
-
-```bash
-docker compose -f docker-compose.prod.yml logs app --tail 200
-```
-
-常见原因：
-- `config.json` 没挂上或写错（Discord token、AI key 缺失，启动报错）
-- `data/` 目录权限不对（容器内是 root，宿主一般也是 root，本来不该出问题；如果你换过用户登录服务器再 pull，可能要 `sudo chown` 一下）
-- 8080 端口被占（`sudo lsof -i :8080`）
-
-### 镜像构建失败（GitHub Actions）
-
-去 GitHub Actions 页面看 workflow log。常见：tag 写错（必须 `vX.Y.Z` 三段式），或者 PAT 权限不够。本地补救：
-
-```bash
-git tag -d v1.3.0          # 删本地
-git push origin :v1.3.0    # 删远端
-make release VERSION=v1.3.1
-```
-
-## Staging 环境（同机 8081）
-
-服务器上同时跑一个独立的 staging stack 验证未发布的改动，不影响 prod。
-
-**前置**：在 [Discord Developer Portal](https://discord.com/developers/applications) 申请第二个 Application & Bot Token 作为测试 bot——同一 token 不能在两个进程同时跑，共用 bot 也会让真实聊天和测试输出混在一起。
-
-### 一次性设置
-
-```bash
-cd ~/life-tracker
-git pull
-
-# 1. 准备测试 config（独立 token + 独立端口）
-cp config.json config.dev.json
-nano config.dev.json
-```
-
-至少改三处：
-- `discord.token` → 第二个 bot 的 token
-- `discord.allowed_user_id` → 你自己（可与 prod 一致）
-- `server.port` → `8081`
-
-建议改：
-- `ai.presets` 切到便宜模型（Haiku / Gemini Flash 等），dev 聊天不烧 prod 配额
-- 测试 bot 邀请到独立服务器或单独频道，不要和 prod bot 同频
-
-```bash
-# 2. 准备独立数据目录（dev SQLite 不被 Litestream 同步到 R2）
-mkdir -p data-dev
-```
-
-`config.dev.json` 和 `data-dev/` 都在 `.gitignore` / `.dockerignore`，不会进 git 也不会进镜像。
-
-### 启停
-
-```bash
-# 启动 / 重新构建（改了源码后用）
-docker compose -f docker-compose.staging.yml up -d --build
-
-# 看日志
-docker compose -f docker-compose.staging.yml logs -f app
-
-# 改了 Python / dist 后只需要 restart（compose 已 bind-mount 源码）
-docker compose -f docker-compose.staging.yml restart app
-
-# 停止
-docker compose -f docker-compose.staging.yml down
-```
-
-Staging stack 通过 compose project name `life-tracker-staging` 与 prod 隔离，互不影响。前端访问 `http://你的IP:8081`。
-
-### 与 prod 的隔离边界
-
-| 资源 | prod | staging |
-|---|---|---|
-| Discord Bot | bot1（`config.json`） | bot2（`config.dev.json`） |
-| 端口 | 8080 | 8081 |
-| 数据库 | `data/life_tracker.db` | `data-dev/life_tracker.db` |
-| Litestream（→ R2 备份） | 跑 | 不跑 |
-| Compose project | 默认（目录名） | `life-tracker-staging` |
-| 镜像来源 | `ghcr.io/...:vX.Y.Z`（不可变） | 本地 `build: .`（每次从源码构建） |
-
-## 参考
-
-- [Makefile](../Makefile) — `release` / `deploy` 两个 target 的定义
-- [docker-compose.prod.yml](../docker-compose.prod.yml) — 生产环境 compose 文件
-- [docker-compose.staging.yml](../docker-compose.staging.yml) — staging 环境 compose 文件
-- [.github/workflows/release.yml](../.github/workflows/release.yml) — CI 构建配置
+- `compose.yaml`：Dockge 管理的生产权威栈
+- `docker-compose.prod.yml`：GHCR 版本化部署
+- `docker-compose.yml`：显式选择的本地开发栈
+- `/home/ubuntu/stacks/life-tracker-staging/compose.yaml`：staging 权威栈
+- `litestream.yml`：R2 复制配置
+- `.github/workflows/release.yml`：tag release 构建
+- `docs/operations-validation.md`：测试、健康和灾备演练台账
