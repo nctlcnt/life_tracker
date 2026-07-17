@@ -14,7 +14,7 @@
 
 ## 当前基线
 
-最后更新：2026-07-17 06:46 UTC
+最后更新：2026-07-17 06:55 UTC
 
 | 检查项 | 最近执行时间（UTC） | 状态 | 结果/证据 | 下次动作 |
 |---|---|---|---|---|
@@ -29,7 +29,7 @@
 | 本地 SQLite 快照恢复 | 未知 | NOT TESTED | 部署前快照 `pre-deploy-20260717.db` quick_check=ok，但未演练恢复启动 | 下次高风险部署前演练 |
 | R2/Litestream 完整恢复 | 2026-07-11 13:30 | PASS | 从 R2 恢复到全新 `/tmp` 路径；integrity check、数据新鲜度和 API-only smoke test 均通过 | 2026-10 前重跑，或 Litestream/R2 变更后立即重跑 |
 | 网络监听/路由审计 | 2026-07-17 06:45 | PASS | 宿主 shell 运行 `infra audit`：life-tracker 监听 `127.0.0.1:8080` 无异常；5 个告警均属其他栈/工具进程 | 每次部署后重跑 |
-| Dashboard/API 鉴权 | 2026-07-17 06:36 | PASS | 公网未授权读/写、docs、OpenAPI 均 401；header/cookie 登录 200；logout 后重新 401；cookie Secure+HttpOnly+SameSite=Strict | 每次鉴权/路由变更后重跑 |
+| Dashboard/API 鉴权 | 2026-07-17 06:55 | PASS | 自动验收全部通过；用户随后从真实浏览器确认登录和 Dashboard 使用“完全正常” | 每次鉴权/路由变更后重跑 |
 | Staging 启动与隔离 | 未知 | NOT TESTED | 外部 Dockge staging compose 仍使用 `8081:8081`，可能绑定所有接口 | 修正权威 compose 后再验证 |
 | memory.md 独立异地备份 | 未知 | NOT TESTED | `data/memory.md` 已成为记忆权威存储（07-17 上线），Litestream 只覆盖 SQLite；迁移期靠 legacy 表 shadow 兜底 | LT-132 验收前建立独立备份并演练恢复 |
 
@@ -85,6 +85,7 @@
 - 实际监听：`127.0.0.1:8080`
 - `infra audit`：PASS for life-tracker；5 个告警属于停用的 staging/llm-gateway 或当前工具进程
 - Smoke test：公网未授权 `/api/memories` GET/POST、`/docs`、`/openapi.json` 均 401；`X-API-Key` 200；登录 cookie 200；logout 后重新 401；cookie 为 Secure/HttpOnly/SameSite=Strict；OAuth callback 到达原 handler
+- 用户验收：2026-07-17 06:55 UTC，真实浏览器登录与 Dashboard 使用完全正常
 - 异常与回滚：无应用异常；旧镜像 `life-tracker:rollback-pre-lt139-20260717-063213`；DB 快照见上；部署中仅遇沙箱无法 socket/读取 systemd，均在宿主权限下重验通过
 
 ### 2026-07-17 04:08 UTC — main@7d4ec52（Markdown memory + check-in 框架 + LT-130 检索修复上线）

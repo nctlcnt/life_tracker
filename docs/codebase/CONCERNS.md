@@ -4,7 +4,7 @@
 
 | Severity | Concern | Evidence | Impact | Suggested action |
 |----------|---------|----------|--------|------------------|
-| high | Production API auth is implemented but not yet deployed | `api/auth.py`, `api/server.py`; `.env.prod` still lacks `LIFE_TRACKER_API_KEY` | The live service remains exposed through `life.purrden.cc` until the new image and secret are deployed | Configure the secret, deploy, and verify unauthenticated read/write rejection |
+| medium | AI provider consolidation lacks adapter characterization tests | `bot/ai_engine_{openai,relay,claude,gemini}.py`; active=`kiro` and fallback=`glm` use OpenAI-compatible paths, but three native Gemini presets remain configured | LT-134 could regress tool rounds, fallback, request parameters, or old trace compatibility while deleting adapters | Freeze OpenAI-compatible request/response/tool-loop contracts before removing native adapters; migrate or explicitly retire native Gemini presets |
 | medium | Framework port defaults remain in source | `main.py`, `Dockerfile`, compose files; `infra overview` on 2026-07-17 | Missing explicit port config can still select 8080, though compose bind fallbacks are loopback-only and Vite is strict | Remove remaining framework-default port fallbacks in a coordinated deployment change |
 | high | Runtime directly imports undeclared `httpx` | `bot/weather.py`, `bot/ai_engine_relay.py`, `requirements.txt` | Fresh environments rely on a transitive dependency and may break when dependency graphs change | Add a direct, bounded `httpx` requirement and verify a clean image build/import test |
 | medium | Release CI has no automated tests | `.github/workflows/release.yml`, `pytest.ini` | A version tag can publish a multi-arch image despite backend regression or frontend behavioral failure | Run pytest and frontend build/tests before image push |
@@ -28,7 +28,7 @@ The supplied VPS inventory says application listeners must bind only `127.0.0.1`
 
 | Risk | OWASP category | Evidence | Current mitigation | Gap |
 |------|----------------|----------|--------------------|-----|
-| API authentication rollout gap | A01 Broken Access Control | `api/auth.py`, `api/server.py`, `.env.prod` | Code fails closed and supports API key plus signed cookie | Production has not yet been rebuilt with the new code/secret |
+| API key is a shared long-lived secret | A02 Cryptographic Failures | `api/auth.py`, ignored `.env.prod` | 64-hex key, mode 600, HTTPS-only signed HttpOnly cookie, rotation invalidates sessions | No per-client keys, revocation list, or rate limiting; acceptable for the current single-user deployment |
 | Raw integration errors returned/rendered | A04 / A05 | preset test responses include provider exception text | API keys are masked; OAuth HTML is escaped | Provider messages may still expose internal operational detail to authenticated admins |
 | Plaintext credential/state files | A02 Cryptographic Failures | `config.py`, `bot/google_calendar.py` | ignored by Git; host/container filesystem boundary | No secrets manager, file-mode check, or documented rotation policy |
 | Sensitive corpus retention | A09 Logging/Monitoring Failures | `bot/trace.py`, `bot/test_mode.py` | files are ignored by Git and reachable only through the private service/filesystem | Indefinite local retention is intentional; JSONL is explicitly outside DR scope and may be lost with the host |

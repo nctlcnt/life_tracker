@@ -4,7 +4,7 @@
 
 - Primary framework: pytest `>=8.0`.
 - Assertion/mocking tools: Python `assert`, pytest parametrization, `monkeypatch`, and `tmp_path`; no separate mocking library.
-- Verified in this documentation run (2026-07-12 UTC): 37 tests passed in 1.15 seconds; the Vite production build also completed successfully in 4.02 seconds.
+- Latest verified baseline (2026-07-17 UTC): 57 tests passed in 2.54 seconds; the Vite production build and LT-139 production authentication smoke tests also passed.
 
 ```bash
 .venv/bin/python -m pytest -q
@@ -27,7 +27,7 @@ cd frontend && npm run build
 |-------|----------|----------------|-------|
 | Unit | yes, narrow | Prompt rendering, parsing invariants, scheduler time calculation | `tests/test_prompt_render.py`, `tests/test_template_edge.py`, `tests/test_scheduler_checkins.py` |
 | Component/integration | partial | Scheduler plus a temporary real SQLite database | External AI and Discord are replaced with local callbacks/monkeypatches |
-| API integration | no automated suite evidenced | FastAPI routes and validation | Manual `scripts/test_api.py` exists |
+| API integration | partial | Authentication middleware, login/session/logout, OAuth exemption | `tests/test_api_auth.py`; broader domain routes still rely on manual smoke checks |
 | Frontend unit/component | no | React components | No frontend test dependency or script |
 | End-to-end | no | Discord-to-AI-to-DB/UI user flows | No configured harness |
 
@@ -44,7 +44,7 @@ cd frontend && npm run build
 - Coverage tool + threshold: [TODO] none configured.
 - Current reported coverage: [TODO] not measured.
 - CI test gate: absent; the release workflow checks out and builds/pushes a container without a separate test step.
-- High-risk gaps: unauthenticated API/admin behavior, database migrations/queries, Discord filtering and response flow, provider adapters/fallbacks, Google OAuth/calendar, reminders, frontend state and mutations, and deployment restore behavior.
+- High-risk gaps: AI provider adapters/fallbacks, database migrations/queries, Discord filtering and response flow, Google Calendar behavior, frontend state/mutations, and deployment restore behavior. LT-134 must add provider contract tests before deleting adapters.
 - The frontend build verifies bundling but is not a behavioral test and currently emits a 429.03 kB JavaScript bundle (136.68 kB gzip).
 
 ## 6) Evidence
@@ -54,6 +54,7 @@ cd frontend && npm run build
 - `tests/test_prompt_render.py`
 - `tests/test_template_edge.py`
 - `tests/test_scheduler_checkins.py`
+- `tests/test_api_auth.py`
 - `scripts/test_api.py`
 - `frontend/package.json`
 - `.github/workflows/release.yml`
