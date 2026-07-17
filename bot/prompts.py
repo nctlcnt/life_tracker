@@ -19,9 +19,8 @@ small non-user-specific runtime hints.
    最大化 1h ephemeral cache 命中率。模式差异通过 scheduler 模板
    （PROACTIVE / REMINDER / BEDTIME / MORNING）在 user message 里标识。
 
-各引擎消费 PromptParts 的方法：
-- Claude: prompt.to_claude_blocks() → 最多 4 个 cached system block
-- Gemini/Relay: prompt.flatten() → 单个字符串
+引擎消费 PromptParts 的方法：
+- prompt.flatten() → 单个 system 字符串（OpenAI 兼容格式）
 - 中间轮省 token: prompt.concise().flatten()（{tools} 展开为空）
 
 """
@@ -124,11 +123,11 @@ class PromptParts:
     把渲染结果切成 ≤4 个单调段——占位符按稳定→易变排列时，切段结果与旧的
     静态/projects/memories/动态四层完全一致：
     - 记忆更新只失效 memories 所在段，动态数据更新只失效尾段，
-      前缀段保持 Anthropic ephemeral cache 命中。
+      稳定前缀有利于端点侧的 prefix-based prompt cache 命中。
     - pending_reminders 注入尾段的目的：让 AI 一眼看到队列里已有什么
       follow-up，避免被聊天历史带回去重复 set 同一件事。
 
-    Gemini/Relay 用 flatten() 拍平成单个字符串（不参与 prompt caching）。
+    引擎用 flatten() 拍平成单个 system 字符串。
     """
     mode: str  # "chat" | "poll"，仅用于调用方上游决策（如 DB 取数），不影响 prompt 内容
     template: str
@@ -168,22 +167,6 @@ class PromptParts:
     def flatten(self) -> str:
         """拍平为单个字符串（Gemini / Relay 用）。"""
         return _join_nonempty(*(text for _, text in self.render_blocks()))
-
-    def to_claude_blocks(self) -> list[dict]:
-        """
-        构建 Anthropic system blocks（最多 4 个 cached block，上限即 cache_control 最大值）。
-
-        顺序 = 稳定 → 易变（render_blocks 的 tier 单调性保证），
-        前缀匹配最大化命中。
-        """
-        return [
-            {
-                "type": "text",
-                "text": text,
-                "cache_control": {"type": "ephemeral", "ttl": "1h"},
-            }
-            for _, text in self.render_blocks()
-        ]
 
     def concise(self) -> PromptParts:
         """返回 {tools} 展开为空的副本（中间轮省 token）。"""
@@ -335,7 +318,6 @@ def _format_pending_reminders(pending: list[dict] | None) -> str:
 def build_prompt(
     mode: str,
     *,
-    provider: str = "claude",
     memories: list[dict] | None = None,
     memory_markdown: str | None = None,
     relevant_history: list[dict] | None = None,
@@ -355,10 +337,8 @@ def build_prompt(
               共享完全相同的 system prompt 以最大化 cache 命中率。
               模式差异由 scheduler 模板（PROACTIVE/REMINDER/BEDTIME/MORNING）
               在 user message 里标识。
-    provider: AI 引擎标识（"claude" / "gemini" / "relay"），预留参数。
     其余参数：从 DB 取来的原始数据，由内部 _format_* 函数格式化。
     """
-    _ = provider  # 预留参数，暂时未使用
     prompt_sections = empty_prompt_sections()
     if sections:
         for key, value in sections.items():
@@ -432,7 +412,3 @@ def get_prompt_template(key: str, sections: dict[str, str] | None = None) -> str
     return (sections[key] or "").strip()
 
 
-def get_proactive_prompt(provider: str, sections: dict[str, str] | None = None) -> str:
-    """按 provider 返回对应的轮询模板。gemini 走 <think> 框架版，其他走选项式版。"""
-    key = "proactive_gemini" if provider.lower().strip() == "gemini" else "proactive_claude"
-    return get_prompt_template(key, sections)

@@ -71,22 +71,6 @@ class LegacyPromptParts:
             self.dynamic_text(),
         )
 
-    def to_claude_blocks(self) -> list[dict]:
-        blocks = []
-        for text in (
-            self.static_text(),
-            self.stable_context_text(),
-            self.memories_text(),
-            self.dynamic_text(),
-        ):
-            if text:
-                blocks.append({
-                    "type": "text",
-                    "text": text,
-                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
-                })
-        return blocks
-
     def concise(self) -> "LegacyPromptParts":
         c = copy.copy(self)
         c.tools = None

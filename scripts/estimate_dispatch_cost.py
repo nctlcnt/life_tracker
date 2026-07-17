@@ -154,12 +154,11 @@ def load_user_messages(days: int) -> list[dict]:
 async def flash_judge_rate(messages: list[dict], preset_name: str,
                            sample_n: int) -> tuple[int, int]:
     from config import PRESETS
-    from bot.ai_engine import _load_engine
+    from bot.ai_engine_openai_compat import simple_completion
 
     preset = PRESETS.get(preset_name)
     if preset is None:
         raise SystemExit(f"preset {preset_name!r} 不存在；可用：{list(PRESETS.keys())}")
-    simple_completion = _load_engine(preset.provider).simple_completion
 
     sampled = random.sample(messages, min(sample_n, len(messages)))
     would = 0

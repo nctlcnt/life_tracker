@@ -5,7 +5,7 @@ AI 引擎模块（LT-134 统一 OpenAI 兼容实现）
 格式端点。所有 preset（官方 OpenAI / 中转站 / 各家兼容端点）都走这里，
 差异只剩 base_url + model + api_key。
 
-行为基线来自 ai_engine_relay（production active 路径），补充两点：
+行为基线来自合并前的 relay 引擎（production active 路径），补充两点：
 - base_url 为空时默认官方 OpenAI 端点（原 openai SDK 引擎的行为）
 - max_tokens 被 400 拒绝且提示 max_completion_tokens 时（GPT-5 系推理模型），
   换参数重试一次并在本次调用内记住选择；中转站/兼容端点不受影响

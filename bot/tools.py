@@ -410,17 +410,3 @@ def get_tools(tool_names=None):
     return [t for t in TOOLS if t["function"]["name"] in tool_names]
 
 
-def to_anthropic_tools(tools):
-    """Convert canonical OpenAI-style tool schema to Anthropic tool schema."""
-    return [
-        {
-            "name": t["function"]["name"],
-            "description": t["function"].get("description", ""),
-            "input_schema": t["function"].get("parameters", {
-                "type": "object",
-                "properties": {},
-                "required": [],
-            }),
-        }
-        for t in tools
-    ]

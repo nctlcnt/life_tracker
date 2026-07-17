@@ -864,8 +864,7 @@ async def admin_test_preset(body: dict):
     if p is None:
         raise HTTPException(status_code=404, detail=f"unknown preset: {name}")
 
-    from bot.ai_engine import _load_engine
-    engine = _load_engine(p.provider)
+    from bot import ai_engine_openai_compat as engine
 
     t0 = time.monotonic()
     try:

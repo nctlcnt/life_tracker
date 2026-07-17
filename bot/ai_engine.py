@@ -1,32 +1,21 @@
 """
-AI 引擎路由模块
-LT-134 引擎合并后所有 preset 走统一的 OpenAI 兼容实现
-（bot/ai_engine_openai_compat，base_url 区分官方/中转站/各家兼容端点）；
-仅 provider=gemini 在 3 个原生 preset 迁移/退役前仍走原生 Gemini 引擎。
+AI 引擎入口模块
+LT-134 引擎合并后只有一个引擎实现（bot/ai_engine_openai_compat，
+OpenAI Chat Completions 格式），preset 只区分 base_url + model + api_key。
 
 运行时由 /model、/fallback 斜杠命令切换 preset（见 config.set_active / set_fallback）。
-主 preset 调用失败（AIProviderError）时自动切 fallback preset；fallback 为空则直接抛出。
+主 preset 调用失败（AIProviderError）时自动换 fallback preset 重试同一引擎；
+fallback 为空则直接抛出。
 
 外部只需 from bot.ai_engine import chat, scheduled_action, simple_completion
 """
-import types
 import config
 from config import Preset
+from bot import ai_engine_openai_compat as _engine
 from bot.ai_provider_error import AIProviderError
 from bot.logger import get_logger
 
 logger = get_logger(__name__)
-
-
-def _load_engine(provider: str) -> types.ModuleType:
-    """根据 provider 名称加载对应的引擎模块（import 缓存，反复调用零成本）。"""
-    p = provider.lower().strip()
-    if p == "gemini":
-        # LT-134 过渡：3 个原生 Gemini preset 迁移到兼容端点/退役前保留原生引擎
-        import bot.ai_engine_gemini as m
-    else:
-        import bot.ai_engine_openai_compat as m
-    return m
 
 
 # ── 启动日志（展示当前激活状态，便于排查）────────────────────────────────
@@ -47,8 +36,7 @@ async def _run_with_fallback(method_name: str, *args, **kwargs):
     method_name 是引擎模块里的 chat / scheduled_action / simple_completion。
     """
     active: Preset = config.get_active()
-    engine = _load_engine(active.provider)
-    method = getattr(engine, method_name)
+    method = getattr(_engine, method_name)
     try:
         return await method(*args, preset=active, **kwargs)
     except AIProviderError as e:
@@ -59,9 +47,7 @@ async def _run_with_fallback(method_name: str, *args, **kwargs):
             f"⚠️ 主 preset [{active.name}] 调用失败: {e}\n"
             f"   → 自动切换到 fallback preset [{fallback.name}]"
         )
-        fb_engine = _load_engine(fallback.provider)
-        fb_method = getattr(fb_engine, method_name)
-        return await fb_method(*args, preset=fallback, **kwargs)
+        return await method(*args, preset=fallback, **kwargs)
 
 
 async def chat(db, messages: list[dict],

@@ -1,7 +1,7 @@
 """LT-134 统一引擎（ai_engine_openai_compat）特有行为的测试。
 
-共享契约在 test_ai_engine_relay_contract.py 里参数化覆盖；这里只测
-统一引擎相对 relay 基线新增的两点：
+共享契约在 test_ai_engine_openai_compat_contract.py 覆盖；这里只测
+统一引擎相对合并前 relay 基线新增的两点：
 - base_url 为空 → 默认官方 OpenAI 端点（接管原 openai SDK 引擎的 preset）
 - 官方 GPT-5 系拒绝 max_tokens 时换 max_completion_tokens 重试
 """
@@ -17,7 +17,7 @@ from bot.ai_provider_error import AIProviderError
 from bot.database import Database
 from bot.prompts import PromptParts
 
-from tests.test_ai_engine_relay_contract import (
+from tests.test_ai_engine_openai_compat_contract import (
     _FakeAsyncClient, _FakeResponse, _completion,
 )
 

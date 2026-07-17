@@ -64,10 +64,8 @@ def _assert_parity(sections: dict[str, str], data: dict) -> None:
     legacy_blocks = [t for t in (legacy.static_text(), legacy.stable_context_text(),
                                  legacy.memories_text(), legacy.dynamic_text()) if t]
     assert [t for _, t in p.render_blocks()] == legacy_blocks
-    assert p.to_claude_blocks() == legacy.to_claude_blocks()
     assert p.flatten() == legacy.flatten()
     assert p.concise().flatten() == legacy.concise().flatten()
-    assert p.concise().to_claude_blocks() == legacy.concise().to_claude_blocks()
 
 
 @pytest.mark.parametrize("data_name", DATA_VARIANTS)

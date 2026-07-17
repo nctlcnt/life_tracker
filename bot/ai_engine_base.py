@@ -1,6 +1,6 @@
 """
 AI 引擎公共模块
-提取三个引擎（Claude / Gemini / Relay）共享的逻辑：
+引擎实现（ai_engine_openai_compat）之上的共享逻辑：
 - 动态上下文构建
 - 消息格式处理
 - 工具执行
@@ -73,7 +73,7 @@ def format_tool_calls_summary(called_names: list[str], called_args: list[dict] |
     return "\n".join(lines)
 
 
-def _build_prompt(db: Database, mode: str, provider: str = "claude",
+def _build_prompt(db: Database, mode: str,
                   weather: str | None = None,
                   calendar: str | None = None,
                   relevant_history: list[dict] | None = None,
@@ -82,8 +82,7 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
     """
     从 DB 取数据，构建完整的 PromptParts 对象。
 
-    mode:     "chat"（用户对话）或 "poll"（调度主动聊天）
-    provider: AI 引擎标识，透传给 build_prompt（预留 provider-specific prompt 扩展）
+    mode: "chat"（用户对话）或 "poll"（调度主动聊天）
     """
     context_config = context_config or {}
 
@@ -111,7 +110,6 @@ def _build_prompt(db: Database, mode: str, provider: str = "claude",
 
     return build_prompt(
         mode,
-        provider=provider,
         sections=db.get_prompt_sections(),
         memories=memories or None,
         memory_markdown=memory_markdown or None,
@@ -419,7 +417,7 @@ async def chat(db: Database, messages: list[dict],
     relevant_history = memory_context.relevant_history
 
     # 构建 PromptParts（静态 + 动态上下文一步到位）
-    prompt = _build_prompt(db, "chat", provider=preset.provider, weather=weather,
+    prompt = _build_prompt(db, "chat", weather=weather,
                            calendar=calendar, relevant_history=relevant_history,
                            memory_service=memory)
 
@@ -485,7 +483,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     calendar = await get_calendar_context() if include_calendar else None
 
     prompt_parts = _build_prompt(
-        db, "poll", provider=preset.provider, weather=weather,
+        db, "poll", weather=weather,
         calendar=calendar, context_config=context_config,
         memory_service=memory_service,
     )
