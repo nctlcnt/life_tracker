@@ -1,7 +1,8 @@
-"""LT-134 characterization tests：冻结 relay 引擎的 OpenAI-compatible 请求契约。
+"""LT-134 characterization tests：冻结 OpenAI-compatible 请求契约。
 
-relay（raw httpx）是合并后单引擎的行为基线，production active preset (kiro)
-走的就是这条路径。冻结的内容：
+relay（raw httpx）是行为基线，production active preset (kiro) 走的就是这条
+路径；统一引擎 ai_engine_openai_compat 必须满足完全相同的契约，因此本文件
+对两个模块参数化跑同一套断言（relay 删除后收敛为只跑统一引擎）。冻结的内容：
 - URL 拼接（use_v1_suffix）与 Bearer 鉴权头
 - 请求 payload：model / max_tokens / system 消息在首位 / tools 子集过滤
 - 多轮 tool calling 的消息回填 shape（assistant tool_calls → role:tool → round hint）
@@ -18,6 +19,7 @@ import pytest
 
 from config import Preset
 from bot import trace
+import bot.ai_engine_openai_compat as openai_compat
 import bot.ai_engine_relay as relay
 from bot.ai_provider_error import AIProviderError
 from bot.database import Database
@@ -79,17 +81,20 @@ class _FakeAsyncClient:
         return item
 
 
-@pytest.fixture
-def relay_call(monkeypatch, tmp_path):
-    """返回 run(script, **kwargs) → (result, calls)，自动清理 trace 上下文。"""
+@pytest.fixture(params=["relay", "openai_compat"])
+def relay_call(request, monkeypatch, tmp_path):
+    """返回 run(script, **kwargs) → (result, calls)，自动清理 trace 上下文。
+
+    两个引擎模块共用同一套契约断言。"""
+    engine = {"relay": relay, "openai_compat": openai_compat}[request.param]
     db = Database(str(tmp_path / "relay_test.db"))
 
     def run(script, *, preset=None, prompt=None, messages=None,
             send_callback=None, tool_callback=None, tool_names=None):
         calls: list[dict] = []
-        monkeypatch.setattr(relay.httpx, "AsyncClient",
+        monkeypatch.setattr(engine.httpx, "AsyncClient",
                             lambda: _FakeAsyncClient(list(script), calls))
-        result = asyncio.run(relay._call_with_tools(
+        result = asyncio.run(engine._call_with_tools(
             db, prompt if prompt is not None else _prompt(),
             messages or [{"role": "user", "content": "[2026-07-17 10:00] 在吗"}],
             preset or _preset(),

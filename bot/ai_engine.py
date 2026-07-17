@@ -1,10 +1,8 @@
 """
 AI 引擎路由模块
-每次请求按当前 active preset 动态选后端：
-- claude: Anthropic 原生 API
-- openai: OpenAI 官方 API（用 openai 官方 SDK）
-- relay:  OpenAI 兼容中转站（用 preset.base_url）
-- gemini: Google Gemini 原生 API
+LT-134 引擎合并后所有 preset 走统一的 OpenAI 兼容实现
+（bot/ai_engine_openai_compat，base_url 区分官方/中转站/各家兼容端点）；
+仅 provider=gemini 在 3 个原生 preset 迁移/退役前仍走原生 Gemini 引擎。
 
 运行时由 /model、/fallback 斜杠命令切换 preset（见 config.set_active / set_fallback）。
 主 preset 调用失败（AIProviderError）时自动切 fallback preset；fallback 为空则直接抛出。
@@ -24,13 +22,10 @@ def _load_engine(provider: str) -> types.ModuleType:
     """根据 provider 名称加载对应的引擎模块（import 缓存，反复调用零成本）。"""
     p = provider.lower().strip()
     if p == "gemini":
+        # LT-134 过渡：3 个原生 Gemini preset 迁移到兼容端点/退役前保留原生引擎
         import bot.ai_engine_gemini as m
-    elif p == "relay":
-        import bot.ai_engine_relay as m
-    elif p == "openai":
-        import bot.ai_engine_openai as m
     else:
-        import bot.ai_engine_claude as m
+        import bot.ai_engine_openai_compat as m
     return m
 
 
