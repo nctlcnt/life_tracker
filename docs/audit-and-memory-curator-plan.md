@@ -2,6 +2,13 @@
 
 > 状态：设计计划，尚未实施。
 >
+> **2026-07-17 更新**：记忆部分被「记忆系统 v4」（Linear LT-133 epic）取代——
+> curator 的确定性校验、evidence、cursor 幂等思想已继承进 v4 的异步入库
+> worker（LT-136）；第 7 章 markdown apply pipeline 及 §5.7/5.8 中围绕
+> memory.md 文档 hash 的设计**作废**（长期记忆改回 SQLite 表存储）。
+> chat trace 数据库化（Phase 1-3/6、§5.1-5.6）仍是有效设计，作为独立
+> track 后置，未拍板实施时间。
+>
 > 目标：把一次 AI 行为从输入、上下文、Prompt、模型轮次、工具调用、消息发送，
 > 一直到异步 curator 修改长期记忆的全过程，保存为可查询、可关联、可回放的结构化审计链。
 
