@@ -14,28 +14,29 @@
 
 ## 当前基线
 
-最后更新：2026-07-17 04:20 UTC
+最后更新：2026-07-17 06:46 UTC
 
 | 检查项 | 最近执行时间（UTC） | 状态 | 结果/证据 | 下次动作 |
 |---|---|---|---|---|
-| Python 全部自动测试 | 2026-07-17 04:04 | PASS | `.venv/bin/python -m pytest -q`：46 passed，2.26s | 每次部署前重跑 |
-| 前端生产构建 | 2026-07-17 03:58 | PASS | `npm ci` + `npm run build`：Vite 6.3.5，构建 4.51s | 每次部署前重跑 |
+| Python 全部自动测试 | 2026-07-17 06:29 | PASS | `.venv/bin/python -m pytest -q`：57 passed，2.54s | 每次部署前重跑 |
+| 前端生产构建 | 2026-07-17 06:32 | PASS | Docker frontend-builder：Vite 6.3.5，2038 modules，构建 5.26s | 每次部署前重跑 |
 | npm 干净安装 | 2026-07-17 03:58 | PASS | `npm ci` 安装 287 packages；audit findings 与 07-11 相同，仍待审查 | 审查 audit findings；依赖变更后重跑 |
-| npm Docker builder | 2026-07-17 04:08 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功（含 frontend-builder） | Dockerfile/依赖变更后重跑 |
-| Production health endpoint | 2026-07-17 04:15 | PASS | `GET http://127.0.0.1:8080/api/health` → `{"status":"ok"}` | 每次部署后重跑 |
-| Production 容器状态 | 2026-07-17 04:15 | PASS | app 重建后 Up `(healthy)`；Litestream Up 10 days | 每次部署后重跑 |
-| SQLite quick check | 2026-07-17 04:16 | PASS | `PRAGMA quick_check` → `ok`；journal mode=`wal` | 每次部署后重跑 |
-| Litestream 写入 R2 | 2026-07-17 04:08 | PASS | 部署后日志连续 `wal segment written`（position 0000024b/0000024c） | 每次部署后检查复制；每季度恢复演练 |
+| npm Docker builder | 2026-07-17 06:32 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功（含 frontend-builder） | Dockerfile/依赖变更后重跑 |
+| Production health endpoint | 2026-07-17 06:37 | PASS | `/internal/health` 200；携带 API key 的 `/api/health` 200 | 每次部署后重跑 |
+| Production 容器状态 | 2026-07-17 06:33 | PASS | app 重建后 Up `(healthy)`；Litestream Up 10 days；Discord bot/scheduler 正常 | 每次部署后重跑 |
+| SQLite quick check | 2026-07-17 06:37 | PASS | `PRAGMA quick_check` → `ok`；journal mode=`wal`；部署前快照 integrity=`ok` | 每次部署后重跑 |
+| Litestream 写入 R2 | 2026-07-17 06:32 | PASS | 部署后 `wal segment written`（position 00000250/00000251） | 每次部署后检查复制；每季度恢复演练 |
 | 本地 SQLite 快照恢复 | 未知 | NOT TESTED | 部署前快照 `pre-deploy-20260717.db` quick_check=ok，但未演练恢复启动 | 下次高风险部署前演练 |
 | R2/Litestream 完整恢复 | 2026-07-11 13:30 | PASS | 从 R2 恢复到全新 `/tmp` 路径；integrity check、数据新鲜度和 API-only smoke test 均通过 | 2026-10 前重跑，或 Litestream/R2 变更后立即重跑 |
-| 网络监听/路由审计 | 2026-07-17 04:18 | PASS | 宿主 shell 运行 `infra audit`：life-tracker 监听 `127.0.0.1:8080` 无异常；5 个告警均属其他栈（staging 8081 未注销、llm-gateway 8403-8405、未登记进程 54951） | 每次部署后重跑 |
-| Staging 启动与隔离 | 未知 | NOT TESTED | 当前 staging compose 仍使用 `8081:8081`，可能绑定所有接口 | 修正为私有绑定后再验证 |
+| 网络监听/路由审计 | 2026-07-17 06:45 | PASS | 宿主 shell 运行 `infra audit`：life-tracker 监听 `127.0.0.1:8080` 无异常；5 个告警均属其他栈/工具进程 | 每次部署后重跑 |
+| Dashboard/API 鉴权 | 2026-07-17 06:36 | PASS | 公网未授权读/写、docs、OpenAPI 均 401；header/cookie 登录 200；logout 后重新 401；cookie Secure+HttpOnly+SameSite=Strict | 每次鉴权/路由变更后重跑 |
+| Staging 启动与隔离 | 未知 | NOT TESTED | 外部 Dockge staging compose 仍使用 `8081:8081`，可能绑定所有接口 | 修正权威 compose 后再验证 |
 | memory.md 独立异地备份 | 未知 | NOT TESTED | `data/memory.md` 已成为记忆权威存储（07-17 上线），Litestream 只覆盖 SQLite；迁移期靠 legacy 表 shadow 兜底 | LT-132 验收前建立独立备份并演练恢复 |
 
 ## 已知未闭环事项
 
-1. `life.purrden.cc` 仍在 infra 路由中指向 production 8080；需要确认访问控制或下线路由，才能确认 Dashboard 是否真正 WireGuard-only。
-2. staging 端口绑定尚未满足 VPS 私有监听纪律。
+1. `life.purrden.cc` 仍是公网路由，但 Dashboard/API 已有应用层鉴权；Cloudflare Access 仍可作为额外防线，不再是保密性的唯一前置。
+2. 外部 Dockge staging 权威 compose 的端口绑定尚未满足 VPS 私有监听纪律；仓库内历史参考文件已收紧，但不能替代外部文件。
 3. 本地 SQLite `.backup` 快照的恢复流程尚未单独演练；R2/Litestream 恢复已于 2026-07-11 通过。
 4. 2026-07-12 已决定暂不备份 `data/ai_traces/*.jsonl`。主机完全损坏时允许丢失 JSONL 原始 trace；SQLite 中的 `ai_runs`/`tool_calls` 仍由 Litestream 保护。
 5. `npm ci` 报告 1 low、2 moderate、2 high；需单独运行 `npm audit` 评估可达性和升级影响，禁止未经审查直接 `--force`。
@@ -66,6 +67,25 @@
 - 后续动作：2026-10 前完成下一次季度演练；JSONL 仅在成为产品数据源或出现审计保留要求时重新评估
 
 ## 每次部署记录模板
+
+### 2026-07-17 06:32 UTC — main@d0fb413（LT-139 Dashboard/API 应用层鉴权上线）
+
+- 操作者：Codex（用户授权“开始做 139”）
+- 部署来源：`life-tracker:local`
+- Git commit：`d0fb413`（main）
+- 工作区是否干净：是（`.env.prod` 为 ignored runtime secret）
+- 风险分类：高（公网 Dashboard/API 鉴权与健康检查切换）
+- 部署前快照：`data/backups/pre-lt139-20260717-063213.db`；`integrity_check` → `ok`
+- Python tests：57 通过 / 0 失败
+- Frontend build：PASS（Docker frontend-builder，2038 modules）
+- Production health：PASS（`/internal/health` 200；带 key `/api/health` 200）
+- 容器状态：app Up (healthy)；Litestream 未重建、Up 10 days；Discord bot/scheduler 正常
+- SQLite quick check：`ok`；journal mode=`wal`
+- Litestream 最近成功复制时间：2026-07-17 06:32:51 UTC
+- 实际监听：`127.0.0.1:8080`
+- `infra audit`：PASS for life-tracker；5 个告警属于停用的 staging/llm-gateway 或当前工具进程
+- Smoke test：公网未授权 `/api/memories` GET/POST、`/docs`、`/openapi.json` 均 401；`X-API-Key` 200；登录 cookie 200；logout 后重新 401；cookie 为 Secure/HttpOnly/SameSite=Strict；OAuth callback 到达原 handler
+- 异常与回滚：无应用异常；旧镜像 `life-tracker:rollback-pre-lt139-20260717-063213`；DB 快照见上；部署中仅遇沙箱无法 socket/读取 systemd，均在宿主权限下重验通过
 
 ### 2026-07-17 04:08 UTC — main@7d4ec52（Markdown memory + check-in 框架 + LT-130 检索修复上线）
 
