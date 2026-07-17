@@ -5,27 +5,9 @@
     "channel_id": 0
   },
   "ai": {
-    "default_preset": "claude-opus",
+    "default_preset": "relay-example",
     "default_fallback": "",
     "presets": {
-      "claude-opus": {
-        "provider": "claude",
-        "api_key": "",
-        "base_url": "",
-        "model": "claude-opus-4-6"
-      },
-      "claude-sonnet": {
-        "provider": "claude",
-        "api_key": "",
-        "base_url": "",
-        "model": "claude-sonnet-4-6"
-      },
-      "gemini-pro": {
-        "provider": "gemini",
-        "api_key": "",
-        "base_url": "",
-        "model": "gemini-2.5-pro"
-      },
       "relay-example": {
         "provider": "relay",
         "api_key": "",

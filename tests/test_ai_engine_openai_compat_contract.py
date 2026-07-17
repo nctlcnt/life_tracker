@@ -270,6 +270,6 @@ def test_non_json_body_raises_provider_error(relay_call):
                                   text="<html>gateway timeout</html>")])
 
 
-def test_empty_choices_returns_internal_error_text(relay_call):
-    result, _ = relay_call([_FakeResponse(payload={"choices": []})])
-    assert result == "（内部错误：中转站未返回内容）"
+def test_empty_choices_raises_provider_error(relay_call):
+    with pytest.raises(AIProviderError, match="缺少 choices"):
+        relay_call([_FakeResponse(payload={"choices": []})])

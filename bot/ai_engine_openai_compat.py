@@ -165,7 +165,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
 
             choices = data.get("choices", [])
             if not choices:
-                return "（内部错误：中转站未返回内容）"
+                raise AIProviderError("OpenAI-compat 响应缺少 choices")
 
             choice = choices[0]
             message = choice.get("message", {})

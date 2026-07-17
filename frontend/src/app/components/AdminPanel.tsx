@@ -102,7 +102,7 @@ interface CheckInFormData {
   context_config: Record<string, boolean>;
 }
 
-const PROVIDERS = ['claude', 'openai', 'relay', 'gemini'] as const;
+const PROVIDERS = ['relay', 'openai'] as const;
 const CHECK_IN_CONTEXT_KEYS = [
   'include_projects',
   'include_memories',
@@ -116,7 +116,7 @@ const CHECK_IN_CONTEXT_KEYS = [
 
 const emptyForm: FormData = {
   name: '',
-  provider: 'claude',
+  provider: 'relay',
   api_key: '',
   base_url: '',
   use_v1_suffix: true,

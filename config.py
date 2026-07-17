@@ -62,7 +62,7 @@ CHANNEL_ID: int = int(_cfg.get("discord", {}).get("channel_id", 0) or 0)
 @dataclass
 class Preset:
     name: str
-    provider: str   # claude / openai / relay / gemini
+    provider: str   # openai / relay；两者都走 OpenAI-compatible 协议
     api_key: str
     base_url: str   # 仅 relay 需要
     model: str
@@ -70,13 +70,19 @@ class Preset:
     use_v1_suffix: bool = True
 
 
-_ALLOWED_PROVIDERS: set[str] = {"claude", "openai", "relay", "gemini"}
+_ALLOWED_PROVIDERS: set[str] = {"openai", "relay"}
 
 
 def _build_preset(name: str, raw: dict) -> Preset:
+    provider = str(raw.get("provider", "relay")).strip().lower()
+    if provider not in _ALLOWED_PROVIDERS:
+        raise ValueError(
+            f"invalid provider for preset {name!r}: {provider} "
+            f"(allowed: {sorted(_ALLOWED_PROVIDERS)})"
+        )
     return Preset(
         name=name,
-        provider=raw.get("provider", "claude"),
+        provider=provider,
         api_key=raw.get("api_key", ""),
         base_url=raw.get("base_url", ""),
         model=raw.get("model", ""),
@@ -250,7 +256,7 @@ def update_preset(name: str, **fields) -> None:
             v = bool(v)
         entry[k] = v
 
-    final_provider = entry.get("provider", "claude")
+    final_provider = entry.get("provider", "relay")
     if final_provider == "relay" and not entry.get("base_url", "").strip():
         raise ValueError("base_url required for relay provider")
     if not entry.get("model", "").strip():
