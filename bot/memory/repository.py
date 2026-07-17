@@ -20,6 +20,13 @@ class MemoryRepository(Protocol):
     def get_recent_ai_messages(self, channel_id: str,
                                limit: int = 20) -> list[dict]: ...
 
+    def get_ai_messages_after(self, channel_id: str, after_id: int,
+                              limit: int = 1000) -> list[dict]: ...
+
+    def get_state(self, key: str) -> str | None: ...
+
+    def set_state(self, key: str, value: str) -> None: ...
+
     def get_relevant_conversation_snippets(
         self,
         query_embedding: list[float],

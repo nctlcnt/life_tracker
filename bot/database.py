@@ -1017,26 +1017,70 @@ class Database:
             messages.append(item)
         return messages
 
+    @staticmethod
+    def _to_ai_message(item: dict) -> dict | None:
+        """把一行 conversation_messages 转成 AI 引擎的 role/content 消息；不适用返回 None。"""
+        role = item.get("role")
+        if role not in {"user", "assistant"}:
+            return None
+        metadata = item.get("metadata") or {}
+        if role == "user":
+            content = metadata.get("current_content")
+            if not content:
+                try:
+                    ts = datetime.fromisoformat(item["created_at"]).astimezone().strftime("%Y-%m-%d %H:%M")
+                except (ValueError, TypeError):
+                    ts = item.get("created_at", "")[:16]
+                content = f"[{ts}] {item.get('content') or ''}".strip()
+        else:
+            content = item.get("content") or ""
+        if not content:
+            return None
+        return {"role": role, "content": content}
+
     def get_recent_ai_messages(self, channel_id: str, limit: int = 20) -> list[dict]:
         """按频道获取最近会话，转换为 AI 引擎需要的 role/content 消息。"""
         messages = []
         for item in self.get_recent_conversation_messages(channel_id, limit=limit):
-            role = item.get("role")
-            if role not in {"user", "assistant"}:
-                continue
-            metadata = item.get("metadata") or {}
-            if role == "user":
-                content = metadata.get("current_content")
-                if not content:
-                    try:
-                        ts = datetime.fromisoformat(item["created_at"]).astimezone().strftime("%Y-%m-%d %H:%M")
-                    except (ValueError, TypeError):
-                        ts = item.get("created_at", "")[:16]
-                    content = f"[{ts}] {item.get('content') or ''}".strip()
+            msg = self._to_ai_message(item)
+            if msg:
+                messages.append(msg)
+        return messages
+
+    def get_ai_messages_after(self, channel_id: str, after_id: int,
+                              limit: int = 1000) -> list[dict]:
+        """取 id > after_id 的会话消息（时间正序），供 token 窗口装配。
+
+        返回元素带 id（compact 游标/冻结切片用），content 格式与
+        get_recent_ai_messages 一致。limit 只是防御性上界——正常情况下
+        窗口的硬裁在 token 层完成。
+        """
+        conn = self._get_conn()
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM conversation_messages
+            WHERE channel_id = ? AND id > ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (str(channel_id), int(after_id), limit)
+        ).fetchall()
+        conn.close()
+        messages = []
+        for row in reversed(rows):
+            item = dict(row)
+            if item.get("metadata_json"):
+                try:
+                    item["metadata"] = json.loads(item["metadata_json"])
+                except json.JSONDecodeError:
+                    item["metadata"] = None
             else:
-                content = item.get("content") or ""
-            if content:
-                messages.append({"role": role, "content": content})
+                item["metadata"] = None
+            msg = self._to_ai_message(item)
+            if msg:
+                msg["id"] = item["id"]
+                messages.append(msg)
         return messages
 
     # ============ 对话日志 embedding 检索（memory v3 Part B2）============

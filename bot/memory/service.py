@@ -95,6 +95,13 @@ class MemoryService:
     def recent_messages(self, channel_id: str, *, limit: int = 20) -> list[dict]:
         return self.repository.get_recent_ai_messages(str(channel_id), limit=limit)
 
+    def context_window(self, channel_id: str, *,
+                       max_tokens: int | None = None):
+        """装配 token 窗口（摘要 + 明文尾巴），见 bot.memory.context_window。"""
+        from bot.memory.context_window import assemble_window
+        return assemble_window(self.repository, str(channel_id),
+                               max_tokens=max_tokens)
+
     def schedule_embedding(self, row_id: int | None, channel_id: str) -> None:
         """Start best-effort enrichment without delaying the message path."""
         if row_id is None or not config.EMBEDDING_ENABLED:

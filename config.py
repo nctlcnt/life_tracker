@@ -315,6 +315,10 @@ MEMORY_PATH: str = (
     else os.path.join(os.path.dirname(__file__), _memory_path)
 )
 MEMORY_TOKEN_BUDGET: int = int(_memory.get("token_budget", 4000) or 4000)
+# 聊天上下文 token 窗口（LT-135）：唯一可调阈值，达到即后台 compact。
+# 明文保留（×0.4）与硬上限（×1.2）是派生常量，见 bot/memory/context_window.py。
+CONTEXT_COMPACT_THRESHOLD_TOKENS: int = int(
+    _memory.get("context_compact_threshold_tokens", 20000) or 20000)
 
 # ── 天气 ───────────────────────────────────────────────────────────────
 # tomorrow.io API；api_key 空时天气模块会静默降级（返回 None，不影响主流程）
