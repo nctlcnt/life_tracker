@@ -211,6 +211,51 @@ class Database:
             );
 
             CREATE INDEX IF NOT EXISTS idx_tool_calls_run_id ON tool_calls(run_id);
+
+            -- 记忆系统 v4：异步 curator 维护的长期记忆。旧 memories 表在
+            -- LT-132 前仍是 memory.md shadow，不能复用或覆盖。
+            CREATE TABLE IF NOT EXISTS personal_memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                summary TEXT NOT NULL,
+                quote TEXT,
+                reason TEXT NOT NULL,
+                memory_type TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active', 'superseded', 'archived')),
+                superseded_by INTEGER REFERENCES personal_memories(id),
+                curator_model TEXT NOT NULL,
+                embedding TEXT,
+                embedding_model TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                CHECK(superseded_by IS NULL OR superseded_by != id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_personal_memories_status_type_updated
+                ON personal_memories(status, memory_type, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS personal_memory_sources (
+                memory_id INTEGER NOT NULL REFERENCES personal_memories(id) ON DELETE CASCADE,
+                conversation_message_id INTEGER NOT NULL
+                    REFERENCES conversation_messages(id) ON DELETE RESTRICT,
+                quote TEXT,
+                evidence_role TEXT NOT NULL DEFAULT 'supports'
+                    CHECK(evidence_role IN ('supports', 'contradicts', 'supersedes')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY(memory_id, conversation_message_id, evidence_role)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_personal_memory_sources_message
+                ON personal_memory_sources(conversation_message_id);
+
+            CREATE TABLE IF NOT EXISTS curator_cursors (
+                curator_name TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                last_message_id INTEGER NOT NULL DEFAULT 0,
+                last_successful_run_id TEXT REFERENCES ai_runs(id),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY(curator_name, channel_id)
+            );
         """)
         conn.commit()
         # 兼容已有数据库：尝试加列，已存在则忽略
