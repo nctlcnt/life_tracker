@@ -1,0 +1,277 @@
+"""LT-135 compact worker（bot/memory/compact.py）的行为契约。
+
+摘要生成用假 simple_completion，不打真实端点。
+"""
+import asyncio
+from datetime import datetime, timezone
+
+import pytest
+
+import config
+from config import Preset
+from bot.database import Database
+import bot.memory.compact as compact
+from bot.memory.compact import (
+    COMPACT_PRESET_STATE_KEY, SUMMARY_TARGET_TOKENS,
+    build_compact_prompt, get_compact_preset, get_compact_preset_name,
+    run_compact, schedule_compact, set_compact_preset,
+)
+from bot.memory.context_window import (
+    assemble_window, load_summary_state, save_summary_state,
+)
+
+CHANNEL = "chan-1"
+
+
+@pytest.fixture
+def db(tmp_path):
+    return Database(str(tmp_path / "compact_test.db"))
+
+
+@pytest.fixture(autouse=True)
+def _reset_worker_state():
+    compact._inflight.clear()
+    compact._last_attempt.clear()
+    yield
+    compact._inflight.clear()
+    compact._last_attempt.clear()
+
+
+def _add(db, role, content, n):
+    metadata = {"current_content": f"[2026-07-17 10:00] {content}"} if role == "user" else None
+    return db.add_conversation_message(
+        discord_message_id=f"m{n}", channel_id=CHANNEL, role=role,
+        content=content, created_at=datetime.now(timezone.utc).isoformat(),
+        metadata=metadata,
+    )
+
+
+def _fake_completion(reply="她今天聊了考试和午饭。", calls=None):
+    async def fake(prompt, preset):
+        if calls is not None:
+            calls.append({"prompt": prompt, "preset": preset})
+        return reply
+    return fake
+
+
+# ── compact preset（admin 可设） ─────────────────────────────────────────
+
+def test_compact_preset_defaults_to_active(db):
+    assert get_compact_preset_name(db) is None
+    assert get_compact_preset(db) is config.get_active()
+
+
+def test_compact_preset_set_get_clear(db):
+    some_name = next(iter(config.PRESETS))
+    set_compact_preset(db, some_name)
+    assert get_compact_preset_name(db) == some_name
+    assert get_compact_preset(db) is config.PRESETS[some_name]
+
+    set_compact_preset(db, None)
+    assert get_compact_preset_name(db) is None
+
+
+def test_compact_preset_rejects_unknown(db):
+    with pytest.raises(ValueError):
+        set_compact_preset(db, "no-such-preset")
+
+
+def test_stale_configured_preset_falls_back_to_active(db):
+    db.set_state(COMPACT_PRESET_STATE_KEY, "deleted-preset")
+    assert get_compact_preset_name(db) is None
+    assert get_compact_preset(db) is config.get_active()
+
+
+# ── run_compact ──────────────────────────────────────────────────────────
+
+def test_run_compact_folds_and_persists(db, monkeypatch):
+    ids = [_add(db, "user", f"消息{i}", i) for i in range(5)]
+    calls = []
+    monkeypatch.setattr(
+        "bot.ai_engine_openai_compat.simple_completion",
+        _fake_completion("摘要：聊了 0-2。", calls))
+
+    ok = asyncio.run(run_compact(db, CHANNEL, fold_upto_id=ids[2]))
+
+    assert ok
+    state = load_summary_state(db, CHANNEL)
+    assert state["summary"] == "摘要：聊了 0-2。"
+    assert state["upto_message_id"] == ids[2]
+    assert state["model"] == config.get_active().model
+    # 只折叠 fold_upto 及更早的消息
+    prompt = calls[0]["prompt"]
+    assert "消息2" in prompt and "消息3" not in prompt
+
+
+def test_second_compact_feeds_old_summary(db, monkeypatch):
+    ids = [_add(db, "user", f"消息{i}", i) for i in range(6)]
+    save_summary_state(db, CHANNEL, summary="旧摘要内容",
+                       upto_message_id=ids[1], model="m", updated_at="t")
+    calls = []
+    monkeypatch.setattr(
+        "bot.ai_engine_openai_compat.simple_completion",
+        _fake_completion("新摘要", calls))
+
+    ok = asyncio.run(run_compact(db, CHANNEL, fold_upto_id=ids[4]))
+
+    assert ok
+    prompt = calls[0]["prompt"]
+    # 旧摘要进 prompt；折叠范围 = (旧upto, fold_upto]
+    assert "旧摘要内容" in prompt
+    assert "消息2" in prompt and "消息4" in prompt
+    assert "消息1" not in prompt and "消息5" not in prompt
+    assert load_summary_state(db, CHANNEL)["upto_message_id"] == ids[4]
+
+
+def test_run_compact_failure_keeps_state_and_sets_cooldown(db, monkeypatch):
+    ids = [_add(db, "user", f"消息{i}", i) for i in range(3)]
+
+    async def boom(prompt, preset):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr("bot.ai_engine_openai_compat.simple_completion", boom)
+
+    ok = asyncio.run(run_compact(db, CHANNEL, fold_upto_id=ids[2]))
+
+    assert not ok
+    assert load_summary_state(db, CHANNEL) is None
+    assert CHANNEL in compact._last_attempt  # 失败进入冷却
+
+
+def test_run_compact_success_clears_cooldown(db, monkeypatch):
+    ids = [_add(db, "user", f"消息{i}", i) for i in range(3)]
+    monkeypatch.setattr(
+        "bot.ai_engine_openai_compat.simple_completion", _fake_completion())
+
+    assert asyncio.run(run_compact(db, CHANNEL, fold_upto_id=ids[2]))
+    assert CHANNEL not in compact._last_attempt
+
+
+def test_run_compact_stale_fold_is_noop(db, monkeypatch):
+    ids = [_add(db, "user", f"消息{i}", i) for i in range(3)]
+    save_summary_state(db, CHANNEL, summary="已有", upto_message_id=ids[2],
+                       model="m", updated_at="t")
+
+    called = []
+    monkeypatch.setattr(
+        "bot.ai_engine_openai_compat.simple_completion",
+        _fake_completion(calls=called))
+
+    ok = asyncio.run(run_compact(db, CHANNEL, fold_upto_id=ids[1]))
+    assert not ok
+    assert called == []  # 游标已越过，连模型都不该调
+
+
+def test_empty_reply_rejected(db, monkeypatch):
+    ids = [_add(db, "user", "hi", 1)]
+    monkeypatch.setattr(
+        "bot.ai_engine_openai_compat.simple_completion", _fake_completion("   "))
+    assert not asyncio.run(run_compact(db, CHANNEL, fold_upto_id=ids[0]))
+    assert load_summary_state(db, CHANNEL) is None
+
+
+def test_oversized_summary_truncated(db, monkeypatch):
+    ids = [_add(db, "user", "hi", 1)]
+    monkeypatch.setattr(
+        "bot.ai_engine_openai_compat.simple_completion",
+        _fake_completion("摘" * (SUMMARY_TARGET_TOKENS * 4)))
+
+    assert asyncio.run(run_compact(db, CHANNEL, fold_upto_id=ids[0]))
+    from bot.memory import estimate_tokens
+    saved = load_summary_state(db, CHANNEL)["summary"]
+    assert estimate_tokens(saved) <= SUMMARY_TARGET_TOKENS * 2 + 2
+
+
+# ── schedule_compact（单飞 + 冷却） ──────────────────────────────────────
+
+def _window_needing_compact(db, monkeypatch, n=10):
+    [_add(db, "user", "聊" * 20, i) for i in range(n)]
+    monkeypatch.setattr(config, "CONTEXT_COMPACT_THRESHOLD_TOKENS", 300)
+    return assemble_window(db, CHANNEL)
+
+
+def test_schedule_compact_runs_in_background(db, monkeypatch):
+    window = _window_needing_compact(db, monkeypatch)
+    monkeypatch.setattr(
+        "bot.ai_engine_openai_compat.simple_completion", _fake_completion("摘要"))
+
+    async def scenario():
+        started = schedule_compact(db, CHANNEL, window)
+        assert started
+        await compact._inflight[CHANNEL]
+
+    asyncio.run(scenario())
+    state = load_summary_state(db, CHANNEL)
+    assert state["summary"] == "摘要"
+    assert state["upto_message_id"] == window.fold_upto_id
+
+
+def test_schedule_compact_single_flight(db, monkeypatch):
+    window = _window_needing_compact(db, monkeypatch)
+    gate = asyncio.Event()
+
+    async def slow(prompt, preset):
+        await gate.wait()
+        return "摘要"
+
+    monkeypatch.setattr("bot.ai_engine_openai_compat.simple_completion", slow)
+
+    async def scenario():
+        assert schedule_compact(db, CHANNEL, window)
+        # 第一个还在跑：拒绝并发第二个
+        assert not schedule_compact(db, CHANNEL, window)
+        gate.set()
+        await compact._inflight[CHANNEL]
+
+    asyncio.run(scenario())
+
+
+def test_schedule_compact_respects_failure_cooldown(db, monkeypatch):
+    window = _window_needing_compact(db, monkeypatch)
+
+    async def boom(prompt, preset):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr("bot.ai_engine_openai_compat.simple_completion", boom)
+
+    async def scenario():
+        assert schedule_compact(db, CHANNEL, window)
+        await compact._inflight[CHANNEL]
+        # 失败后冷却期内不再起新任务
+        assert not schedule_compact(db, CHANNEL, window)
+
+    asyncio.run(scenario())
+
+
+def test_schedule_compact_noop_without_need(db):
+    from bot.memory.context_window import ContextWindow
+
+    async def scenario():
+        assert not schedule_compact(db, CHANNEL, ContextWindow())
+
+    asyncio.run(scenario())
+
+
+def test_schedule_compact_sync_context_skips(db, monkeypatch):
+    window = _window_needing_compact(db, monkeypatch)
+    # 无事件循环（同步上下文）：安静跳过，不抛异常
+    assert not schedule_compact(db, CHANNEL, window)
+
+
+def test_service_context_window_triggers_compact(db, monkeypatch):
+    from bot.memory import MemoryService
+    service = MemoryService(db)
+    [_add(db, "user", "聊" * 20, i) for i in range(10)]
+    monkeypatch.setattr(config, "CONTEXT_COMPACT_THRESHOLD_TOKENS", 300)
+    monkeypatch.setattr(
+        "bot.ai_engine_openai_compat.simple_completion", _fake_completion("摘要"))
+
+    async def scenario():
+        window = service.context_window(CHANNEL)
+        assert window.needs_compact
+        task = compact._inflight.get(CHANNEL)
+        assert task is not None
+        await task
+
+    asyncio.run(scenario())
+    assert load_summary_state(db, CHANNEL)["summary"] == "摘要"

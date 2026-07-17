@@ -17,6 +17,12 @@ interface PresetsResp {
   fallback: string | null;
 }
 
+interface CompactResp {
+  configured: string | null;
+  effective: string;
+  active: string;
+}
+
 interface TestResult {
   ok: boolean;
   reply?: string;
@@ -186,12 +192,18 @@ export function AdminPanel() {
   const [busy, setBusy] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, TestResult>>({});
   const [editor, setEditor] = useState<{ mode: 'add' | 'edit'; original?: Preset } | null>(null);
+  const [compact, setCompact] = useState<CompactResp | null>(null);
 
   const load = async () => {
     try {
-      const r = await fetch('/api/admin/presets');
+      const [r, rc] = await Promise.all([
+        fetch('/api/admin/presets'),
+        fetch('/api/admin/compact-preset'),
+      ]);
       if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
       setData(await r.json());
+      // compact 设置拿不到不阻塞 preset 主表
+      if (rc.ok) setCompact(await rc.json());
       setErr(null);
     } catch (e) {
       setErr(String(e));
@@ -207,6 +219,11 @@ export function AdminPanel() {
 
   const setFallback = async (name: string | null) => {
     try { await postJson('/api/admin/presets/fallback', { name }); await load(); }
+    catch (e) { setErr(String(e)); }
+  };
+
+  const setCompactPreset = async (name: string) => {
+    try { await putJson('/api/admin/compact-preset', { name: name || null }); await load(); }
     catch (e) { setErr(String(e)); }
   };
 
@@ -295,6 +312,19 @@ export function AdminPanel() {
       <div className="admin-summary">
         <span className="badge"><b>Active</b>{data.active ?? '—'}</span>
         <span className="badge"><b>Fallback</b>{data.fallback ?? '—'}</span>
+        <span className="badge compact-badge" title="上下文 compact 摘要使用的模型">
+          <b>Compact</b>
+          <select
+            className="compact-select"
+            value={compact?.configured ?? ''}
+            onChange={e => setCompactPreset(e.target.value)}
+          >
+            <option value="">跟随 Active（{compact?.active ?? data.active ?? '—'}）</option>
+            {data.presets.map(p => (
+              <option key={p.name} value={p.name}>{p.name}</option>
+            ))}
+          </select>
+        </span>
       </div>
 
       {err && <div className="admin-msg err">{err}</div>}

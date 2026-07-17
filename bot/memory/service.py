@@ -96,11 +96,20 @@ class MemoryService:
         return self.repository.get_recent_ai_messages(str(channel_id), limit=limit)
 
     def context_window(self, channel_id: str, *,
-                       max_tokens: int | None = None):
-        """装配 token 窗口（摘要 + 明文尾巴），见 bot.memory.context_window。"""
+                       max_tokens: int | None = None,
+                       trigger_compact: bool = True):
+        """装配 token 窗口（摘要 + 明文尾巴），见 bot.memory.context_window。
+
+        缺省顺手评估 compact：达阈值就后台起 worker（单飞+冷却，不阻塞、
+        不抛异常），任何调用方装配窗口都在维护窗口健康。
+        """
         from bot.memory.context_window import assemble_window
-        return assemble_window(self.repository, str(channel_id),
-                               max_tokens=max_tokens)
+        from bot.memory.compact import schedule_compact
+        window = assemble_window(self.repository, str(channel_id),
+                                 max_tokens=max_tokens)
+        if trigger_compact:
+            schedule_compact(self.repository, str(channel_id), window)
+        return window
 
     def schedule_embedding(self, row_id: int | None, channel_id: str) -> None:
         """Start best-effort enrichment without delaying the message path."""

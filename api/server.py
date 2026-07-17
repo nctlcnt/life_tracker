@@ -851,6 +851,32 @@ async def admin_delete_preset(name: str):
     return {"ok": True, "deleted": name}
 
 
+@app.get("/api/admin/compact-preset")
+async def admin_get_compact_preset():
+    """当前 compact 摘要用的 preset。configured=null 表示未设置（回落 active）。"""
+    import config
+    from bot.memory.compact import get_compact_preset, get_compact_preset_name
+    effective = get_compact_preset(db)
+    return {
+        "configured": get_compact_preset_name(db),
+        "effective": effective.name,
+        "active": config.get_active().name,
+    }
+
+
+@app.put("/api/admin/compact-preset")
+async def admin_set_compact_preset(body: dict):
+    """设置 compact preset。name 为空/null = 清空，回落 active。"""
+    from bot.memory.compact import get_compact_preset, set_compact_preset
+    name = (body.get("name") or "").strip() or None
+    try:
+        set_compact_preset(db, name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"ok": True, "configured": name,
+            "effective": get_compact_preset(db).name}
+
+
 @app.post("/api/admin/presets/test")
 async def admin_test_preset(body: dict):
     """对指定 preset 发一条 'hello'，绕过 system prompt + 工具，纯连接测试。"""

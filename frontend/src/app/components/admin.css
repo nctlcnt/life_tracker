@@ -77,6 +77,14 @@
   font-weight: 600;
   margin-right: 6px;
 }
+.admin-summary .compact-select {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  max-width: 220px;
+}
 
 .admin-table {
   width: 100%;
