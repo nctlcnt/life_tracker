@@ -158,6 +158,63 @@ async def run_compact(db, channel_id: str, fold_upto_id: int) -> bool:
     return True
 
 
+async def rebuild_compact_summary(db, channel_id: str,
+                                  fold_upto_id: int) -> bool:
+    """从原始消息完整重建摘要，成功前保持现有窗口状态不变。
+
+    这是修复错误/旧版 cursor 的运维入口，不用于日常增量 compact。生成期间若
+    另一个 compact 已更新 state，则拒绝覆盖，留给操作者基于新状态重试。
+    """
+    channel_id = str(channel_id)
+    initial_state = load_summary_state(db, channel_id)
+    initial_upto = int(initial_state.get("upto_message_id", 0)) if initial_state else 0
+    if fold_upto_id < initial_upto:
+        logger.warning(
+            f"⚠️ compact 重建目标不能后退: current={initial_upto}, target={fold_upto_id}")
+        return False
+
+    folded = db.get_ai_messages_after(
+        channel_id, 0, upto_id=fold_upto_id,
+    )
+    if not folded or folded[-1]["id"] != fold_upto_id:
+        logger.warning(
+            f"⚠️ compact 重建目标不是该 channel 的有效消息: id={fold_upto_id}")
+        return False
+
+    preset = get_compact_preset(db)
+    prompt = build_compact_prompt("", folded)
+    logger.info(
+        f"🧾 compact 全量重建开始: {len(folded)} 条 → 摘要 "
+        f"(preset={preset.name}, target={fold_upto_id})")
+    try:
+        from bot.ai_engine_openai_compat import simple_completion
+        summary = await simple_completion(prompt, preset)
+    except Exception as e:
+        logger.warning(
+            f"⚠️ compact 全量重建失败，保留原状态: {type(e).__name__}: {e}")
+        return False
+
+    summary = (summary or "").strip()
+    if not summary:
+        logger.warning("⚠️ compact 全量重建返回空摘要，保留原状态")
+        return False
+    summary = _truncate_summary(summary)
+
+    if load_summary_state(db, channel_id) != initial_state:
+        logger.warning("⚠️ compact 重建期间 state 已变化，拒绝覆盖较新的摘要")
+        return False
+
+    save_summary_state(
+        db, channel_id, summary=summary, upto_message_id=fold_upto_id,
+        model=preset.model,
+        updated_at=datetime.now().isoformat(timespec="seconds"),
+    )
+    logger.info(
+        f"🧾 compact 全量重建完成: {estimate_tokens(summary)}tk，"
+        f"连续覆盖 {len(folded)} 条，cursor={fold_upto_id}")
+    return True
+
+
 def schedule_compact(db, channel_id: str, window: ContextWindow) -> bool:
     """按窗口装配结果决定是否后台起一个 compact。单飞 + 冷却，永不抛异常。
 

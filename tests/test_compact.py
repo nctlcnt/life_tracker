@@ -14,7 +14,7 @@ import bot.memory.compact as compact
 from bot.memory.compact import (
     COMPACT_PRESET_STATE_KEY, SUMMARY_TARGET_TOKENS,
     build_compact_prompt, get_compact_preset, get_compact_preset_name,
-    run_compact, schedule_compact, set_compact_preset,
+    rebuild_compact_summary, run_compact, schedule_compact, set_compact_preset,
 )
 from bot.memory.context_window import (
     assemble_window, load_summary_state, save_summary_state,
@@ -147,6 +147,60 @@ def test_second_compact_feeds_old_summary(db, monkeypatch):
     assert "消息2" in prompt and "消息4" in prompt
     assert "消息1" not in prompt and "消息5" not in prompt
     assert load_summary_state(db, CHANNEL)["upto_message_id"] == ids[4]
+
+
+def test_rebuild_compact_uses_full_history_and_replaces_state_atomically(db, monkeypatch):
+    ids = [_add(db, "user", f"消息-{i}", i) for i in range(1005)]
+    save_summary_state(db, CHANNEL, summary="旧的不完整摘要",
+                       upto_message_id=ids[-2], model="old", updated_at="old")
+    calls = []
+    monkeypatch.setattr(
+        "bot.ai_engine_openai_compat.simple_completion",
+        _fake_completion("完整重建摘要", calls),
+    )
+
+    ok = asyncio.run(rebuild_compact_summary(db, CHANNEL, ids[-2]))
+
+    assert ok
+    prompt = calls[0]["prompt"]
+    assert "旧的不完整摘要" not in prompt
+    assert "【已有摘要（更早的对话）】" not in prompt
+    assert "消息-0" in prompt and "消息-1003" in prompt
+    state = load_summary_state(db, CHANNEL)
+    assert state["summary"] == "完整重建摘要"
+    assert state["upto_message_id"] == ids[-2]
+
+
+def test_rebuild_failure_preserves_existing_state(db, monkeypatch):
+    ids = [_add(db, "user", f"消息-{i}", i) for i in range(3)]
+    save_summary_state(db, CHANNEL, summary="仍可用的旧摘要",
+                       upto_message_id=ids[1], model="old", updated_at="old")
+    before = load_summary_state(db, CHANNEL)
+
+    async def boom(prompt, preset):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr("bot.ai_engine_openai_compat.simple_completion", boom)
+
+    assert not asyncio.run(rebuild_compact_summary(db, CHANNEL, ids[1]))
+    assert load_summary_state(db, CHANNEL) == before
+
+
+def test_rebuild_does_not_clobber_state_changed_during_generation(db, monkeypatch):
+    ids = [_add(db, "user", f"消息-{i}", i) for i in range(4)]
+    save_summary_state(db, CHANNEL, summary="旧摘要",
+                       upto_message_id=ids[1], model="old", updated_at="old")
+
+    async def concurrent_update(prompt, preset):
+        save_summary_state(db, CHANNEL, summary="并发产生的新摘要",
+                           upto_message_id=ids[2], model="new", updated_at="new")
+        return "本次重建摘要"
+
+    monkeypatch.setattr(
+        "bot.ai_engine_openai_compat.simple_completion", concurrent_update)
+
+    assert not asyncio.run(rebuild_compact_summary(db, CHANNEL, ids[2]))
+    assert load_summary_state(db, CHANNEL)["summary"] == "并发产生的新摘要"
 
 
 def test_run_compact_failure_keeps_state_and_sets_cooldown(db, monkeypatch):
