@@ -3,15 +3,13 @@ FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
-RUN npm install -g pnpm
-
-# Install deps first (cached layer, only re-runs when package.json changes)
-COPY frontend/package.json ./
-RUN pnpm install
+# Install the exact dependency graph from the committed npm lockfile.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 
 # Build
 COPY frontend/ ./
-RUN pnpm run build
+RUN npm run build
 
 
 # ─── Stage 2: Python runtime ──────────────────────────────────────────────────
