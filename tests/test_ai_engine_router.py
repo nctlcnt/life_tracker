@@ -111,10 +111,11 @@ def test_chat_forwards_arguments_and_injects_preset(monkeypatch):
     send_cb = object()
     tool_cb = object()
     memory = object()
+    window = object()
 
     result = asyncio.run(ai_engine.chat(
         db, messages, send_callback=send_cb, tool_callback=tool_cb,
-        memory_service=memory,
+        memory_service=memory, window=window,
     ))
 
     assert result == "ok:primary"
@@ -126,6 +127,7 @@ def test_chat_forwards_arguments_and_injects_preset(monkeypatch):
         "send_callback": send_cb,
         "tool_callback": tool_cb,
         "memory_service": memory,
+        "window": window,
     }
 
 
@@ -136,10 +138,12 @@ def test_scheduled_action_forwards_arguments(monkeypatch):
     db = object()
     history = [{"role": "user", "content": "早"}]
 
+    window = object()
     asyncio.run(ai_engine.scheduled_action(
         db, "去喝水", "2026-07-17 10:00", history,
         allow_silent=True, trigger="poll", tool_profile="poll",
         check_in_name="morning", context_config={"include_weather": False},
+        window=window,
     ))
 
     call = engine.calls[0]
@@ -151,3 +155,4 @@ def test_scheduled_action_forwards_arguments(monkeypatch):
     assert call["kwargs"]["tool_profile"] == "poll"
     assert call["kwargs"]["check_in_name"] == "morning"
     assert call["kwargs"]["context_config"] == {"include_weather": False}
+    assert call["kwargs"]["window"] is window

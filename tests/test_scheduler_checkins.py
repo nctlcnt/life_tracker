@@ -162,6 +162,7 @@ def test_do_check_in_passes_execution_profile_and_marks_fired(tmp_path, monkeypa
         tool_profile,
         check_in_name,
         context_config,
+        window,
     ):
         captured.update(
             {
@@ -175,6 +176,7 @@ def test_do_check_in_passes_execution_profile_and_marks_fired(tmp_path, monkeypa
                 "tool_profile": tool_profile,
                 "check_in_name": check_in_name,
                 "context_config": context_config,
+                "window": window,
             }
         )
         return "ok"
@@ -196,6 +198,9 @@ def test_do_check_in_passes_execution_profile_and_marks_fired(tmp_path, monkeypa
     )
     assert captured["timestamp"] == "2026-01-01 12:00"
     assert captured["history"] == []
+    # history 即窗口消息（LT-135）：空频道 → 空窗口
+    assert captured["window"].messages == []
+    assert captured["window"].tail_count == 0
     assert captured["allow_silent"] is False
     assert captured["trigger"] == "check_in"
     assert captured["tool_profile"] == "none"

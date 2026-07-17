@@ -51,11 +51,12 @@ async def _run_with_fallback(method_name: str, *args, **kwargs):
 
 
 async def chat(db, messages: list[dict],
-               send_callback=None, tool_callback=None, memory_service=None) -> str:
+               send_callback=None, tool_callback=None, memory_service=None,
+               window=None) -> str:
     return await _run_with_fallback(
         "chat", db, messages,
         send_callback=send_callback, tool_callback=tool_callback,
-        memory_service=memory_service,
+        memory_service=memory_service, window=window,
     )
 
 
@@ -66,13 +67,13 @@ async def scheduled_action(db, prompt: str, timestamp: str,
                            tool_profile: str | None = None,
                            check_in_name: str | None = None,
                            context_config: dict | None = None,
-                           memory_service=None) -> str | None:
+                           memory_service=None, window=None) -> str | None:
     return await _run_with_fallback(
         "scheduled_action", db, prompt, timestamp, history,
         send_callback=send_callback, allow_silent=allow_silent, trigger=trigger,
         tool_profile=tool_profile, check_in_name=check_in_name,
         context_config=context_config,
-        memory_service=memory_service,
+        memory_service=memory_service, window=window,
     )
 
 

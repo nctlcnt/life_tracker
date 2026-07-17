@@ -168,8 +168,10 @@ class LifeTrackerBot(commands.Bot):
                 "message_type": str(message.type),
             },
         )
-        # AI 上下文走 DB conversation log，不再实时拉 Discord history。
-        ai_messages = self.memory.recent_messages(str(message.channel.id), limit=20)
+        # AI 上下文走 token 窗口（LT-135）：摘要 + 明文尾巴，
+        # 装配时顺带评估并后台触发 compact。当前消息已入库，包含在尾巴里。
+        window = self.memory.context_window(str(message.channel.id))
+        ai_messages = window.messages
 
         try:
             async def send_reply(text):
@@ -200,6 +202,7 @@ class LifeTrackerBot(commands.Bot):
                 await chat(
                     self.db, ai_messages, send_callback=send_reply,
                     tool_callback=on_tool_call, memory_service=self.memory,
+                    window=window,
                 )
             else:
                 typing_cm = message.channel.typing()
@@ -212,12 +215,14 @@ class LifeTrackerBot(commands.Bot):
                     await chat(
                         self.db, ai_messages, send_callback=send_reply,
                         tool_callback=on_tool_call, memory_service=self.memory,
+                        window=window,
                     )
                 else:
                     try:
                         await chat(
                             self.db, ai_messages, send_callback=send_reply,
                             tool_callback=on_tool_call, memory_service=self.memory,
+                            window=window,
                         )
                     finally:
                         await typing_cm.__aexit__(None, None, None)

@@ -151,6 +151,12 @@
   line-height: 1.55;
 }
 
+.trace-window-info {
+  font-size: 12px;
+  color: var(--muted-foreground, #8a8578);
+  line-height: 1.55;
+}
+
 .trace-round {
   border: 1px solid var(--border);
   border-radius: 10px;

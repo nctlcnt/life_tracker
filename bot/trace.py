@@ -96,11 +96,14 @@ def _content_to_str(c: Any) -> str:
 
 def start(trigger: str, model: str, provider: str,
           prompt_parts: PromptParts | None,
-          messages: list[dict] | None = None) -> dict:
+          messages: list[dict] | None = None,
+          window: dict | None = None) -> dict:
     """初始化当前 async context 的 trace。返回 entry dict（调试可用）。
 
     trigger: chat / poll / reminder / bedtime / morning / oneshot
     messages: 已规范化的消息列表（最后一条 = 本轮触发的 user message）
+    window: token 窗口组成摘要（ContextWindow.trace_info()），LT-135 起记录；
+            旧记录无此字段，读取方按缺省处理
     """
     coerced_messages = [_coerce(m) for m in (messages or [])]
     user_message = ""
@@ -118,6 +121,7 @@ def start(trigger: str, model: str, provider: str,
         "prompt_parts": _serialize_prompt(prompt_parts),
         "user_message": user_message,
         "history": history,
+        "window": window,
         "rounds": [],
         "final_text": None,
         "error": None,

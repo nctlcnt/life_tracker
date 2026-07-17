@@ -19,6 +19,10 @@ from bot.memory import MemoryService
 from bot.logger import get_logger
 import config
 
+# random_poll 的小窗口预算（token）：主动闲聊不需要长上下文，
+# 对应窗口化之前「只取最近 8 条」的省 token 特例
+POLL_WINDOW_MAX_TOKENS = 2000
+
 logger = get_logger(__name__)
 
 CALENDAR_REFRESH_HOUR = 6
@@ -320,18 +324,21 @@ class Scheduler:
         async with self._ai_lock:
             try:
                 prompt = self._render_check_in_prompt(check_in, timestamp)
-                history_limit = 8 if name == "random_poll" else 20
-                history = self.memory.recent_messages(
-                    str(config.CHANNEL_ID), limit=history_limit
+                # random_poll 保留小窗口省 token（原 8 条特例的 token 版）；
+                # 其余 check-in 用完整 token 窗口
+                window = self.memory.context_window(
+                    str(config.CHANNEL_ID),
+                    max_tokens=POLL_WINDOW_MAX_TOKENS if name == "random_poll" else None,
                 )
                 reply = await scheduled_action(
-                    self.db, prompt, timestamp, history,
+                    self.db, prompt, timestamp, window.messages,
                     send_callback=self.send,
                     allow_silent=bool(check_in.get("allow_silent", True)),
                     trigger="check_in",
                     tool_profile=check_in.get("tool_profile") or "poll",
                     check_in_name=name,
                     context_config=check_in.get("context_config") or {},
+                    window=window,
                 )
                 should_mark_fired = True
                 if reply:
@@ -419,12 +426,13 @@ class Scheduler:
                 ).format(
                     timestamp=timestamp, action=context_action
                 )
-                history = self.memory.recent_messages(str(config.CHANNEL_ID), limit=20)
+                window = self.memory.context_window(str(config.CHANNEL_ID))
                 reply = await scheduled_action(
-                    self.db, prompt, timestamp, history,
+                    self.db, prompt, timestamp, window.messages,
                     send_callback=self.send,
                     trigger="reminder",
                     tool_profile="reminder_safe",
+                    window=window,
                 )
                 if reply and "[SILENT]" not in reply:
                     logger.info(f"🔔 提醒发送: {reply[:50]}...")

@@ -41,10 +41,11 @@ def _endpoint_url(preset: Preset) -> str:
 
 
 async def chat(db: Database, messages: list[dict], preset: Preset,
-               send_callback=None, tool_callback=None, memory_service=None) -> str:
+               send_callback=None, tool_callback=None, memory_service=None,
+               window=None) -> str:
     return await _base_chat(db, messages, _call_with_tools, preset,
                             send_callback=send_callback, tool_callback=tool_callback,
-                            memory_service=memory_service)
+                            memory_service=memory_service, window=window)
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
@@ -54,7 +55,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            tool_profile: str | None = None,
                            check_in_name: str | None = None,
                            context_config: dict | None = None,
-                           memory_service=None) -> str | None:
+                           memory_service=None, window=None) -> str | None:
     return await _base_scheduled_action(db, prompt, timestamp, history, _call_with_tools,
                                         preset,
                                         send_callback=send_callback,
@@ -62,7 +63,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                                         tool_profile=tool_profile,
                                         check_in_name=check_in_name,
                                         context_config=context_config,
-                                        memory_service=memory_service)
+                                        memory_service=memory_service,
+                                        window=window)
 
 
 async def simple_completion(prompt: str, preset: Preset) -> str:

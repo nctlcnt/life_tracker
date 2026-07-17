@@ -55,7 +55,9 @@ def test_entry_written_to_daily_jsonl_with_stable_schema(trace_dir):
 
     assert set(entry) == {"id", "ts", "trigger", "model", "provider",
                           "prompt_parts", "user_message", "history",
-                          "rounds", "final_text", "error"}
+                          "window", "rounds", "final_text", "error"}
+    # LT-135 新增字段：未传窗口时为 null，旧记录无此键，读取方按缺省处理
+    assert entry["window"] is None
     assert entry["trigger"] == "chat"
     assert entry["provider"] == "relay"
     # 最后一条 message 拆成 user_message，其余进 history

@@ -64,6 +64,17 @@ interface HistoryMsg {
   content: unknown;
 }
 
+interface WindowInfo {
+  summary_present: boolean;
+  summary_tokens: number;
+  tail_count: number;
+  tail_tokens: number;
+  total_tokens: number;
+  upto_message_id: number;
+  needs_compact: boolean;
+  hard_trimmed: number;
+}
+
 interface TraceEntry {
   id: string;
   ts: string;
@@ -73,6 +84,8 @@ interface TraceEntry {
   prompt_parts: PromptParts | null;
   user_message: string;
   history: HistoryMsg[];
+  // LT-135 起记录；旧 trace 无此字段
+  window?: WindowInfo | null;
   rounds: Round[];
   final_text: string | null;
   error: string | null;
@@ -335,6 +348,23 @@ function TraceItem({ entry }: { entry: TraceEntry }) {
             <div className="trace-section">
               <div className="trace-section-label">最终发出（拼接所有 visible 轮次）</div>
               <div className="trace-final">{entry.final_text || '(silent — 无消息发出)'}</div>
+            </div>
+          )}
+
+          {entry.window && (
+            <div className="trace-section">
+              <div className="trace-section-label">上下文窗口</div>
+              <div className="trace-window-info">
+                {entry.window.summary_present
+                  ? `摘要 ~${entry.window.summary_tokens}tk + `
+                  : ''}
+                明文 {entry.window.tail_count} 条 ~{entry.window.tail_tokens}tk
+                （合计 ~{entry.window.total_tokens}tk）
+                {entry.window.needs_compact ? ' · ⏳ 待 compact' : ''}
+                {entry.window.hard_trimmed > 0
+                  ? ` · ⚠️ 硬裁 ${entry.window.hard_trimmed} 条`
+                  : ''}
+              </div>
             </div>
           )}
 

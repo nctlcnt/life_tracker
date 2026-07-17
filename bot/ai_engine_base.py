@@ -382,12 +382,16 @@ async def simple_completion(prompt: str, call_with_tools_fn, preset: Preset) -> 
 async def chat(db: Database, messages: list[dict],
                call_with_tools_fn, preset: Preset,
                send_callback=None, tool_callback=None,
-               memory_service: MemoryService | None = None) -> str:
+               memory_service: MemoryService | None = None,
+               window=None) -> str:
     """
     处理用户消息的完整流程。
-    messages: 调用方（discord_bot）已经从 Discord 历史构造好的消息列表，
+    messages: 调用方（discord_bot）已经装配好的 token 窗口消息列表，
               最后一条应该是当前用户发来的消息（含时间戳前缀）。
-    call_with_tools_fn: 各引擎的 _call_with_tools 实现。
+    call_with_tools_fn: 引擎的 _call_with_tools 实现。
+    window: 装配窗口的 ContextWindow（LT-135）。用于语义检索去重范围
+            （exclude_recent = 实际明文条数）与 trace 窗口可见性；
+            None 时退回固定 20 条语义（兼容旧调用方/测试）。
 
     DB 只作为备份：调用方在进入这里之前应已把当前用户消息写入 messages 表；
     这里只负责把 AI 回复写回 DB 做备份。
@@ -403,7 +407,7 @@ async def chat(db: Database, messages: list[dict],
 
     # memory v3 Part B2：用当前用户消息做语义检索，捞出工作窗口外的相关历史片段。
     # channel_id 直接用 config.CHANNEL_ID——bot 是单频道的（on_message 已过滤）。
-    # exclude_recent=20 与 MemoryService.recent_messages(limit=20) 对齐；
+    # exclude_recent 与窗口实际明文条数对齐（LT-135），避免检回窗口里已有的内容；
     # 检索失败/禁用时 relevant_history 为 None，聊天流程不受影响。
     memory = _memory_service(db, memory_service)
     memory_context = await memory.build_context(
@@ -412,7 +416,7 @@ async def chat(db: Database, messages: list[dict],
         include_memories=False,
         include_relevant_history=True,
         recall_limit=5,
-        exclude_recent=20,
+        exclude_recent=window.tail_count if window else 20,
     )
     relevant_history = memory_context.relevant_history
 
@@ -422,7 +426,8 @@ async def chat(db: Database, messages: list[dict],
                            memory_service=memory)
 
     trace.start(trigger="chat", model=preset.model, provider=preset.provider,
-                prompt_parts=prompt, messages=messages)
+                prompt_parts=prompt, messages=messages,
+                window=window.trace_info() if window else None)
     try:
         # 调用大模型（可能需要多轮 tool calling）
         reply = await call_with_tools_fn(
@@ -452,7 +457,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            tool_profile: str | None = None,
                            check_in_name: str | None = None,
                            context_config: dict | None = None,
-                           memory_service: MemoryService | None = None) -> str | None:
+                           memory_service: MemoryService | None = None,
+                           window=None) -> str | None:
     """
     统一的调度入口：处理主动聊天、提醒触发、睡前提醒等所有非用户消息的 AI 调用。
 
@@ -512,7 +518,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
         tool_names = set()
 
     trace.start(trigger=trigger or "scheduled", model=preset.model, provider=preset.provider,
-                prompt_parts=prompt_parts, messages=messages)
+                prompt_parts=prompt_parts, messages=messages,
+                window=window.trace_info() if window else None)
     final_reply: str | None = None
     try:
         if allow_silent:
