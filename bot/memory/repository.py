@@ -45,3 +45,16 @@ class MemoryRepository(Protocol):
     def update_conversation_embedding(self, row_id: int,
                                       embedding: list[float], context: str,
                                       model: str) -> None: ...
+
+    def get_conversation_ids_needing_embedding(
+        self,
+        channel_id: str,
+        *,
+        upto_id: int,
+        model: str,
+        after_id: int = 0,
+        limit: int = 50,
+    ) -> list[int]: ...
+
+    def clear_conversation_embeddings_after(self, channel_id: str,
+                                            upto_id: int) -> int: ...

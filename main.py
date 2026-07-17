@@ -69,6 +69,16 @@ async def main(test: bool = False, api_only: bool = False):
             await api_server.serve()
             return
 
+        # Resume best-effort embedding only for history already covered by compact.
+        from bot.memory.context_window import load_summary_state
+        from bot.memory.history_embedding import schedule_compacted_embeddings
+        summary_state = load_summary_state(db, str(config.CHANNEL_ID))
+        if summary_state:
+            schedule_compacted_embeddings(
+                db, str(config.CHANNEL_ID),
+                int(summary_state.get("upto_message_id", 0)),
+            )
+
         # 这些 import 放在这里，以便 --api-only 时无需安装 discord.py 等重依赖也能起来
         import discord
         from bot.discord_bot import LifeTrackerBot

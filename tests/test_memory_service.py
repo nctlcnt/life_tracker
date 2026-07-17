@@ -55,16 +55,9 @@ def test_ingest_message_exposes_same_recent_context(tmp_path, monkeypatch):
     ]
 
 
-def test_ingest_message_schedules_embedding_through_service(tmp_path, monkeypatch):
+def test_ingest_message_does_not_embed_plaintext_tail(tmp_path, monkeypatch):
     memory = _make_service(tmp_path)
-    called = []
     monkeypatch.setattr(memory_module.config, "EMBEDDING_ENABLED", True)
-
-    async def fake_embed(row_id, channel_id):
-        called.append((row_id, channel_id))
-        return True
-
-    monkeypatch.setattr(memory, "embed_message", fake_embed)
 
     async def ingest():
         row_id = await memory.ingest_message(
@@ -74,11 +67,11 @@ def test_ingest_message_schedules_embedding_through_service(tmp_path, monkeypatc
             content="收到",
             created_at=datetime.now(timezone.utc).isoformat(),
         )
-        await asyncio.gather(*memory._embedding_tasks)
         return row_id
 
     row_id = asyncio.run(ingest())
-    assert called == [(row_id, "channel-2")]
+    assert memory.repository.get_conversation_ids_needing_embedding(
+        "channel-2", upto_id=row_id, model="any-model") == [row_id]
 
 
 def test_recall_delegates_embedding_and_repository_scan(tmp_path, monkeypatch):

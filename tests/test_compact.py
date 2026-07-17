@@ -29,9 +29,15 @@ def db(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _reset_worker_state():
+def _reset_worker_state(monkeypatch):
     compact._inflight.clear()
     compact._last_attempt.clear()
+    # Compact contract tests do not call the external embedding endpoint; the
+    # worker itself has a dedicated test module.
+    monkeypatch.setattr(
+        "bot.memory.history_embedding.schedule_compacted_embeddings",
+        lambda *args, **kwargs: False,
+    )
     yield
     compact._inflight.clear()
     compact._last_attempt.clear()

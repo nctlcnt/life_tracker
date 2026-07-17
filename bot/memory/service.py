@@ -30,7 +30,6 @@ class MemoryService:
     def __init__(self, repository: MemoryRepository, *, durable_repository=None):
         self.repository = repository
         self.durable_repository = durable_repository or repository
-        self._embedding_tasks: set[asyncio.Task] = set()
         # Runtime collaborators can resolve the shared service from the DB while
         # keeping existing public call signatures stable.
         repository._memory_service = self
@@ -86,10 +85,9 @@ class MemoryService:
 
     # Conversation log and working window
     async def ingest_message(self, **message) -> int | None:
-        """Persist one raw message and asynchronously enrich it for recall."""
+        """Persist one raw message; embedding waits until compact folds it."""
         result = self.repository.add_conversation_message(**message)
         row_id = await result if inspect.isawaitable(result) else result
-        self.schedule_embedding(row_id, str(message["channel_id"]))
         return row_id
 
     def recent_messages(self, channel_id: str, *, limit: int = 20) -> list[dict]:
@@ -110,21 +108,6 @@ class MemoryService:
         if trigger_compact:
             schedule_compact(self.repository, str(channel_id), window)
         return window
-
-    def schedule_embedding(self, row_id: int | None, channel_id: str) -> None:
-        """Start best-effort enrichment without delaying the message path."""
-        if row_id is None or not config.EMBEDDING_ENABLED:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        task = loop.create_task(self.embed_message(row_id, channel_id))
-        self._embedding_tasks.add(task)
-        task.add_done_callback(self._embedding_tasks.discard)
-
-    async def embed_message(self, row_id: int, channel_id: str) -> bool:
-        return await embeddings.embed_and_store(self.repository, row_id, str(channel_id))
 
     # Semantic recall
     async def recall(self, query: str, channel_id: str, *, limit: int = 5,

@@ -1,9 +1,9 @@
 """
 对话日志 embedding + 相似度 helper（memory v3 Part B2）。
 
-设计原则（对应 docs/memory v3.md §3 B2）：
-- 存是无条件的：conversation_messages 每条消息写入后由 embed_and_store()
-  在后台补一份 embedding，AI 不参与"该不该记"的判断。
+设计原则（对应 LT-136）：
+- 原始消息先无条件写入 conversation_messages；只有 compact 已折叠的区间
+  才由后台 worker 调用 embed_and_store() 补 embedding。当前明文尾巴不入索引。
 - 不 embed 孤立的一句话：embedding 前拼接同 channel 最近几条消息作为上下文
   （"弄好了"三个字单独 embed 捕捉不到主题），拼接文本同时存进
   embedding_context 列，便于调试和检索命中后原样展示给 AI。

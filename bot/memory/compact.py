@@ -153,6 +153,8 @@ async def run_compact(db, channel_id: str, fold_upto_id: int) -> bool:
     )
     # 成功清除冷却：暴涨场景下允许下一轮立即接上；冷却只惩罚失败
     _last_attempt.pop(channel_id, None)
+    from bot.memory.history_embedding import schedule_compacted_embeddings
+    schedule_compacted_embeddings(db, channel_id, fold_upto_id)
     logger.info(f"🧾 compact 完成: {estimate_tokens(summary)}tk，"
                 f"窗口游标推进到 id={fold_upto_id}")
     return True
@@ -209,6 +211,8 @@ async def rebuild_compact_summary(db, channel_id: str,
         model=preset.model,
         updated_at=datetime.now().isoformat(timespec="seconds"),
     )
+    from bot.memory.history_embedding import schedule_compacted_embeddings
+    schedule_compacted_embeddings(db, channel_id, fold_upto_id)
     logger.info(
         f"🧾 compact 全量重建完成: {estimate_tokens(summary)}tk，"
         f"连续覆盖 {len(folded)} 条，cursor={fold_upto_id}")

@@ -1120,6 +1120,44 @@ class Database:
         conn.commit()
         conn.close()
 
+    def get_conversation_ids_needing_embedding(
+            self, channel_id: str, *, upto_id: int, model: str,
+            after_id: int = 0, limit: int = 50) -> list[int]:
+        """Return a stable page of compacted rows missing the requested embedding."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM conversation_messages
+            WHERE channel_id = ? AND id > ? AND id <= ?
+              AND (embedding IS NULL OR embedding_model IS NULL OR embedding_model != ?)
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (str(channel_id), int(after_id), int(upto_id), model, max(int(limit), 1)),
+        ).fetchall()
+        conn.close()
+        return [int(row["id"]) for row in rows]
+
+    def clear_conversation_embeddings_after(self, channel_id: str,
+                                            upto_id: int) -> int:
+        """Remove legacy embeddings from the current plaintext tail."""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """
+            UPDATE conversation_messages
+            SET embedding = NULL, embedding_context = NULL, embedding_model = NULL
+            WHERE channel_id = ? AND id > ?
+              AND (embedding IS NOT NULL OR embedding_context IS NOT NULL
+                   OR embedding_model IS NOT NULL)
+            """,
+            (str(channel_id), int(upto_id)),
+        )
+        conn.commit()
+        cleared = cursor.rowcount
+        conn.close()
+        return cleared
+
     def get_relevant_conversation_snippets(self, query_embedding: list[float],
                                            channel_id: str, *, model: str,
                                            limit: int = 5,
