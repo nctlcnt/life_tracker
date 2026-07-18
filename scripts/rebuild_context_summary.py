@@ -12,9 +12,11 @@ from bot.database import Database
 from bot.memory.compact import rebuild_compact_summary
 from bot.memory.context_window import load_summary_state
 from bot.memory.markdown_repository import estimate_tokens
+from bot.timezone_state import init_timezone
 
 
 def main() -> int:
+    init_timezone(config.TIMEZONE)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default=config.DB_PATH, help="SQLite database path")
     parser.add_argument("--channel", default=str(config.CHANNEL_ID))

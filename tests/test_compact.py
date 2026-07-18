@@ -3,7 +3,7 @@
 摘要生成用假 simple_completion，不打真实端点。
 """
 import asyncio
-from datetime import datetime, timezone
+import re
 
 import pytest
 
@@ -13,6 +13,7 @@ from bot.database import Database
 import bot.memory.compact as compact
 from bot.memory.compact import (
     COMPACT_PRESET_STATE_KEY, SUMMARY_TARGET_TOKENS,
+    SUMMARY_SECTIONS, SUMMARY_TITLE,
     build_compact_prompt, get_compact_preset, get_compact_preset_name,
     rebuild_compact_summary, run_compact, schedule_compact, set_compact_preset,
 )
@@ -47,16 +48,26 @@ def _add(db, role, content, n):
     metadata = {"current_content": f"[2026-07-17 10:00] {content}"} if role == "user" else None
     return db.add_conversation_message(
         discord_message_id=f"m{n}", channel_id=CHANNEL, role=role,
-        content=content, created_at=datetime.now(timezone.utc).isoformat(),
+        content=content, created_at="2026-07-16T23:30:00+00:00",
         metadata=metadata,
     )
 
 
-def _fake_completion(reply="她今天聊了考试和午饭。", calls=None):
+def _render_summary(prompt, content):
+    generated_at = re.search(r"当前时间：([^\n]+)", prompt).group(1)
+    timezone_name = re.search(r"时区：([^\n]+)", prompt).group(1)
+    parts = [f"{SUMMARY_TITLE}\n> 生成基准：{generated_at} ({timezone_name})"]
+    for index, heading in enumerate(SUMMARY_SECTIONS):
+        body = f"- {content}" if index == 2 else "- 无"
+        parts.append(f"{heading}\n{body}")
+    return "\n\n".join(parts)
+
+
+def _fake_completion(reply="聊了考试和午饭。", calls=None, *, raw=False):
     async def fake(prompt, preset):
         if calls is not None:
             calls.append({"prompt": prompt, "preset": preset})
-        return reply
+        return reply if raw else _render_summary(prompt, reply)
     return fake
 
 
@@ -88,6 +99,27 @@ def test_stale_configured_preset_falls_back_to_active(db):
     assert get_compact_preset(db) is config.get_active()
 
 
+def test_compact_prompt_anchors_time_and_requires_fixed_template():
+    prompt = build_compact_prompt(
+        "旧摘要写着下周取货",
+        [{
+            "id": 7,
+            "role": "user",
+            "content": "明天去学校",
+            "created_at": "2026-07-16T23:30:00+00:00",
+        }],
+        generated_at="2026-07-18 10:00:00",
+        timezone_name="Australia/Sydney",
+    )
+
+    assert "当前时间：2026-07-18 10:00:00" in prompt
+    assert "时区：Australia/Sydney" in prompt
+    assert "message_id=7 created_at=2026-07-16T23:30:00+00:00" in prompt
+    assert "禁止使用无锚点相对时间" in prompt
+    assert "不能可靠确定时写“日期不确定”" in prompt
+    assert prompt.index(SUMMARY_SECTIONS[0]) < prompt.index(SUMMARY_SECTIONS[-1])
+
+
 # ── run_compact ──────────────────────────────────────────────────────────
 
 def test_run_compact_folds_and_persists(db, monkeypatch):
@@ -101,12 +133,13 @@ def test_run_compact_folds_and_persists(db, monkeypatch):
 
     assert ok
     state = load_summary_state(db, CHANNEL)
-    assert state["summary"] == "摘要：聊了 0-2。"
+    assert "摘要：聊了 0-2。" in state["summary"]
     assert state["upto_message_id"] == ids[2]
     assert state["model"] == config.get_active().model
     # 只折叠 fold_upto 及更早的消息
     prompt = calls[0]["prompt"]
     assert "消息2" in prompt and "消息3" not in prompt
+    assert "created_at=2026-07-16T23:30:00+00:00" in prompt
 
 
 def test_run_compact_includes_continuous_prefix_beyond_thousand_rows(db, monkeypatch):
@@ -173,7 +206,7 @@ def test_rebuild_compact_uses_full_history_and_replaces_state_atomically(db, mon
     assert "【已有摘要（更早的对话）】" not in prompt
     assert "消息-0" in prompt and "消息-1003" in prompt
     state = load_summary_state(db, CHANNEL)
-    assert state["summary"] == "完整重建摘要"
+    assert "完整重建摘要" in state["summary"]
     assert state["upto_message_id"] == ids[-2]
 
 
@@ -251,8 +284,27 @@ def test_run_compact_stale_fold_is_noop(db, monkeypatch):
 def test_empty_reply_rejected(db, monkeypatch):
     ids = [_add(db, "user", "hi", 1)]
     monkeypatch.setattr(
-        "bot.ai_engine_openai_compat.simple_completion", _fake_completion("   "))
+        "bot.ai_engine_openai_compat.simple_completion", _fake_completion("   ", raw=True))
     assert not asyncio.run(run_compact(db, CHANNEL, fold_upto_id=ids[0]))
+    assert load_summary_state(db, CHANNEL) is None
+
+
+def test_relative_time_or_wrong_template_rejected_without_state_change(db, monkeypatch):
+    message_id = _add(db, "user", "明天去学校", 1)
+
+    async def relative_time(prompt, preset):
+        return _render_summary(prompt, "下周去学校")
+
+    monkeypatch.setattr(
+        "bot.ai_engine_openai_compat.simple_completion", relative_time)
+    assert not asyncio.run(run_compact(db, CHANNEL, fold_upto_id=message_id))
+    assert load_summary_state(db, CHANNEL) is None
+
+    monkeypatch.setattr(
+        "bot.ai_engine_openai_compat.simple_completion",
+        _fake_completion("没有固定模板", raw=True),
+    )
+    assert not asyncio.run(run_compact(db, CHANNEL, fold_upto_id=message_id))
     assert load_summary_state(db, CHANNEL) is None
 
 
@@ -288,7 +340,7 @@ def test_schedule_compact_runs_in_background(db, monkeypatch):
 
     asyncio.run(scenario())
     state = load_summary_state(db, CHANNEL)
-    assert state["summary"] == "摘要"
+    assert "摘要" in state["summary"]
     assert state["upto_message_id"] == window.fold_upto_id
 
 
@@ -360,4 +412,4 @@ def test_service_context_window_triggers_compact(db, monkeypatch):
         await task
 
     asyncio.run(scenario())
-    assert load_summary_state(db, CHANNEL)["summary"] == "摘要"
+    assert "摘要" in load_summary_state(db, CHANNEL)["summary"]

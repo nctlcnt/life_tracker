@@ -1127,6 +1127,7 @@ class Database:
             msg = self._to_ai_message(item)
             if msg:
                 msg["id"] = item["id"]
+                msg["created_at"] = item["created_at"]
                 messages.append(msg)
         return messages
 

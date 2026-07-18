@@ -18,11 +18,14 @@ bot.memory 包，模块级 import 会成环）。
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import config
 from bot.logger import get_logger
+from bot.timezone_state import get_timezone
 from bot.memory.markdown_repository import estimate_tokens
 from bot.memory.context_window import (
     ContextWindow, load_summary_state, save_summary_state,
@@ -33,6 +36,28 @@ logger = get_logger(__name__)
 COMPACT_PRESET_STATE_KEY = "compact_preset"
 SUMMARY_TARGET_TOKENS = 1500
 COMPACT_COOLDOWN_SECONDS = 300.0
+
+SUMMARY_TITLE = "# 对话上下文摘要"
+SUMMARY_SECTIONS = (
+    "## 当前仍有效的状态",
+    "## 未完成事项",
+    "## 稳定事实与偏好",
+    "## 最近经历",
+    "## 已完成或已失效",
+)
+_RELATIVE_TIME_PATTERNS = (
+    re.compile(r"今天|今日|昨天|昨日|前天|明天|明日|后天|大后天"),
+    re.compile(r"(?:上|下|这|本)(?:个)?(?:周|星期|月|个月|季度|学期|年)"),
+    re.compile(r"(?:周|星期)[一二三四五六日天末]"),
+    re.compile(r"近期|最近|过几天|几天后|稍后|一会儿|月底|年底"),
+    re.compile(
+        r"\b(?:today|tonight|yesterday|tomorrow|later|recently|"
+        r"next\s+(?:week|month|year)|last\s+(?:week|month|year)|"
+        r"this\s+(?:week|month|year)|"
+        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        re.IGNORECASE,
+    ),
+)
 
 # channel_id → 进行中的 compact task（单飞）；channel_id → 上次尝试时刻（冷却）
 _inflight: dict[str, asyncio.Task] = {}
@@ -69,41 +94,146 @@ def set_compact_preset(db, name: str | None) -> None:
 
 # ── 摘要生成 ─────────────────────────────────────────────────────────────
 
-def build_compact_prompt(old_summary: str, messages: list[dict]) -> str:
+def _compact_time_context() -> tuple[str, str]:
+    timezone_name = get_timezone() or config.TIMEZONE or "UTC"
+    try:
+        zone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        timezone_name = "UTC"
+        zone = ZoneInfo("UTC")
+    generated_at = datetime.now(zone).strftime("%Y-%m-%d %H:%M:%S")
+    return generated_at, timezone_name
+
+
+def _summary_template(generated_at: str, timezone_name: str) -> str:
+    return "\n".join([
+        SUMMARY_TITLE,
+        f"> 生成基准：{generated_at} ({timezone_name})",
+        "",
+        SUMMARY_SECTIONS[0],
+        "- 只写截至生成基准仍然成立的状态；没有则写“无”",
+        "",
+        SUMMARY_SECTIONS[1],
+        "- 事项；绝对日期或“日期不确定”；当前进度",
+        "",
+        SUMMARY_SECTIONS[2],
+        "- 跨时间仍稳定、未来对话可复用的事实或偏好",
+        "",
+        SUMMARY_SECTIONS[3],
+        "- YYYY-MM-DD：已经发生且仍有近期上下文价值的经历",
+        "",
+        SUMMARY_SECTIONS[4],
+        "- YYYY-MM-DD：已结束、取消或过期，但仍有上下文价值的事项",
+    ])
+
+
+def build_compact_prompt(old_summary: str, messages: list[dict], *,
+                         generated_at: str | None = None,
+                         timezone_name: str | None = None) -> str:
+    if generated_at is None or timezone_name is None:
+        generated_at, timezone_name = _compact_time_context()
     transcript = "\n".join(
+        f"[message_id={m['id']} created_at={m.get('created_at') or 'unknown'}] "
         f"{'用户' if m['role'] == 'user' else '助理'}: {m['content']}"
         for m in messages
     )
-    parts = ["你在为一个私人助理维护对话记忆。请把下面的内容压缩成一份连贯的对话摘要。"]
+    parts = [
+        "你在为一个私人助理维护对话上下文摘要。请把输入重新整理成一份完整、"
+        "有时间锚点、可直接用于未来对话的摘要。",
+        f"【生成基准】\n当前时间：{generated_at}\n时区：{timezone_name}",
+    ]
     if old_summary:
         parts.append(f"【已有摘要（更早的对话）】\n{old_summary}")
     parts.append(f"【需要并入摘要的新对话】\n{transcript}")
     parts.append(
         "要求：\n"
         "1. 输出一份完整的新摘要，覆盖已有摘要与新对话的全部要点（不是增量补丁）。\n"
-        "2. 优先保留：正在进行的事情与约定、用户的状态与安排（deadline/计划/情绪）、"
-        "值得记住的事实、尚未解决的话题。\n"
-        "3. 按时间先后组织，旧内容可以更粗略，越近的内容保留越多细节。\n"
-        "4. 不要编造原文没有的信息；不确定就不写。\n"
-        f"5. 控制在 {SUMMARY_TARGET_TOKENS} tokens 以内的纯文本，不要任何前后缀说明。"
+        "2. 每条消息的 created_at 是解释原文中相对时间的唯一锚点；日期计算使用上面的时区。\n"
+        "3. 输出中禁止使用无锚点相对时间，包括今天、昨天、明天、后天、上周、下周、"
+        "周五、近期、月底等。能确定时改成 YYYY-MM-DD 或 YYYY-MM-DD HH:MM；"
+        "不能可靠确定时写“日期不确定”，绝不猜测。\n"
+        "4. 已经过期、完成或取消的安排不得放在“当前仍有效”或“未完成事项”；"
+        "只有仍有上下文价值时才移入“已完成或已失效”。\n"
+        "5. 旧摘要也不是事实权威：按生成基准重新判断时效，不能照抄旧摘要中的相对时间。\n"
+        "6. 不要编造原文没有的信息；不确定就不写。越旧的经历越粗略，优先保留未完成事项、"
+        "仍有效状态、稳定事实与偏好。\n"
+        f"7. 严格使用下方 Markdown 模板及标题顺序；每节没有内容写“- 无”。"
+        f"控制在 {SUMMARY_TARGET_TOKENS} tokens 以内，不要代码围栏或模板外说明。"
+    )
+    parts.append(
+        "【必须严格使用的输出模板】\n" +
+        _summary_template(generated_at, timezone_name)
     )
     return "\n\n".join(parts)
 
 
+def _validate_compact_summary(summary: str, *, generated_at: str,
+                              timezone_name: str) -> str:
+    summary = summary.strip()
+    lines = [line.rstrip() for line in summary.splitlines()]
+    if not lines or lines[0].strip() != SUMMARY_TITLE:
+        raise ValueError(f"summary must start with {SUMMARY_TITLE!r}")
+    expected_baseline = f"> 生成基准：{generated_at} ({timezone_name})"
+    if len(lines) < 2 or lines[1].strip() != expected_baseline:
+        raise ValueError("summary generation baseline is missing or incorrect")
+
+    positions = []
+    for heading in SUMMARY_SECTIONS:
+        matches = [index for index, line in enumerate(lines) if line.strip() == heading]
+        if len(matches) != 1:
+            raise ValueError(f"summary must contain heading exactly once: {heading}")
+        positions.append(matches[0])
+    if positions != sorted(positions):
+        raise ValueError("summary headings are out of order")
+
+    for line in lines[2:]:
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        for pattern in _RELATIVE_TIME_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                raise ValueError(
+                    f"summary contains unanchored relative time: {match.group(0)}")
+    return "\n".join(lines).strip()
+
+
 def _truncate_summary(summary: str) -> str:
-    """长度守护：模型不听话时按字符硬截，保底不让摘要反噬窗口预算。"""
+    """长度守护：优先缩短最长 section，同时保留固定模板骨架。"""
     limit = SUMMARY_TARGET_TOKENS * 2
     if estimate_tokens(summary) <= limit:
         return summary
-    lo, hi = 0, len(summary)
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if estimate_tokens(summary[:mid]) <= limit:
-            lo = mid
-        else:
-            hi = mid - 1
-    logger.warning(f"⚠️ compact 摘要超长（截断到 ~{limit}tk）")
-    return summary[:lo] + "…"
+
+    lines = summary.splitlines()
+    heading_indexes = [
+        index for index, line in enumerate(lines)
+        if line.strip() in SUMMARY_SECTIONS
+    ]
+    if len(heading_indexes) != len(SUMMARY_SECTIONS):
+        return summary
+
+    prefix = lines[:heading_indexes[0]]
+    sections: list[tuple[str, str]] = []
+    for position, start in enumerate(heading_indexes):
+        end = heading_indexes[position + 1] if position + 1 < len(heading_indexes) else len(lines)
+        body = "\n".join(lines[start + 1:end]).strip() or "- 无"
+        sections.append((lines[start].strip(), body))
+
+    def render() -> str:
+        chunks = ["\n".join(prefix).strip()]
+        chunks.extend(f"{heading}\n{body}" for heading, body in sections)
+        return "\n\n".join(chunks).strip()
+
+    result = render()
+    while estimate_tokens(result) > limit:
+        index = max(range(len(sections)), key=lambda item: len(sections[item][1]))
+        heading, body = sections[index]
+        if len(body) <= 16:
+            break
+        sections[index] = (heading, body[:max(12, int(len(body) * 0.8))].rstrip() + "…")
+        result = render()
+    logger.warning(f"⚠️ compact 摘要超长（按 section 截断到 ~{limit}tk）")
+    return result
 
 
 async def run_compact(db, channel_id: str, fold_upto_id: int) -> bool:
@@ -126,7 +256,11 @@ async def run_compact(db, channel_id: str, fold_upto_id: int) -> bool:
     if not folded:
         return False
 
-    prompt = build_compact_prompt(old_summary, folded)
+    generated_at, timezone_name = _compact_time_context()
+    prompt = build_compact_prompt(
+        old_summary, folded,
+        generated_at=generated_at, timezone_name=timezone_name,
+    )
     preset = get_compact_preset(db)
     logger.info(
         f"🧾 compact 开始: {len(folded)} 条 → 摘要 "
@@ -144,7 +278,21 @@ async def run_compact(db, channel_id: str, fold_upto_id: int) -> bool:
     if not summary:
         logger.warning("⚠️ compact 返回空摘要，放弃本轮")
         return False
-    summary = _truncate_summary(summary)
+    try:
+        summary = _validate_compact_summary(
+            summary,
+            generated_at=generated_at,
+            timezone_name=timezone_name,
+        )
+        summary = _truncate_summary(summary)
+        summary = _validate_compact_summary(
+            summary,
+            generated_at=generated_at,
+            timezone_name=timezone_name,
+        )
+    except ValueError as e:
+        logger.warning(f"⚠️ compact 摘要格式/时间校验失败，保留旧状态: {e}")
+        return False
 
     save_summary_state(
         db, channel_id, summary=summary, upto_message_id=fold_upto_id,
@@ -184,7 +332,11 @@ async def rebuild_compact_summary(db, channel_id: str,
         return False
 
     preset = get_compact_preset(db)
-    prompt = build_compact_prompt("", folded)
+    generated_at, timezone_name = _compact_time_context()
+    prompt = build_compact_prompt(
+        "", folded,
+        generated_at=generated_at, timezone_name=timezone_name,
+    )
     logger.info(
         f"🧾 compact 全量重建开始: {len(folded)} 条 → 摘要 "
         f"(preset={preset.name}, target={fold_upto_id})")
@@ -200,7 +352,21 @@ async def rebuild_compact_summary(db, channel_id: str,
     if not summary:
         logger.warning("⚠️ compact 全量重建返回空摘要，保留原状态")
         return False
-    summary = _truncate_summary(summary)
+    try:
+        summary = _validate_compact_summary(
+            summary,
+            generated_at=generated_at,
+            timezone_name=timezone_name,
+        )
+        summary = _truncate_summary(summary)
+        summary = _validate_compact_summary(
+            summary,
+            generated_at=generated_at,
+            timezone_name=timezone_name,
+        )
+    except ValueError as e:
+        logger.warning(f"⚠️ compact 全量重建摘要校验失败，保留原状态: {e}")
+        return False
 
     if load_summary_state(db, channel_id) != initial_state:
         logger.warning("⚠️ compact 重建期间 state 已变化，拒绝覆盖较新的摘要")
