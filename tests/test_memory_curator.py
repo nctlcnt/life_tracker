@@ -111,11 +111,14 @@ def test_prompt_and_interval_expose_stable_evidence_ids(db):
 
     messages = load_curator_interval(
         db, channel_id=CHANNEL, after_message_id=0, limit=10)
-    prompt = build_curator_prompt(messages=messages, memories=[])
+    prompt = build_curator_prompt(
+        messages=messages, memories=[], now="2026-07-17T00:00:00+00:00")
 
     assert [message["id"] for message in messages] == [first, second]
     assert f'"message_id":{first}' in prompt
     assert "第一句话" in prompt
+    assert '"created_at":' in prompt
+    assert "当前 UTC 时间是 2026-07-17T00:00:00+00:00" in prompt
 
 
 def test_apply_create_and_cursor_are_one_transaction(repository, db):

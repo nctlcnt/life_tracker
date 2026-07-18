@@ -17,12 +17,13 @@
 首版只提供手动命令，不接入 `main.py` 或 scheduler，因此部署后不会自动运行：
 
 ```bash
-# 生成并校验 proposal；只写 trigger=curator 的审计，不改长期记忆/cursor
-.venv/bin/python scripts/run_memory_curator.py \
+# 生产环境在容器内生成并校验 proposal，确保 JSONL/SQLite trace 都可写；
+# 不改长期记忆/cursor
+docker compose exec -T app python scripts/run_memory_curator.py \
   --limit 200 --output data/curator_proposals/review.json
 
 # 人工审阅后，精确消费同一份 proposal；不会再次调用模型
-.venv/bin/python scripts/run_memory_curator.py \
+docker compose exec -T app python scripts/run_memory_curator.py \
   --apply-proposal data/curator_proposals/review.json
 ```
 

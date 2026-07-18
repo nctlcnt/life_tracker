@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -214,12 +215,15 @@ def parse_curator_batch(raw: str | dict) -> CuratorBatch:
     ))
 
 
-def build_curator_prompt(*, messages: list[dict], memories: list[dict]) -> str:
+def build_curator_prompt(*, messages: list[dict], memories: list[dict],
+                         now: str | None = None) -> str:
     """Build a self-contained prompt whose evidence handles are DB message ids."""
+    now = now or datetime.now(timezone.utc).isoformat(timespec="seconds")
     visible = [
         {
             "message_id": int(message["id"]),
             "role": message["role"],
+            "created_at": message["created_at"],
             "content": message["content"],
         }
         for message in messages
@@ -237,6 +241,9 @@ def build_curator_prompt(*, messages: list[dict], memories: list[dict]) -> str:
         "你是私人助理的长期记忆 curator。只提取未来对话确实有复用价值、且有明确原文证据的信息。",
         "不要把普通闲聊、模型推断、时间线事件、todo、deadline 或一次性细节写成长期记忆。"
         "不确定时输出空 operations。",
+        f"当前 UTC 时间是 {now}。必须结合每条消息的 created_at 判断时效。"
+        "旧消息可以证明稳定偏好或身份，但不能单独证明 current_state、temporary_context、"
+        "open_loop 或 project_intent 现在仍成立；已经过去的安排、课程作业和状态不要写成当前记忆。",
         "只输出一个 JSON 对象，不要 markdown，不要解释。顶层只能有 operations。"
         "action 只能是 create/update/supersede/archive。"
         "每条 operation 必须有 reason 和非空 sources；sources 的 message_id 只能使用本批消息 id，"
