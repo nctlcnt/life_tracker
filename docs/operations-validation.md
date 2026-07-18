@@ -14,17 +14,17 @@
 
 ## 当前基线
 
-最后更新：2026-07-17 13:38 UTC
+最后更新：2026-07-18 00:30 UTC
 
 | 检查项 | 最近执行时间（UTC） | 状态 | 结果/证据 | 下次动作 |
 |---|---|---|---|---|
-| Python 全部自动测试 | 2026-07-17 13:30 | PASS | `.venv/bin/python -m pytest -q`：114 passed，7.20s（含 LT-135 窗口/compact 测试） | 每次部署前重跑 |
-| 前端生产构建 | 2026-07-17 13:32 | PASS | `make deploy-local` Docker frontend-builder 构建成功 | 每次部署前重跑 |
+| Python 全部自动测试 | 2026-07-18 00:08 | PASS | `.venv/bin/python -m pytest -q`：152 passed，24.19s（含 curator transaction/evidence/cursor 测试） | 每次部署前重跑 |
+| 前端生产构建 | 2026-07-18 00:29 | PASS | `make deploy-local` Docker frontend-builder 构建成功 | 每次部署前重跑 |
 | npm 干净安装 | 2026-07-17 03:58 | PASS | `npm ci` 安装 287 packages；audit findings 与 07-11 相同，仍待审查 | 审查 audit findings；依赖变更后重跑 |
-| npm Docker builder | 2026-07-17 13:32 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功（含 frontend-builder） | Dockerfile/依赖变更后重跑 |
-| Production health endpoint | 2026-07-17 13:33 | PASS | `/internal/health` 200；无 key `/api/health` 401；携带 API key 200 | 每次部署后重跑 |
-| Production 容器状态 | 2026-07-17 13:33 | PASS | app 重建后 Up `(healthy)`；Litestream Up 10 days；Discord bot（ひより#5775）/scheduler 正常 | 每次部署后重跑 |
-| SQLite quick check | 2026-07-17 13:33 | PASS | `PRAGMA quick_check` → `ok`；journal mode=`wal`；部署前快照 `pre-lt135-20260717-133220.db` integrity=`ok` | 每次部署后重跑 |
+| npm Docker builder | 2026-07-18 00:29 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功（含 frontend-builder） | Dockerfile/依赖变更后重跑 |
+| Production health endpoint | 2026-07-18 00:30 | PASS | `/internal/health` 200 | 每次部署后重跑 |
+| Production 容器状态 | 2026-07-18 00:30 | PASS | app `(healthy)`，restart=0；Discord bot/scheduler 启动日志正常 | 每次部署后重跑 |
+| SQLite quick check | 2026-07-18 00:30 | PASS | `PRAGMA quick_check` → `ok`；部署前快照 `pre-lt136-curator-20260718-001309.db` integrity=`ok` | 每次部署后重跑 |
 | Litestream 写入 R2 | 2026-07-17 13:33 | PASS | 部署后 `wal segment written`（position 00000261/00000262） | 每次部署后检查复制；每季度恢复演练 |
 | 本地 SQLite 快照恢复 | 未知 | NOT TESTED | 部署前快照 `pre-deploy-20260717.db` quick_check=ok，但未演练恢复启动 | 下次高风险部署前演练 |
 | R2/Litestream 完整恢复 | 2026-07-11 13:30 | PASS | 从 R2 恢复到全新 `/tmp` 路径；integrity check、数据新鲜度和 API-only smoke test 均通过 | 2026-10 前重跑，或 Litestream/R2 变更后立即重跑 |
@@ -67,6 +67,21 @@
 - 后续动作：2026-10 前完成下一次季度演练；JSONL 仅在成为产品数据源或出现审计保留要求时重新评估
 
 ## 每次部署记录模板
+
+### 2026-07-18 00:29 UTC — feat/LT-136-memory-curator-worker@ff9135f（人工闸门 curator 上线）
+
+- 操作者：Codex（chacha 授权）
+- 部署来源：`life-tracker:local`
+- Git commits：`1c1607f`、`ff9135f`
+- 工作区是否干净：部署时是；本台账在部署验证后更新
+- 风险分类：中（新增 curator 审计和可选 apply path；未接入 scheduler）
+- 部署前快照：`data/backups/pre-lt136-curator-20260718-001309.db`；`integrity_check` → `ok`
+- Python tests：152 通过 / 0 失败；Frontend build：PASS
+- Production health：`/internal/health` 200；app healthy，restart=0；实际监听 `127.0.0.1:8080`
+- SQLite：`quick_check` → `ok`；dry-run 后 `personal_memories=0`、`personal_memory_sources=0`、`curator_cursors=0`
+- Curator smoke：容器内 `glm`，冻结 `conversation_messages.id=1..10`，run `96f93c0f107f`，严格校验通过，`operations=[]`
+- 自动写入：关闭；没有运行 `--apply-proposal`，没有接入 `main.py` / scheduler
+- 异常与回滚：active `kiro` 大批次超时、`glm` 50 条首次返回 markdown fence，均未写 memory/cursor；随后加入 message `created_at`/当前 UTC freshness guard。回滚代码到 `768a08d`，DB 无 curator mutation 需要回退。
 
 ### 2026-07-17 13:32 UTC — main@f9f20c8（LT-135 聊天上下文 token 窗口 + 自动 compact 上线）
 
