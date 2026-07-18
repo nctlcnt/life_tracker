@@ -358,24 +358,28 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
 # ── 高层流程：chat / scheduled_action / simple_completion ──────────────
 
 
-async def simple_completion(prompt: str, call_with_tools_fn, preset: Preset) -> str:
+async def simple_completion(prompt: str, call_with_tools_fn, preset: Preset,
+                            *, trigger: str = "oneshot",
+                            db: Database | None = None,
+                            return_run_id: bool = False):
     """
     轻量 AI 调用：无工具、无历史消息、无动态上下文。
     用于天气报告等独立的一次性生成任务。
     """
     messages = [{"role": "user", "content": prompt}]
-    trace.start(trigger="oneshot", model=preset.model, provider=preset.provider,
-                prompt_parts=None, messages=messages)
+    trace_entry = trace.start(
+        trigger=trigger, model=preset.model, provider=preset.provider,
+        prompt_parts=None, messages=messages)
     try:
         reply = await call_with_tools_fn(
             None, None, messages,
             preset=preset,
             tool_names=set(),  # 空集 → 不传工具
         )
-        trace.finalize(final_text=reply)
-        return reply
+        trace.finalize(final_text=reply, db=db)
+        return (reply, trace_entry["id"]) if return_run_id else reply
     except Exception as e:
-        trace.finalize(error=f"{type(e).__name__}: {e}")
+        trace.finalize(error=f"{type(e).__name__}: {e}", db=db)
         raise
 
 

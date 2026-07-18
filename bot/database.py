@@ -1130,6 +1130,28 @@ class Database:
                 messages.append(msg)
         return messages
 
+    def get_conversation_messages_after(
+        self, channel_id: str, after_id: int, *, limit: int | None = None,
+        upto_id: int | None = None,
+    ) -> list[dict]:
+        """Return a continuous raw-message interval for curator evidence."""
+        where = "channel_id = ? AND id > ?"
+        params: list = [str(channel_id), int(after_id)]
+        if upto_id is not None:
+            where += " AND id <= ?"
+            params.append(int(upto_id))
+        sql = (
+            "SELECT id, role, content, created_at "
+            f"FROM conversation_messages WHERE {where} ORDER BY id ASC"
+        )
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(max(int(limit), 0))
+        conn = self._get_conn()
+        rows = conn.execute(sql, params).fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
     # ============ 对话日志 embedding 检索（memory v3 Part B2）============
 
     def get_conversation_messages_upto(self, channel_id: str, upto_id: int,

@@ -77,5 +77,8 @@ async def scheduled_action(db, prompt: str, timestamp: str,
     )
 
 
-async def simple_completion(prompt: str) -> str:
-    return await _run_with_fallback("simple_completion", prompt)
+async def simple_completion(prompt: str, *, trigger: str = "oneshot",
+                            db=None, return_run_id: bool = False):
+    return await _run_with_fallback(
+        "simple_completion", prompt, trigger=trigger, db=db,
+        return_run_id=return_run_id)

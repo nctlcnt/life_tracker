@@ -12,6 +12,24 @@
 > 目标：把一次 AI 行为从输入、上下文、Prompt、模型轮次、工具调用、消息发送，
 > 一直到异步 curator 修改长期记忆的全过程，保存为可查询、可关联、可回放的结构化审计链。
 
+## LT-136 首版人工闸门（当前实现）
+
+首版只提供手动命令，不接入 `main.py` 或 scheduler，因此部署后不会自动运行：
+
+```bash
+# 生成并校验 proposal；只写 trigger=curator 的审计，不改长期记忆/cursor
+.venv/bin/python scripts/run_memory_curator.py \
+  --limit 200 --output data/curator_proposals/review.json
+
+# 人工审阅后，精确消费同一份 proposal；不会再次调用模型
+.venv/bin/python scripts/run_memory_curator.py \
+  --apply-proposal data/curator_proposals/review.json
+```
+
+`apply` 会重新校验证据频道、冻结消息区间、quote 原文、目标 memory 状态，
+并要求 proposal operations 与对应 `ai_runs.final_text` 完全一致。全部 memory 变更和
+cursor 推进在同一个 SQLite `BEGIN IMMEDIATE` 事务中完成；任一操作失败则整批回滚。
+
 ## 1. 背景与问题
 
 项目目前已经存在两套审计数据：

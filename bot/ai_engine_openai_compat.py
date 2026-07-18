@@ -67,8 +67,12 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                                         window=window)
 
 
-async def simple_completion(prompt: str, preset: Preset) -> str:
-    return await _base_simple_completion(prompt, _call_with_tools, preset)
+async def simple_completion(prompt: str, preset: Preset,
+                            *, trigger: str = "oneshot", db=None,
+                            return_run_id: bool = False):
+    return await _base_simple_completion(
+        prompt, _call_with_tools, preset, trigger=trigger, db=db,
+        return_run_id=return_run_id)
 
 
 def _log_usage(usage: dict | None) -> None:

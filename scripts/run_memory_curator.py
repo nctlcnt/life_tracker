@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Run one manual memory-curator batch; default is proposal-only."""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import config
+from bot.ai_engine_openai_compat import simple_completion
+from bot.database import Database
+from bot.memory.curator import (
+    CURATOR_NAME,
+    build_curator_prompt,
+    load_curator_interval,
+    parse_curator_batch,
+)
+from bot.memory.personal_repository import PersonalMemoryRepository
+
+
+def _preset(name: str | None):
+    if name:
+        if name not in config.PRESETS:
+            raise ValueError(f"unknown preset: {name}")
+        return config.PRESETS[name]
+    return config.get_active()
+
+
+def _load_proposal(path: str) -> dict:
+    try:
+        proposal = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read proposal file: {exc}") from exc
+    if not isinstance(proposal, dict):
+        raise ValueError("proposal file must contain a JSON object")
+    required = {
+        "run_id", "curator", "channel_id", "after_message_id",
+        "upto_message_id", "operations",
+    }
+    missing = sorted(required - set(proposal))
+    if missing:
+        raise ValueError(f"proposal file missing fields: {missing}")
+    return proposal
+
+
+def apply_proposal(args) -> dict:
+    db = Database(args.db)
+    repository = PersonalMemoryRepository(db)
+    proposal = _load_proposal(args.apply_proposal)
+    if str(proposal["channel_id"]) != str(args.channel):
+        raise ValueError("proposal channel does not match --channel")
+    if proposal["curator"] != args.curator_name:
+        raise ValueError("proposal curator does not match --curator-name")
+    after_id = int(proposal["after_message_id"])
+    upto_id = int(proposal["upto_message_id"])
+    messages = db.get_conversation_messages_after(
+        str(args.channel), after_id, upto_id=upto_id)
+    batch = parse_curator_batch({"operations": proposal["operations"]})
+    visible_ids = {int(message["id"]) for message in messages}
+    result = repository.apply_curator_batch(
+        batch,
+        curator_name=args.curator_name,
+        channel_id=args.channel,
+        after_message_id=after_id,
+        upto_message_id=upto_id,
+        visible_message_ids=visible_ids,
+        run_id=str(proposal["run_id"]),
+        curator_model=str(proposal.get("model") or "unknown"),
+    )
+    return {**proposal, "mode": "apply", "apply_result": result}
+
+
+async def propose(args) -> dict:
+    db = Database(args.db)
+    repository = PersonalMemoryRepository(db)
+    cursor = repository.get_cursor(args.curator_name, args.channel)
+    after_id = int(cursor["last_message_id"])
+    messages = load_curator_interval(
+        db,
+        channel_id=args.channel,
+        after_message_id=after_id,
+        limit=args.limit,
+    )
+    if not messages:
+        return {
+            "mode": "dry-run",
+            "status": "no_messages",
+            "cursor": after_id,
+            "operations": [],
+        }
+    upto_id = int(messages[-1]["id"])
+    memories = repository.list(status="active")
+    prompt = build_curator_prompt(messages=messages, memories=memories)
+    preset = _preset(args.preset)
+    raw, run_id = await simple_completion(
+        prompt, preset, trigger="curator", db=db, return_run_id=True)
+    conn = db._get_conn()
+    run_row = conn.execute(
+        "SELECT trigger, status FROM ai_runs WHERE id = ?", (run_id,)
+    ).fetchone()
+    conn.close()
+    if run_row is None or run_row["trigger"] != "curator" or run_row["status"] != "success":
+        raise RuntimeError("successful curator trace was not persisted to ai_runs")
+
+    batch = parse_curator_batch(raw)
+    visible_ids = {int(message["id"]) for message in messages}
+    repository.validate_curator_batch(
+        batch,
+        curator_name=args.curator_name,
+        channel_id=args.channel,
+        after_message_id=after_id,
+        upto_message_id=upto_id,
+        visible_message_ids=visible_ids,
+    )
+    result = {
+        "mode": "dry-run",
+        "status": "validated",
+        "run_id": run_id,
+        "curator": args.curator_name,
+        "preset": preset.name,
+        "model": preset.model,
+        "channel_id": str(args.channel),
+        "after_message_id": after_id,
+        "upto_message_id": upto_id,
+        "visible_message_count": len(messages),
+        **batch.to_dict(),
+    }
+    return result
+
+
+async def run(args) -> dict:
+    if args.apply_proposal:
+        return apply_proposal(args)
+    return await propose(args)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--db", default=config.DB_PATH)
+    parser.add_argument("--channel", default=str(config.CHANNEL_ID))
+    parser.add_argument("--curator-name", default=CURATOR_NAME)
+    parser.add_argument("--preset", help="Preset name; default is active preset")
+    parser.add_argument("--limit", type=int, default=200)
+    parser.add_argument(
+        "--apply-proposal", metavar="FILE",
+        help="Apply an exact reviewed dry-run JSON file; never calls the model.",
+    )
+    parser.add_argument(
+        "--output", metavar="FILE",
+        help="Also write the dry-run proposal or apply receipt to this JSON file.",
+    )
+    args = parser.parse_args()
+    if args.limit <= 0:
+        parser.error("--limit must be positive")
+    result = asyncio.run(run(args))
+    rendered = json.dumps(result, ensure_ascii=False, indent=2)
+    if args.output:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(rendered + "\n", encoding="utf-8")
+    print(rendered)
+
+
+if __name__ == "__main__":
+    main()
