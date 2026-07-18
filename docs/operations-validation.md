@@ -14,17 +14,17 @@
 
 ## 当前基线
 
-最后更新：2026-07-18 00:30 UTC
+最后更新：2026-07-18 01:33 UTC
 
 | 检查项 | 最近执行时间（UTC） | 状态 | 结果/证据 | 下次动作 |
 |---|---|---|---|---|
-| Python 全部自动测试 | 2026-07-18 00:08 | PASS | `.venv/bin/python -m pytest -q`：152 passed，24.19s（含 curator transaction/evidence/cursor 测试） | 每次部署前重跑 |
-| 前端生产构建 | 2026-07-18 00:29 | PASS | `make deploy-local` Docker frontend-builder 构建成功 | 每次部署前重跑 |
+| Python 全部自动测试 | 2026-07-18 01:30 | PASS | `.venv/bin/python -m pytest -q`：156 passed，25.42s（含 compact 时间锚点、模板和修正重试测试） | 每次部署前重跑 |
+| 前端生产构建 | 2026-07-18 01:26 | PASS | `make deploy-local` Docker frontend-builder 构建成功 | 每次部署前重跑 |
 | npm 干净安装 | 2026-07-17 03:58 | PASS | `npm ci` 安装 287 packages；audit findings 与 07-11 相同，仍待审查 | 审查 audit findings；依赖变更后重跑 |
-| npm Docker builder | 2026-07-18 00:29 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功（含 frontend-builder） | Dockerfile/依赖变更后重跑 |
-| Production health endpoint | 2026-07-18 00:30 | PASS | `/internal/health` 200 | 每次部署后重跑 |
-| Production 容器状态 | 2026-07-18 00:30 | PASS | app `(healthy)`，restart=0；Discord bot/scheduler 启动日志正常 | 每次部署后重跑 |
-| SQLite quick check | 2026-07-18 00:30 | PASS | `PRAGMA quick_check` → `ok`；部署前快照 `pre-lt136-curator-20260718-001309.db` integrity=`ok` | 每次部署后重跑 |
+| npm Docker builder | 2026-07-18 01:31 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功（含 frontend-builder） | Dockerfile/依赖变更后重跑 |
+| Production health endpoint | 2026-07-18 01:33 | PASS | `/internal/health` 200 | 每次部署后重跑 |
+| Production 容器状态 | 2026-07-18 01:33 | PASS | app `(healthy)`，restart=0；Discord bot/scheduler 启动日志正常 | 每次部署后重跑 |
+| SQLite quick check | 2026-07-18 01:33 | PASS | `PRAGMA quick_check` → `ok`；部署前快照 `pre-compact-timefix-20260718-012157.db` integrity=`ok` | 每次部署后重跑 |
 | Litestream 写入 R2 | 2026-07-17 13:33 | PASS | 部署后 `wal segment written`（position 00000261/00000262） | 每次部署后检查复制；每季度恢复演练 |
 | 本地 SQLite 快照恢复 | 未知 | NOT TESTED | 部署前快照 `pre-deploy-20260717.db` quick_check=ok，但未演练恢复启动 | 下次高风险部署前演练 |
 | R2/Litestream 完整恢复 | 2026-07-11 13:30 | PASS | 从 R2 恢复到全新 `/tmp` 路径；integrity check、数据新鲜度和 API-only smoke test 均通过 | 2026-10 前重跑，或 Litestream/R2 变更后立即重跑 |
@@ -67,6 +67,22 @@
 - 后续动作：2026-10 前完成下一次季度演练；JSONL 仅在成为产品数据源或出现审计保留要求时重新评估
 
 ## 每次部署记录模板
+
+### 2026-07-18 01:31 UTC — feat/LT-136-memory-curator-worker@7d911fe（compact 绝对时间 + 固定模板）
+
+- 操作者：Codex（chacha 授权）
+- 部署来源：`life-tracker:local`
+- Git commits：`4d71880`、`7d911fe`
+- 工作区是否干净：部署时是；本台账在部署验证后更新
+- 风险分类：中（改变 compact prompt 和摘要写回校验，并全量重建现有摘要）
+- 部署前快照：`data/backups/pre-compact-timefix-20260718-012157.db`；`integrity_check` → `ok`
+- Python tests：156 通过 / 0 失败；Frontend build：PASS
+- Production health：`/internal/health` 200；app healthy，restart=0；实际监听 `127.0.0.1:8080`
+- Compact preset：尊重 Admin 配置 `relay-gemini-3-pro-preview`；实际模型 `gemini-3.1-pro-preview`
+- 重建：从 1298 条原始消息全量重建到 cursor 1298（输入约 87,103 tokens）；第一次输出因“近期”被拒绝且旧摘要保持不变，加入同 preset 单次定向修正后重建成功
+- 摘要验收：固定五段 Markdown 模板；生成基准 `2026-07-18 11:31:34 (Australia/Sydney)`；正文无今天/明天/下周/周几/近期等无锚点相对时间
+- 数据边界：明文尾巴 110 条（id 1299..1408），tail embedding 0；折叠区间 embedding 1298/1298；SQLite `quick_check` → `ok`
+- 异常与回滚：格式/时间校验失败最多定向修正一次，仍失败则拒绝写回。回滚代码到 `a9584ec`，摘要状态可从部署前快照恢复。
 
 ### 2026-07-18 00:29 UTC — feat/LT-136-memory-curator-worker@ff9135f（人工闸门 curator 上线）
 
