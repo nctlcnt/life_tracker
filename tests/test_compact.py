@@ -291,14 +291,40 @@ def test_empty_reply_rejected(db, monkeypatch):
 
 def test_relative_time_or_wrong_template_rejected_without_state_change(db, monkeypatch):
     message_id = _add(db, "user", "明天去学校", 1)
+    calls = 0
 
     async def relative_time(prompt, preset):
-        return _render_summary(prompt, "下周去学校")
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _render_summary(prompt, "下周去学校")
+        return _render_summary(prompt, "2026-07-21 去学校")
 
     monkeypatch.setattr(
         "bot.ai_engine_openai_compat.simple_completion", relative_time)
+    assert asyncio.run(run_compact(db, CHANNEL, fold_upto_id=message_id))
+    assert "2026-07-21 去学校" in load_summary_state(db, CHANNEL)["summary"]
+    assert calls == 2
+
+
+def test_invalid_repair_is_rejected_without_state_change(db, monkeypatch):
+    message_id = _add(db, "user", "明天去学校", 1)
+    calls = 0
+
+    async def always_invalid(prompt, preset):
+        nonlocal calls
+        calls += 1
+        return _render_summary(prompt, "下周去学校")
+
+    monkeypatch.setattr(
+        "bot.ai_engine_openai_compat.simple_completion", always_invalid)
     assert not asyncio.run(run_compact(db, CHANNEL, fold_upto_id=message_id))
     assert load_summary_state(db, CHANNEL) is None
+    assert calls == 2
+
+
+def test_wrong_template_repair_failure_preserves_state(db, monkeypatch):
+    message_id = _add(db, "user", "明天去学校", 1)
 
     monkeypatch.setattr(
         "bot.ai_engine_openai_compat.simple_completion",

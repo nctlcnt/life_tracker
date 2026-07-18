@@ -186,16 +186,83 @@ def _validate_compact_summary(summary: str, *, generated_at: str,
     if positions != sorted(positions):
         raise ValueError("summary headings are out of order")
 
+    relative_terms: list[str] = []
     for line in lines[2:]:
         text = line.strip()
         if not text or text.startswith("#"):
             continue
         for pattern in _RELATIVE_TIME_PATTERNS:
-            match = pattern.search(text)
-            if match:
-                raise ValueError(
-                    f"summary contains unanchored relative time: {match.group(0)}")
+            for match in pattern.finditer(text):
+                term = match.group(0)
+                if term not in relative_terms:
+                    relative_terms.append(term)
+    if relative_terms:
+        raise ValueError(
+            "summary contains unanchored relative time: " +
+            ", ".join(relative_terms))
     return "\n".join(lines).strip()
+
+
+def _build_summary_repair_prompt(
+    summary: str, *, validation_error: str,
+    generated_at: str, timezone_name: str,
+) -> str:
+    return "\n\n".join([
+        "下面是一份对话上下文摘要候选。它的事实内容已经生成，但没有通过确定性格式/时间校验。"
+        "请只做最小必要修正，不添加事实、不改变事项状态、不重新总结。",
+        f"【生成基准】\n当前时间：{generated_at}\n时区：{timezone_name}",
+        f"【校验错误】\n{validation_error}",
+        "修正规则：\n"
+        "1. 保留固定标题、生成基准、五个 section 及其顺序。\n"
+        "2. 删除或改写校验错误列出的无锚点相对时间。候选中已有可靠绝对日期时使用该日期；"
+        "无法从候选本身确定时，删除相对时间修饰或写“日期不确定”，绝不猜日期。\n"
+        "3. 输出中不得出现今天、昨天、明天、后天、上周、下周、周几、近期、最近、月底等"
+        "相对时间。\n"
+        "4. 只输出修正后的完整 Markdown 摘要，不要代码围栏或解释。",
+        "【必须严格使用的输出模板】\n" +
+        _summary_template(generated_at, timezone_name),
+        "【待修正摘要】\n" + summary,
+    ])
+
+
+async def _complete_validated_summary(
+    prompt: str, preset, *, generated_at: str, timezone_name: str,
+) -> str:
+    from bot.ai_engine_openai_compat import simple_completion
+
+    summary = (await simple_completion(prompt, preset) or "").strip()
+    if not summary:
+        raise ValueError("compact returned an empty summary")
+
+    try:
+        validated = _validate_compact_summary(
+            summary,
+            generated_at=generated_at,
+            timezone_name=timezone_name,
+        )
+    except ValueError as first_error:
+        logger.warning(f"⚠️ compact 首次输出未通过校验，定向修正一次: {first_error}")
+        repair_prompt = _build_summary_repair_prompt(
+            summary,
+            validation_error=str(first_error),
+            generated_at=generated_at,
+            timezone_name=timezone_name,
+        )
+        summary = (await simple_completion(repair_prompt, preset) or "").strip()
+        if not summary:
+            raise ValueError("compact repair returned an empty summary")
+        validated = _validate_compact_summary(
+            summary,
+            generated_at=generated_at,
+            timezone_name=timezone_name,
+        )
+
+    shortened = _truncate_summary(validated)
+    return _validate_compact_summary(
+        shortened,
+        generated_at=generated_at,
+        timezone_name=timezone_name,
+    )
 
 
 def _truncate_summary(summary: str) -> str:
@@ -266,32 +333,14 @@ async def run_compact(db, channel_id: str, fold_upto_id: int) -> bool:
         f"🧾 compact 开始: {len(folded)} 条 → 摘要 "
         f"(preset={preset.name}, upto {upto}→{fold_upto_id})")
     try:
-        # 函数内 import：避免 bot.memory ←→ ai_engine_base 模块级循环
-        from bot.ai_engine_openai_compat import simple_completion
-        summary = await simple_completion(prompt, preset)
+        summary = await _complete_validated_summary(
+            prompt, preset,
+            generated_at=generated_at,
+            timezone_name=timezone_name,
+        )
     except Exception as e:
         logger.warning(f"⚠️ compact 失败（{COMPACT_COOLDOWN_SECONDS:.0f}s 后可重试）: "
                        f"{type(e).__name__}: {e}")
-        return False
-
-    summary = (summary or "").strip()
-    if not summary:
-        logger.warning("⚠️ compact 返回空摘要，放弃本轮")
-        return False
-    try:
-        summary = _validate_compact_summary(
-            summary,
-            generated_at=generated_at,
-            timezone_name=timezone_name,
-        )
-        summary = _truncate_summary(summary)
-        summary = _validate_compact_summary(
-            summary,
-            generated_at=generated_at,
-            timezone_name=timezone_name,
-        )
-    except ValueError as e:
-        logger.warning(f"⚠️ compact 摘要格式/时间校验失败，保留旧状态: {e}")
         return False
 
     save_summary_state(
@@ -341,31 +390,14 @@ async def rebuild_compact_summary(db, channel_id: str,
         f"🧾 compact 全量重建开始: {len(folded)} 条 → 摘要 "
         f"(preset={preset.name}, target={fold_upto_id})")
     try:
-        from bot.ai_engine_openai_compat import simple_completion
-        summary = await simple_completion(prompt, preset)
+        summary = await _complete_validated_summary(
+            prompt, preset,
+            generated_at=generated_at,
+            timezone_name=timezone_name,
+        )
     except Exception as e:
         logger.warning(
             f"⚠️ compact 全量重建失败，保留原状态: {type(e).__name__}: {e}")
-        return False
-
-    summary = (summary or "").strip()
-    if not summary:
-        logger.warning("⚠️ compact 全量重建返回空摘要，保留原状态")
-        return False
-    try:
-        summary = _validate_compact_summary(
-            summary,
-            generated_at=generated_at,
-            timezone_name=timezone_name,
-        )
-        summary = _truncate_summary(summary)
-        summary = _validate_compact_summary(
-            summary,
-            generated_at=generated_at,
-            timezone_name=timezone_name,
-        )
-    except ValueError as e:
-        logger.warning(f"⚠️ compact 全量重建摘要校验失败，保留原状态: {e}")
         return False
 
     if load_summary_state(db, channel_id) != initial_state:
