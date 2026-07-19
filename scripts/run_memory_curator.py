@@ -105,7 +105,9 @@ async def propose(args) -> dict:
     prompt = build_curator_prompt(messages=messages, memories=memories)
     preset = _preset(args.preset)
     raw, run_id = await simple_completion(
-        prompt, preset, trigger="curator", db=db, return_run_id=True)
+        prompt, preset, trigger="curator", db=db, return_run_id=True,
+        max_output_tokens=args.max_output_tokens,
+        request_timeout=args.request_timeout)
     conn = db._get_conn()
     run_row = conn.execute(
         "SELECT trigger, status FROM ai_runs WHERE id = ?", (run_id,)
@@ -154,6 +156,16 @@ def main() -> None:
     parser.add_argument("--preset", help="Preset name; default is active preset")
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument(
+        "--max-output-tokens", type=int, default=16384,
+        help="Completion budget; reasoning tokens count against it, so "
+             "curator batches need far more than the 4096 chat default.",
+    )
+    parser.add_argument(
+        "--request-timeout", type=float, default=600.0,
+        help="Per-request timeout in seconds; reasoning batches routinely "
+             "outlive the 120s chat default.",
+    )
+    parser.add_argument(
         "--apply-proposal", metavar="FILE",
         help="Apply an exact reviewed dry-run JSON file; never calls the model.",
     )
@@ -164,6 +176,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.limit <= 0:
         parser.error("--limit must be positive")
+    if args.max_output_tokens <= 0:
+        parser.error("--max-output-tokens must be positive")
+    if args.request_timeout <= 0:
+        parser.error("--request-timeout must be positive")
     result = asyncio.run(run(args))
     rendered = json.dumps(result, ensure_ascii=False, indent=2)
     if args.output:

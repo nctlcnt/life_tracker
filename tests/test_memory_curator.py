@@ -118,7 +118,8 @@ def test_prompt_and_interval_expose_stable_evidence_ids(db):
     assert f'"message_id":{first}' in prompt
     assert "第一句话" in prompt
     assert '"created_at":' in prompt
-    assert "当前 UTC 时间是 2026-07-17T00:00:00+00:00" in prompt
+    assert "当前 UTC 时间" in prompt
+    assert "2026-07-17T00:00:00+00:00" in prompt
 
 
 def test_apply_create_and_cursor_are_one_transaction(repository, db):

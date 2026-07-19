@@ -240,7 +240,8 @@ class Database:
                     REFERENCES conversation_messages(id) ON DELETE RESTRICT,
                 quote TEXT,
                 evidence_role TEXT NOT NULL DEFAULT 'supports'
-                    CHECK(evidence_role IN ('supports', 'contradicts', 'supersedes')),
+                    CHECK(evidence_role IN ('supports', 'contradicts',
+                                            'supersedes', 'contextualizes')),
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY(memory_id, conversation_message_id, evidence_role)
             );
@@ -258,6 +259,35 @@ class Database:
             );
         """)
         conn.commit()
+        # 兼容已有库：evidence_role CHECK 扩容（contextualizes）。
+        # SQLite 无法修改 CHECK，只能重建表；没有外键指向本表，重建安全
+        sources_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' "
+            "AND name='personal_memory_sources'").fetchone()
+        if sources_sql and "contextualizes" not in (sources_sql[0] or ""):
+            conn.executescript("""
+                CREATE TABLE personal_memory_sources_new (
+                    memory_id INTEGER NOT NULL REFERENCES personal_memories(id) ON DELETE CASCADE,
+                    conversation_message_id INTEGER NOT NULL
+                        REFERENCES conversation_messages(id) ON DELETE RESTRICT,
+                    quote TEXT,
+                    evidence_role TEXT NOT NULL DEFAULT 'supports'
+                        CHECK(evidence_role IN ('supports', 'contradicts',
+                                                'supersedes', 'contextualizes')),
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY(memory_id, conversation_message_id, evidence_role)
+                );
+                INSERT INTO personal_memory_sources_new
+                    SELECT memory_id, conversation_message_id, quote,
+                           evidence_role, created_at
+                    FROM personal_memory_sources;
+                DROP TABLE personal_memory_sources;
+                ALTER TABLE personal_memory_sources_new
+                    RENAME TO personal_memory_sources;
+                CREATE INDEX IF NOT EXISTS idx_personal_memory_sources_message
+                    ON personal_memory_sources(conversation_message_id);
+            """)
+            conn.commit()
         # 兼容已有数据库：尝试加列，已存在则忽略
         try:
             conn.execute("ALTER TABLE events ADD COLUMN notes TEXT")

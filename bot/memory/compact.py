@@ -37,14 +37,16 @@ COMPACT_PRESET_STATE_KEY = "compact_preset"
 SUMMARY_TARGET_TOKENS = 1500
 COMPACT_COOLDOWN_SECONDS = 300.0
 
-SUMMARY_TITLE = "# 对话上下文摘要"
+SUMMARY_TITLE = "# 对话连续性摘要"
+
 SUMMARY_SECTIONS = (
-    "## 当前仍有效的状态",
-    "## 未完成事项",
-    "## 稳定事实与偏好",
-    "## 最近经历",
-    "## 已完成或已失效",
+    "## 当前对话焦点",
+    "## 活跃话题轨迹",
+    "## 局部结论、修正与否定",
+    "## 指代与承接",
+    "## 历史话题钩子",
 )
+
 _RELATIVE_TIME_PATTERNS = (
     re.compile(r"今天|今日|昨天|昨日|前天|明天|明日|后天|大后天"),
     re.compile(r"(?:上|下|这|本)(?:个)?(?:周|星期|月|个月|季度|学期|年)"),
@@ -111,59 +113,125 @@ def _summary_template(generated_at: str, timezone_name: str) -> str:
         f"> 生成基准：{generated_at} ({timezone_name})",
         "",
         SUMMARY_SECTIONS[0],
-        "- 只写截至生成基准仍然成立的状态；没有则写“无”",
+        "- 折叠区间结束时正在讨论什么，以及此后最自然的承接方向；控制在 1–3 条",
         "",
         SUMMARY_SECTIONS[1],
-        "- 事项；绝对日期或“日期不确定”；当前进度",
+        "- 仍在影响当前对话的话题，以及话题如何推进或转向",
+        "- 记录“聊过什么”和“讨论进行到哪里”，不要在这里维护完整事实档案",
         "",
         SUMMARY_SECTIONS[2],
-        "- 跨时间仍稳定、未来对话可复用的事实或偏好",
+        "- 只记录继续当前对话所必需的局部结论、用户修正、否定过的方向或暂时采用的假设",
+        "- 不要收录与当前对话无关的长期决定或全局未完成事项",
         "",
         SUMMARY_SECTIONS[3],
-        "- YYYY-MM-DD：已经发生且仍有近期上下文价值的经历",
+        "- 当前仍可能出现的模糊指代，以及它们具体指向什么",
+        "- 例如：“这个数据库”指长期记忆库；“刚才的方案”指按需检索方案",
         "",
         SUMMARY_SECTIONS[4],
-        "- YYYY-MM-DD：已结束、取消或过期，但仍有上下文价值的事项",
+        "- YYYY-MM-DD｜曾讨论的话题；需要细节时的建议检索词；可选来源 message_id",
+        "- 这里只证明该话题曾被讨论，不证明其中的具体事实",
     ])
 
-
-def build_compact_prompt(old_summary: str, messages: list[dict], *,
-                         generated_at: str | None = None,
-                         timezone_name: str | None = None) -> str:
+def build_compact_prompt(
+    old_summary: str,
+    messages: list[dict],
+    *,
+    generated_at: str | None = None,
+    timezone_name: str | None = None,
+) -> str:
     if generated_at is None or timezone_name is None:
         generated_at, timezone_name = _compact_time_context()
+
     transcript = "\n".join(
-        f"[message_id={m['id']} created_at={m.get('created_at') or 'unknown'}] "
-        f"{'用户' if m['role'] == 'user' else '助理'}: {m['content']}"
+        (
+            f"[message_id={m['id']} "
+            f"created_at={m.get('created_at') or 'unknown'}] "
+            f"{'用户' if m['role'] == 'user' else '助理'}: {m['content']}"
+        )
         for m in messages
     )
+
     parts = [
-        "你在为一个私人助理维护对话上下文摘要。请把输入重新整理成一份完整、"
-        "有时间锚点、可直接用于未来对话的摘要。",
-        f"【生成基准】\n当前时间：{generated_at}\n时区：{timezone_name}",
+        (
+            "你在维护一份“对话连续性 compact”。它是一种模糊的情节记忆，"
+            "用于在旧消息离开上下文后，帮助私人助理知道最近聊过什么、"
+            "话题如何推进、当前指代什么，以及何时应搜索长期记忆。\n\n"
+            "它不是长期记忆库，不是用户画像，不是项目数据库，也不是任务清单。"
+        ),
+        (
+            f"【生成基准】\n"
+            f"当前时间：{generated_at}\n"
+            f"时区：{timezone_name}"
+        ),
     ]
+
     if old_summary:
-        parts.append(f"【已有摘要（更早的对话）】\n{old_summary}")
-    parts.append(f"【需要并入摘要的新对话】\n{transcript}")
+        parts.append(
+            "【已有 compact（更早对话形成的模糊上下文）】\n"
+            f"{old_summary}"
+        )
+
     parts.append(
-        "要求：\n"
-        "1. 输出一份完整的新摘要，覆盖已有摘要与新对话的全部要点（不是增量补丁）。\n"
-        "2. 每条消息的 created_at 是解释原文中相对时间的唯一锚点；日期计算使用上面的时区。\n"
-        "3. 输出中禁止使用无锚点相对时间，包括今天、昨天、明天、后天、上周、下周、"
-        "周五、近期、月底等。能确定时改成 YYYY-MM-DD 或 YYYY-MM-DD HH:MM；"
-        "不能可靠确定时写“日期不确定”，绝不猜测。\n"
-        "4. 已经过期、完成或取消的安排不得放在“当前仍有效”或“未完成事项”；"
-        "只有仍有上下文价值时才移入“已完成或已失效”。\n"
-        "5. 旧摘要也不是事实权威：按生成基准重新判断时效，不能照抄旧摘要中的相对时间。\n"
-        "6. 不要编造原文没有的信息；不确定就不写。越旧的经历越粗略，优先保留未完成事项、"
-        "仍有效状态、稳定事实与偏好。\n"
-        f"7. 严格使用下方 Markdown 模板及标题顺序；每节没有内容写“- 无”。"
-        f"控制在 {SUMMARY_TARGET_TOKENS} tokens 以内，不要代码围栏或模板外说明。"
+        "【需要并入 compact 的新对话】\n"
+        f"{transcript}"
     )
+
     parts.append(
-        "【必须严格使用的输出模板】\n" +
-        _summary_template(generated_at, timezone_name)
+        "【核心目标】\n"
+        "假设旧对话原文即将从模型上下文中移除。请生成一份新的 compact，"
+        "使模型仍能自然理解紧接着出现的后续消息。\n\n"
+        "注意：compact 只覆盖被折叠的较早消息；在最终窗口里，它之后还跟着"
+        "一段更近的明文对话。不要断言「至今」「目前仍」「停滞至今」等延续到"
+        "当前时刻的状态——「当前对话焦点」描述的是折叠区间结束时对话进行到的"
+        "位置，此后的走向以 compact 后面的明文为准。\n\n"
+        "compact 应能回答：\n"
+        "1. 最近在聊什么？\n"
+        "2. 讨论是怎样走到当前位置的？\n"
+        "3. 用户刚刚确认、修正或否定了什么？\n"
+        "4. “这个”“那个”“之前的方案”等指代什么？\n"
+        "5. 哪些旧话题只需要留下一个可搜索的钩子？\n\n"
     )
+
+    parts.append(
+        "【生成要求】\n"
+        "1. 输出一份完整的新 compact。「完整」指足以维持对话连续性，"
+        "而非覆盖历史中的全部事实。\n\n"
+        "2. 主动删除不再影响当前对话的内容。不得因为某条内容存在于旧 compact 中，"
+        "就默认继续保留。\n\n"
+        "3. compact 记录的是对话情节，而不是长期事实。\n\n"
+        "4. 一个历史话题钩子只证明“这个话题曾被讨论过”。它不能被当作其中具体事实、"
+        "偏好、决定或状态的证据。需要具体内容时，未来的助理必须先搜索记忆。\n\n"
+        "5. 稳定事实、长期偏好、全局任务和 open questions 原则上不要写入 compact。"
+        "只有当它们正被最近对话直接使用，且删除后会导致下一轮无法理解时，"
+        "才可作为临时局部背景简短出现。\n\n"
+        "6. “局部结论、修正与否定”只保存当前话题需要的内容。\n\n"
+        "7. 时间衰减规则：\n"
+        "   - 生成基准前 7 天内：仍相关的话题可以保留 1–2 行对话细节。\n"
+        "   - 7–30 天：压缩成单行话题钩子，不保留具体事实列表。\n"
+        "   - 超过 30 天：除非仍直接影响当前活跃话题，否则删除；"
+        "能够通过长期记忆或原始消息搜索恢复即可。\n\n"
+        "8. 当前仍持续进行的同一话题，不因超过 30 天而自动删除；"
+        "但只保留当前阶段和检索入口，不复述完整历史。\n\n"
+        "9. 每条消息的 created_at 是解释原文中相对时间的唯一时间锚点。"
+        "日期计算使用上方时区。\n\n"
+        "10. 输出中不要使用今天、昨天、明天、上周、下周、周五、月底、前几天等"
+        "无明确锚点的时间表达。能确定时转换为 YYYY-MM-DD 或 "
+        "YYYY-MM-DD HH:MM；无法确定时写“日期不确定”，不要猜测。\n\n"
+        "11. 旧 compact 不是事实权威，也不是必须继承的清单。新对话中的明确修正"
+        "优先于旧 compact。\n\n"
+        "12. 不要编造长期记忆 ID、数据库记录或不存在的来源。可以使用输入中真实存在的"
+        "message_id 作为检索线索。\n\n"
+        "13. 同一话题不要分别以“状态”“偏好”“经历”等形式重复出现。优先保留一条"
+        "最能帮助继续对话的描述。\n\n"
+        f"14. 严格使用下方 Markdown 模板和标题顺序。每节没有内容时写“- 无”。"
+        f"输出控制在 {SUMMARY_TARGET_TOKENS} tokens 以内，不要添加代码围栏或模板外说明。"
+    )
+
+    parts.append(
+        "【必须严格使用的输出模板】\n"
+        + _summary_template(generated_at, timezone_name)
+    )
+
     return "\n\n".join(parts)
 
 

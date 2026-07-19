@@ -69,10 +69,13 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
 
 async def simple_completion(prompt: str, preset: Preset,
                             *, trigger: str = "oneshot", db=None,
-                            return_run_id: bool = False):
+                            return_run_id: bool = False,
+                            max_output_tokens: int | None = None,
+                            request_timeout: float | None = None):
     return await _base_simple_completion(
         prompt, _call_with_tools, preset, trigger=trigger, db=db,
-        return_run_id=return_run_id)
+        return_run_id=return_run_id, max_output_tokens=max_output_tokens,
+        request_timeout=request_timeout)
 
 
 def _log_usage(usage: dict | None) -> None:
@@ -95,7 +98,9 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                            preset: Preset,
                            send_callback=None, tool_callback=None,
                            tool_names: set | None = None,
-                           memory_service: MemoryService | None = None) -> str:
+                           memory_service: MemoryService | None = None,
+                           max_output_tokens: int | None = None,
+                           request_timeout: float | None = None) -> str:
     """httpx 直接调用 OpenAI 兼容端点，处理多轮 tool calling。"""
     model = preset.model
     url = _endpoint_url(preset)
@@ -125,7 +130,10 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
             while True:
                 payload = {
                     "model": model,
-                    token_param: 4096,
+                    # reasoning 模型的思考 token 计入 completion 预算，
+                    # curator 等长任务需要更大的上限（stop_reason=length 时
+                    # 可见输出可能为空）
+                    token_param: max_output_tokens or 4096,
                     "messages": full_messages,
                 }
                 if tools:
@@ -135,8 +143,10 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
                                      round_num=round_idx + 1)
 
                 try:
+                    # 聊天路径保持 120s 快速失败走 fallback；curator 等
+                    # reasoning 批任务由调用方放宽
                     resp = await client.post(url, json=payload, headers=headers,
-                                             timeout=120.0)
+                                             timeout=request_timeout or 120.0)
                 except httpx.HTTPError as e:
                     logger.error(f"❌ Request failed: {type(e).__name__}: {e}")
                     raise AIProviderError(

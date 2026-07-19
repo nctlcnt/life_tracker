@@ -115,8 +115,8 @@ def test_compact_prompt_anchors_time_and_requires_fixed_template():
     assert "当前时间：2026-07-18 10:00:00" in prompt
     assert "时区：Australia/Sydney" in prompt
     assert "message_id=7 created_at=2026-07-16T23:30:00+00:00" in prompt
-    assert "禁止使用无锚点相对时间" in prompt
-    assert "不能可靠确定时写“日期不确定”" in prompt
+    assert "无明确锚点的时间表达" in prompt
+    assert "无法确定时写“日期不确定”" in prompt
     assert prompt.index(SUMMARY_SECTIONS[0]) < prompt.index(SUMMARY_SECTIONS[-1])
 
 

@@ -361,7 +361,9 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
 async def simple_completion(prompt: str, call_with_tools_fn, preset: Preset,
                             *, trigger: str = "oneshot",
                             db: Database | None = None,
-                            return_run_id: bool = False):
+                            return_run_id: bool = False,
+                            max_output_tokens: int | None = None,
+                            request_timeout: float | None = None):
     """
     轻量 AI 调用：无工具、无历史消息、无动态上下文。
     用于天气报告等独立的一次性生成任务。
@@ -375,6 +377,8 @@ async def simple_completion(prompt: str, call_with_tools_fn, preset: Preset,
             None, None, messages,
             preset=preset,
             tool_names=set(),  # 空集 → 不传工具
+            max_output_tokens=max_output_tokens,
+            request_timeout=request_timeout,
         )
         trace.finalize(final_text=reply, db=db)
         return (reply, trace_entry["id"]) if return_run_id else reply
