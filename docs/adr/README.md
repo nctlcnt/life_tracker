@@ -26,3 +26,4 @@
 | 编号 | 标题 | 状态 |
 |---|---|---|
 | [0001](0001-memory-v4-four-layer-model.md) | 记忆系统 v4 —— 四层记忆模型与严格 curator 管线 | Accepted |
+| [0002](0002-fixed-batch-model-comparison.md) | 模型选型用同批消息对照评测 | Accepted |
