@@ -326,6 +326,19 @@ MEMORY_TOKEN_BUDGET: int = int(_memory.get("token_budget", 4000) or 4000)
 CONTEXT_COMPACT_THRESHOLD_TOKENS: int = int(
     _memory.get("context_compact_threshold_tokens", 20000) or 20000)
 
+# ── 记忆 curator 自动调度（LT-136）────────────────────────────────────────
+# shadow 模式先行：enabled 打开后只自动 propose（文件 + 通知），
+# auto_apply 单独控制是否直接入库。默认全关，deploy 不改变行为。
+CURATOR_AUTO_ENABLED: bool = bool(_memory.get("curator_auto_enabled", False))
+CURATOR_AUTO_APPLY: bool = bool(_memory.get("curator_auto_apply", False))
+CURATOR_MIN_NEW_MESSAGES: int = int(
+    _memory.get("curator_min_new_messages", 50) or 50)
+CURATOR_MAX_INTERVAL_HOURS: float = float(
+    _memory.get("curator_max_interval_hours", 6) or 6)
+CURATOR_BATCH_LIMIT: int = int(_memory.get("curator_batch_limit", 50) or 50)
+# curator 专用 preset 名；空/无效回落 active preset
+CURATOR_PRESET: str = str(_memory.get("curator_preset", "") or "")
+
 # ── 天气 ───────────────────────────────────────────────────────────────
 # tomorrow.io API；api_key 空时天气模块会静默降级（返回 None，不影响主流程）
 _weather = _cfg.get("weather", {})

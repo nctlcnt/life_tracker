@@ -17,7 +17,6 @@ CURATOR_MEMORY_TYPES = {
     "interaction_style",
     "current_state",
     "open_loop",
-    "project_intent",
     "temporary_context",
     "plan",
     "general",
@@ -326,7 +325,7 @@ def build_curator_prompt(
         稳定身份、长期偏好、持续约束、明确关系和已确认的项目决定，
         可以由较旧的用户消息证明。
 
-        current_state、temporary_context、open_loop 和 project_intent
+        current_state、temporary_context、open_loop 和 plan
         必须有足够近期且明确的证据。
         旧消息不能单独证明这些内容现在仍成立。
 
@@ -404,6 +403,21 @@ def build_curator_prompt(
         必须结合每条消息的 created_at 判断信息是否仍可能有效。
         已经过期的安排、课程作业和临时状态不得创建为当前记忆。
 
+        【memory_type 定义】
+
+        - identity：用户的长期身份与背景（专业、身份、居住地等）
+        - preference：稳定的喜好、厌恶与选择倾向
+        - interaction_style：用户希望的沟通与相处方式
+        - current_state：当前成立、会随时间变化或失效的状态
+          （在读课程、持有物、进行中的流程）
+        - plan：有明确步骤或时间线的未来行动安排，含项目推进计划
+        - open_loop：悬而未决、等待结果或后续决定的事项
+        - temporary_context：仅在短期内有意义的背景信息
+        - general：有复用价值但不属于以上类别的事实
+
+        同一条记忆只选一个最贴切的 type；在 plan 与 current_state 之间犹豫时，
+        问「它描述的是未来动作还是当前事实」。
+
         【输出要求】
 
         只输出一个 JSON 对象，不要输出 Markdown、代码围栏或解释。
@@ -433,6 +447,25 @@ def build_curator_prompt(
         )}
         """
     ).strip()
+
+
+def build_curator_repair_prompt(original_prompt: str, failed_output: str, *,
+                                validation_error: str) -> str:
+    """最小修正未过校验的输出：只修格式/字段/引用，不改事实与操作语义。
+
+    fence、字符串 id、非连续 quote 这类失败经一轮定向修复大多可救回；
+    内容质量仍由严格校验与人工 review 把关。
+    """
+    return "\n\n".join([
+        "你上一次的长期记忆 curator 输出未通过确定性校验。"
+        "请只做最小必要修正：不新增事实、不删除或改变任何操作的语义，"
+        "只修复校验错误指出的格式、字段类型或引用问题。"
+        "quote 必须是【原始任务】中可见消息 content 的连续原文子串，不得改写或拼接。",
+        "只输出一个修正后的 JSON 对象，不要 Markdown、代码围栏或解释。",
+        "【校验错误】\n" + validation_error,
+        "【未通过校验的输出】\n" + failed_output,
+        "【原始任务】\n" + original_prompt,
+    ])
 
 
 def load_curator_interval(db, *, channel_id: str, after_message_id: int,

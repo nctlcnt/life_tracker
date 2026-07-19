@@ -11,11 +11,15 @@
 因为 prompt 都进了 Anthropic，cache 已经付过钱。
 """
 import asyncio
+import json
 import random
+import time as time_module
 from datetime import datetime, time, timedelta
+from pathlib import Path
 from bot.ai_engine import scheduled_action
 from bot.database import Database
 from bot.memory import MemoryService
+from bot.memory.curator import CURATOR_NAME
 from bot.logger import get_logger
 import config
 
@@ -28,6 +32,12 @@ logger = get_logger(__name__)
 CALENDAR_REFRESH_HOUR = 6
 CALENDAR_REFRESH_MINUTE = 5
 REMINDER_BATCH_WINDOW = timedelta(minutes=5)
+
+# curator 自动调度（LT-136）：检查间隔与两次尝试的最小间隔（失败退避兼节流）
+CURATOR_CHECK_INTERVAL_SECONDS = 900.0
+CURATOR_ATTEMPT_COOLDOWN_SECONDS = 3600.0
+CURATOR_AUTO_STATE_KEY = "curator_auto_state"
+CURATOR_AUTO_PROPOSAL_DIR = Path("data/curator_proposals/auto")
 
 # Prompt 模板统一在 bot/prompts.py 里定义，避免多处重复维护同一条规则
 
@@ -53,6 +63,8 @@ class Scheduler:
         # 唤醒 timer 循环重新计算下次 poll（chat 调用完成时使用）
         self._timer_event = asyncio.Event()
         self._last_calendar_alert_date = None
+        # curator 自动调度：进程内节流（持久状态另存 app_state）
+        self._last_curator_attempt: float | None = None
 
     def notify_new_reminder(self):
         """外部调用：通知 reminder 循环有新提醒插入，重新计算倒计时"""
@@ -75,6 +87,7 @@ class Scheduler:
             self._timer_loop(),
             self._reminder_loop(),
             self._calendar_refresh_loop(),
+            self._curator_loop(),
         )
 
     async def stop(self):
@@ -360,6 +373,121 @@ class Scheduler:
             "instructions": check_in.get("instructions") or "",
         }
         return template.format(**values)
+
+    # ── Curator 循环：长期记忆自动批次（LT-136，默认关闭）─────
+
+    def _load_curator_auto_state(self) -> dict:
+        raw = self.db.get_state(CURATOR_AUTO_STATE_KEY)
+        try:
+            state = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            state = {}
+        return state if isinstance(state, dict) else {}
+
+    def _curator_due(self, repository) -> tuple[bool, str]:
+        """触发规则：新消息 ≥ M，或距上次运行 ≥ N 小时且有新消息。
+        shadow 模式下 cursor 不动，同一区间在冷却窗口内不重复 propose。"""
+        cursor = repository.get_cursor(CURATOR_NAME, str(config.CHANNEL_ID))
+        after_id = int(cursor["last_message_id"])
+        new_count = repository.count_new_messages(str(config.CHANNEL_ID), after_id)
+        if new_count <= 0:
+            return False, "no new messages"
+
+        state = self._load_curator_auto_state()
+        last_run_at = state.get("last_run_at")
+        hours_since = float("inf")
+        if last_run_at:
+            try:
+                hours_since = (
+                    datetime.now() - datetime.fromisoformat(last_run_at)
+                ).total_seconds() / 3600
+            except ValueError:
+                pass
+        # 同一区间已 propose 过且未到复跑窗口 → 等人工 apply 或窗口到期
+        if state.get("last_after_id") == after_id and \
+                hours_since < config.CURATOR_MAX_INTERVAL_HOURS:
+            return False, "range already proposed"
+        if new_count >= config.CURATOR_MIN_NEW_MESSAGES:
+            return True, f"{new_count} new messages"
+        if hours_since >= config.CURATOR_MAX_INTERVAL_HOURS:
+            return True, f"{hours_since:.1f}h since last run"
+        return False, "thresholds not met"
+
+    async def _curator_loop(self):
+        """每 15 分钟检查一次触发条件；enabled 关闭时空转不产生任何调用。"""
+        from bot.memory.personal_repository import PersonalMemoryRepository
+        from bot.memory import curator_service
+
+        repository = PersonalMemoryRepository(self.db)
+        while self._running:
+            try:
+                await asyncio.sleep(CURATOR_CHECK_INTERVAL_SECONDS)
+            except asyncio.CancelledError:
+                break
+            if not self._running or not config.CURATOR_AUTO_ENABLED:
+                continue
+            # 聊天进行中让路；冷却兼失败退避
+            if self._ai_lock.locked() or self.is_user_typing():
+                continue
+            last = self._last_curator_attempt
+            if last is not None and \
+                    time_module.monotonic() - last < CURATOR_ATTEMPT_COOLDOWN_SECONDS:
+                continue
+            try:
+                due, reason = self._curator_due(repository)
+                if not due:
+                    continue
+                self._last_curator_attempt = time_module.monotonic()
+                logger.info(f"🗃️ curator 自动批次触发: {reason}")
+                result = await curator_service.propose_batch(
+                    self.db, repository,
+                    channel_id=str(config.CHANNEL_ID),
+                    preset=curator_service.resolve_curator_preset(),
+                    limit=config.CURATOR_BATCH_LIMIT,
+                    auto_apply=config.CURATOR_AUTO_APPLY,
+                )
+                await self._finish_curator_batch(result)
+            except Exception as e:
+                logger.exception(f"❌ curator 自动批次失败: {e}")
+
+    async def _finish_curator_batch(self, result: dict) -> None:
+        """落 proposal 文件、更新持久状态、非空批通知用户。"""
+        self.db.set_state(CURATOR_AUTO_STATE_KEY, json.dumps({
+            "last_run_at": datetime.now().isoformat(timespec="seconds"),
+            "last_after_id": result.get("after_message_id"),
+            "last_status": result.get("status"),
+        }, ensure_ascii=False))
+        if result.get("status") != "validated":
+            logger.info(f"🗃️ curator 自动批次: {result.get('status')}")
+            return
+
+        CURATOR_AUTO_PROPOSAL_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = CURATOR_AUTO_PROPOSAL_DIR / (
+            f"auto-{result['after_message_id']}-{result['upto_message_id']}"
+            f"-{stamp}.json")
+        path.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        operations = result.get("operations") or []
+        applied = result.get("apply_result")
+        logger.info(
+            f"🗃️ curator 自动批次完成: {len(operations)} 操作 "
+            f"({'已入库' if applied else '待 review'}) → {path.name}")
+        if not operations:
+            return
+        try:
+            if applied:
+                await self.send(
+                    f"🧠 我刚整理了一批记忆（{len(operations)} 条），"
+                    f"已经记到小本本上啦")
+            else:
+                await self.send(
+                    f"🗃️ 攒了一份记忆提案（{len(operations)} 条操作，"
+                    f"消息 {result['after_message_id']}→{result['upto_message_id']}），"
+                    f"记得 review：{path.name}")
+        except Exception:
+            logger.exception("curator 通知发送失败（不影响 proposal 落盘）")
 
     # ── Reminder 循环：数据库提醒，倒计时 + Event 唤醒 ────────
 

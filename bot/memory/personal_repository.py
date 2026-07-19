@@ -11,7 +11,8 @@ if TYPE_CHECKING:
 
 
 MEMORY_STATUSES = {"active", "superseded", "archived"}
-EVIDENCE_ROLES = {"supports", "contradicts", "supersedes"}
+# 单一事实来源：parser、DB CHECK、此处三方必须一致（LT-136 曾因三份拷贝失配炸过 apply）
+from bot.memory.curator import CURATOR_EVIDENCE_ROLES as EVIDENCE_ROLES
 
 
 @dataclass(frozen=True)
@@ -235,6 +236,17 @@ class PersonalMemoryRepository:
             raise
         finally:
             conn.close()
+
+    def count_new_messages(self, channel_id: str, after_id: int) -> int:
+        """cursor 之后的新消息数（curator 调度触发条件用）。"""
+        conn = self.database._get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM conversation_messages "
+            "WHERE channel_id = ? AND id > ?",
+            (str(channel_id), int(after_id)),
+        ).fetchone()
+        conn.close()
+        return int(row[0])
 
     def get_cursor(self, curator_name: str, channel_id: str) -> dict:
         conn = self.database._get_conn()

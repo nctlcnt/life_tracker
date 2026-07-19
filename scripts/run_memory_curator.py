@@ -19,14 +19,9 @@ from bot.timezone_state import init_timezone
 # trace/proposal 里的时间戳才能和其他条目对得上
 init_timezone(config.TIMEZONE)
 
-from bot.ai_engine_openai_compat import simple_completion
 from bot.database import Database
-from bot.memory.curator import (
-    CURATOR_NAME,
-    build_curator_prompt,
-    load_curator_interval,
-    parse_curator_batch,
-)
+from bot.memory import curator_service
+from bot.memory.curator import CURATOR_NAME, parse_curator_batch
 from bot.memory.personal_repository import PersonalMemoryRepository
 
 
@@ -85,61 +80,16 @@ def apply_proposal(args) -> dict:
 async def propose(args) -> dict:
     db = Database(args.db)
     repository = PersonalMemoryRepository(db)
-    cursor = repository.get_cursor(args.curator_name, args.channel)
-    after_id = int(cursor["last_message_id"])
-    messages = load_curator_interval(
-        db,
+    return await curator_service.propose_batch(
+        db, repository,
         channel_id=args.channel,
-        after_message_id=after_id,
-        limit=args.limit,
-    )
-    if not messages:
-        return {
-            "mode": "dry-run",
-            "status": "no_messages",
-            "cursor": after_id,
-            "operations": [],
-        }
-    upto_id = int(messages[-1]["id"])
-    memories = repository.list(status="active")
-    prompt = build_curator_prompt(messages=messages, memories=memories)
-    preset = _preset(args.preset)
-    raw, run_id = await simple_completion(
-        prompt, preset, trigger="curator", db=db, return_run_id=True,
-        max_output_tokens=args.max_output_tokens,
-        request_timeout=args.request_timeout)
-    conn = db._get_conn()
-    run_row = conn.execute(
-        "SELECT trigger, status FROM ai_runs WHERE id = ?", (run_id,)
-    ).fetchone()
-    conn.close()
-    if run_row is None or run_row["trigger"] != "curator" or run_row["status"] != "success":
-        raise RuntimeError("successful curator trace was not persisted to ai_runs")
-
-    batch = parse_curator_batch(raw)
-    visible_ids = {int(message["id"]) for message in messages}
-    repository.validate_curator_batch(
-        batch,
+        preset=_preset(args.preset),
         curator_name=args.curator_name,
-        channel_id=args.channel,
-        after_message_id=after_id,
-        upto_message_id=upto_id,
-        visible_message_ids=visible_ids,
+        limit=args.limit,
+        max_output_tokens=args.max_output_tokens,
+        request_timeout=args.request_timeout,
+        repair=not args.no_repair,
     )
-    result = {
-        "mode": "dry-run",
-        "status": "validated",
-        "run_id": run_id,
-        "curator": args.curator_name,
-        "preset": preset.name,
-        "model": preset.model,
-        "channel_id": str(args.channel),
-        "after_message_id": after_id,
-        "upto_message_id": upto_id,
-        "visible_message_count": len(messages),
-        **batch.to_dict(),
-    }
-    return result
 
 
 async def run(args) -> dict:
@@ -164,6 +114,11 @@ def main() -> None:
         "--request-timeout", type=float, default=600.0,
         help="Per-request timeout in seconds; reasoning batches routinely "
              "outlive the 120s chat default.",
+    )
+    parser.add_argument(
+        "--no-repair", action="store_true",
+        help="Disable the one-shot repair round after a failed validation "
+             "(useful for measuring raw model compliance).",
     )
     parser.add_argument(
         "--apply-proposal", metavar="FILE",
