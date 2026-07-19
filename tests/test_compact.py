@@ -64,7 +64,7 @@ def _render_summary(prompt, content):
 
 
 def _fake_completion(reply="聊了考试和午饭。", calls=None, *, raw=False):
-    async def fake(prompt, preset):
+    async def fake(prompt, preset, **kwargs):
         if calls is not None:
             calls.append({"prompt": prompt, "preset": preset})
         return reply if raw else _render_summary(prompt, reply)
@@ -216,7 +216,7 @@ def test_rebuild_failure_preserves_existing_state(db, monkeypatch):
                        upto_message_id=ids[1], model="old", updated_at="old")
     before = load_summary_state(db, CHANNEL)
 
-    async def boom(prompt, preset):
+    async def boom(prompt, preset, **kwargs):
         raise RuntimeError("provider down")
 
     monkeypatch.setattr("bot.ai_engine_openai_compat.simple_completion", boom)
@@ -230,7 +230,7 @@ def test_rebuild_does_not_clobber_state_changed_during_generation(db, monkeypatc
     save_summary_state(db, CHANNEL, summary="旧摘要",
                        upto_message_id=ids[1], model="old", updated_at="old")
 
-    async def concurrent_update(prompt, preset):
+    async def concurrent_update(prompt, preset, **kwargs):
         save_summary_state(db, CHANNEL, summary="并发产生的新摘要",
                            upto_message_id=ids[2], model="new", updated_at="new")
         return "本次重建摘要"
@@ -245,7 +245,7 @@ def test_rebuild_does_not_clobber_state_changed_during_generation(db, monkeypatc
 def test_run_compact_failure_keeps_state_and_sets_cooldown(db, monkeypatch):
     ids = [_add(db, "user", f"消息{i}", i) for i in range(3)]
 
-    async def boom(prompt, preset):
+    async def boom(prompt, preset, **kwargs):
         raise RuntimeError("provider down")
 
     monkeypatch.setattr("bot.ai_engine_openai_compat.simple_completion", boom)
@@ -293,7 +293,7 @@ def test_relative_time_or_wrong_template_rejected_without_state_change(db, monke
     message_id = _add(db, "user", "明天去学校", 1)
     calls = 0
 
-    async def relative_time(prompt, preset):
+    async def relative_time(prompt, preset, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -311,7 +311,7 @@ def test_invalid_repair_is_rejected_without_state_change(db, monkeypatch):
     message_id = _add(db, "user", "明天去学校", 1)
     calls = 0
 
-    async def always_invalid(prompt, preset):
+    async def always_invalid(prompt, preset, **kwargs):
         nonlocal calls
         calls += 1
         return _render_summary(prompt, "下周去学校")
@@ -374,7 +374,7 @@ def test_schedule_compact_single_flight(db, monkeypatch):
     window = _window_needing_compact(db, monkeypatch)
     gate = asyncio.Event()
 
-    async def slow(prompt, preset):
+    async def slow(prompt, preset, **kwargs):
         await gate.wait()
         return "摘要"
 
@@ -393,7 +393,7 @@ def test_schedule_compact_single_flight(db, monkeypatch):
 def test_schedule_compact_respects_failure_cooldown(db, monkeypatch):
     window = _window_needing_compact(db, monkeypatch)
 
-    async def boom(prompt, preset):
+    async def boom(prompt, preset, **kwargs):
         raise RuntimeError("down")
 
     monkeypatch.setattr("bot.ai_engine_openai_compat.simple_completion", boom)

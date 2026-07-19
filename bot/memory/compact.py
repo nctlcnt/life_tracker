@@ -36,6 +36,8 @@ logger = get_logger(__name__)
 COMPACT_PRESET_STATE_KEY = "compact_preset"
 SUMMARY_TARGET_TOKENS = 1500
 COMPACT_COOLDOWN_SECONDS = 300.0
+# 后台任务不赶时间；生成耗时贴着聊天路径的 120s 默认值会因方差偶发超时
+COMPACT_REQUEST_TIMEOUT_SECONDS = 300.0
 
 SUMMARY_TITLE = "# 对话连续性摘要"
 
@@ -298,7 +300,9 @@ async def _complete_validated_summary(
 ) -> str:
     from bot.ai_engine_openai_compat import simple_completion
 
-    summary = (await simple_completion(prompt, preset) or "").strip()
+    summary = (await simple_completion(
+        prompt, preset,
+        request_timeout=COMPACT_REQUEST_TIMEOUT_SECONDS) or "").strip()
     if not summary:
         raise ValueError("compact returned an empty summary")
 
@@ -316,7 +320,9 @@ async def _complete_validated_summary(
             generated_at=generated_at,
             timezone_name=timezone_name,
         )
-        summary = (await simple_completion(repair_prompt, preset) or "").strip()
+        summary = (await simple_completion(
+            repair_prompt, preset,
+            request_timeout=COMPACT_REQUEST_TIMEOUT_SECONDS) or "").strip()
         if not summary:
             raise ValueError("compact repair returned an empty summary")
         validated = _validate_compact_summary(

@@ -351,6 +351,10 @@ def build_curator_prompt(
         quote 若提供，必须是对应 content 的连续原文子串，不得改写。
         quote 应尽量短，只截取能证明该记忆的必要部分。
 
+        同一 operation 的 sources 中，同一条消息（同一 evidence_role）
+        最多出现一次。若需要同一消息的多个不同片段分别作证据，
+        通常说明它们支撑的是不同事实，应拆成多条记忆。
+
         【内部处理步骤】
 
         在输出 operations 前，在内部依次完成：
