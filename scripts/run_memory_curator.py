@@ -13,6 +13,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import config
+from bot.timezone_state import init_timezone
+
+# docker exec 单独起进程时容器默认 UTC；与 bot 主进程同钟，
+# trace/proposal 里的时间戳才能和其他条目对得上
+init_timezone(config.TIMEZONE)
+
 from bot.ai_engine_openai_compat import simple_completion
 from bot.database import Database
 from bot.memory.curator import (
