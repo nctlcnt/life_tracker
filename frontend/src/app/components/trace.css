@@ -96,6 +96,8 @@
   letter-spacing: 0.04em;
 }
 .trace-trigger.chat { background: #E0DAD0; }
+.trace-trigger.check_in { background: #DBE2DB; }
+.trace-trigger.curator { background: #E2D8DC; }
 .trace-trigger.poll { background: #D8E0DA; }
 .trace-trigger.reminder { background: #E8D8C8; }
 .trace-trigger.bedtime { background: #D4D0E0; }

@@ -100,6 +100,8 @@ interface DateInfo {
 
 const TRIGGER_ICONS: Record<string, string> = {
   chat: '💬',
+  check_in: '☑️',
+  curator: '🗃️',
   poll: '🔄',
   reminder: '🔔',
   bedtime: '😴',
@@ -394,7 +396,9 @@ function TraceItem({ entry }: { entry: TraceEntry }) {
   );
 }
 
-const TRIGGER_OPTIONS = ['', 'chat', 'poll', 'reminder', 'bedtime', 'morning', 'oneshot'];
+// 下拉框只列当前会产生的 trigger；poll/bedtime/morning 已被 check_in 取代，
+// 旧 JSONL 里的历史条目仍按原名渲染（TRIGGER_ICONS / trace.css 保留兼容）
+const TRIGGER_OPTIONS = ['', 'chat', 'check_in', 'reminder', 'curator', 'oneshot'];
 
 export function TraceViewer() {
   const [dates, setDates] = useState<DateInfo[]>([]);
