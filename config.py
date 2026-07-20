@@ -332,10 +332,12 @@ CONTEXT_COMPACT_THRESHOLD_TOKENS: int = int(
 CURATOR_AUTO_ENABLED: bool = bool(_memory.get("curator_auto_enabled", False))
 CURATOR_AUTO_APPLY: bool = bool(_memory.get("curator_auto_apply", False))
 CURATOR_MIN_NEW_MESSAGES: int = int(
-    _memory.get("curator_min_new_messages", 50) or 50)
+    _memory.get("curator_min_new_messages", 20) or 20)
 CURATOR_MAX_INTERVAL_HOURS: float = float(
     _memory.get("curator_max_interval_hours", 6) or 6)
-CURATOR_BATCH_LIMIT: int = int(_memory.get("curator_batch_limit", 50) or 50)
+# 与 MIN_NEW_MESSAGES 保持同值：若 limit < min，触发时只能消化部分积压，
+# 剩余不足以再次触发计数条件，会在两次调度间悄悄堆积
+CURATOR_BATCH_LIMIT: int = int(_memory.get("curator_batch_limit", 20) or 20)
 # curator 专用 preset 名；空/无效回落 active preset
 CURATOR_PRESET: str = str(_memory.get("curator_preset", "") or "")
 

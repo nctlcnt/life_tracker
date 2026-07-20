@@ -108,7 +108,10 @@ def main() -> None:
     parser.add_argument(
         "--preset",
         help="Preset name; default is memory.curator_preset, else active preset")
-    parser.add_argument("--limit", type=int, default=200)
+    parser.add_argument(
+        "--limit", type=int, default=config.CURATOR_BATCH_LIMIT,
+        help="Messages per batch; default matches memory.curator_batch_limit "
+             "so manual runs and the scheduler stay comparable.")
     parser.add_argument(
         "--max-output-tokens", type=int, default=16384,
         help="Completion budget; reasoning tokens count against it, so "
