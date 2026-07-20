@@ -117,7 +117,11 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
     # 按 tool_names 过滤工具子集
     tools = get_tools(tool_names)
 
-    full_messages = [{"role": "system", "content": full_system}] + list(messages)
+    # 无 system prompt 时不发空 system 块：部分端点（如 anthropic 系代理）
+    # 会对空 text block 直接 400
+    full_messages = (
+        [{"role": "system", "content": full_system}] if full_system else []
+    ) + list(messages)
     all_texts = []  # 收集发送过的文本
     sent_display_texts = set()  # 去重集合
     # GPT-5 系官方模型拒绝 max_tokens；被明确拒绝后本次调用内换用新参数
