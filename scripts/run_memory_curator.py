@@ -30,7 +30,8 @@ def _preset(name: str | None):
         if name not in config.PRESETS:
             raise ValueError(f"unknown preset: {name}")
         return config.PRESETS[name]
-    return config.get_active()
+    # 与 scheduler 同源：memory.curator_preset，未配置时回落 active
+    return curator_service.resolve_curator_preset()
 
 
 def _load_proposal(path: str) -> dict:
@@ -103,7 +104,9 @@ def main() -> None:
     parser.add_argument("--db", default=config.DB_PATH)
     parser.add_argument("--channel", default=str(config.CHANNEL_ID))
     parser.add_argument("--curator-name", default=CURATOR_NAME)
-    parser.add_argument("--preset", help="Preset name; default is active preset")
+    parser.add_argument(
+        "--preset",
+        help="Preset name; default is memory.curator_preset, else active preset")
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument(
         "--max-output-tokens", type=int, default=16384,
