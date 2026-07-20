@@ -60,7 +60,8 @@ def _valid_output(message_id: int) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _fake_completion(db, outputs: list[str], calls: list | None = None):
+def _fake_completion(db, outputs: list[str], calls: list | None = None,
+                     systems: list | None = None):
     """依序返回 outputs；每次调用写一条 curator ai_runs（模拟 trace 落库）。"""
     counter = {"n": 0}
 
@@ -69,6 +70,8 @@ def _fake_completion(db, outputs: list[str], calls: list | None = None):
         counter["n"] += 1
         if calls is not None:
             calls.append(prompt)
+        if systems is not None:
+            systems.append(kwargs.get("system_text"))
         run_id = f"fake-run-{index}"
         db.save_ai_run(
             run_id=run_id, trigger="curator", model=preset.model,
@@ -84,9 +87,10 @@ def test_repair_round_recovers_fenced_output(db, repository, preset, monkeypatch
     message_id = _message(db, 1, content="以后回复短一点")
     fenced = "```json\n" + _valid_output(message_id) + "\n```"
     calls = []
+    systems = []
     monkeypatch.setattr(
         "bot.ai_engine_openai_compat.simple_completion",
-        _fake_completion(db, [fenced, _valid_output(message_id)], calls))
+        _fake_completion(db, [fenced, _valid_output(message_id)], calls, systems))
 
     result = asyncio.run(curator_service.propose_batch(
         db, repository, channel_id=CHANNEL, preset=preset))
@@ -97,6 +101,9 @@ def test_repair_round_recovers_fenced_output(db, repository, preset, monkeypatch
     # 修复 prompt 必须携带错误、失败输出与原始任务（quote 校验依赖原文）
     assert "校验错误" in calls[1] and "```json" in calls[1]
     assert "以后回复短一点" in calls[1]
+    # 指令走 system 块，首轮与修复轮携带同一份
+    assert systems[0] and "证据规则" in systems[0]
+    assert systems[0] == systems[1]
     # dry-run 不落库
     assert repository.list(status="active") == []
     assert repository.get_cursor("memory-curator-v1", CHANNEL)["last_message_id"] == 0

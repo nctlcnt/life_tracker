@@ -71,11 +71,12 @@ async def simple_completion(prompt: str, preset: Preset,
                             *, trigger: str = "oneshot", db=None,
                             return_run_id: bool = False,
                             max_output_tokens: int | None = None,
-                            request_timeout: float | None = None):
+                            request_timeout: float | None = None,
+                            system_text: str | None = None):
     return await _base_simple_completion(
         prompt, _call_with_tools, preset, trigger=trigger, db=db,
         return_run_id=return_run_id, max_output_tokens=max_output_tokens,
-        request_timeout=request_timeout)
+        request_timeout=request_timeout, system_text=system_text)
 
 
 def _log_usage(usage: dict | None) -> None:
@@ -94,7 +95,8 @@ def _log_usage(usage: dict | None) -> None:
         logger.info(f"   cache_hit_rate={cached / prompt_tokens * 100:.1f}%")
 
 
-async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: list[dict],
+async def _call_with_tools(db: Database, prompt: PromptParts | str | None,
+                           messages: list[dict],
                            preset: Preset,
                            send_callback=None, tool_callback=None,
                            tool_names: set | None = None,
@@ -111,8 +113,11 @@ async def _call_with_tools(db: Database, prompt: PromptParts | None, messages: l
 
     logger.info(f"🌐 OpenAI-compat URL: {url}")
 
-    # 拍平 PromptParts 为单个字符串
-    full_system = prompt.flatten() if prompt else ""
+    # 拍平 PromptParts 为单个字符串；simple_completion 路径直接传已拍平的 str
+    if isinstance(prompt, str):
+        full_system = prompt
+    else:
+        full_system = prompt.flatten() if prompt else ""
 
     # 按 tool_names 过滤工具子集
     tools = get_tools(tool_names)

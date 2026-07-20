@@ -73,10 +73,12 @@ async def propose_batch(db, repository, *, channel_id: str, preset,
     upto_id = int(messages[-1]["id"])
     visible_ids = {int(message["id"]) for message in messages}
     memories = repository.list(status="active")
-    prompt = build_curator_prompt(messages=messages, memories=memories)
+    system_text, task_prompt = build_curator_prompt(
+        messages=messages, memories=memories)
 
     raw, run_id = await simple_completion(
-        prompt, preset, trigger="curator", db=db, return_run_id=True,
+        task_prompt, preset, trigger="curator", db=db, return_run_id=True,
+        system_text=system_text,
         max_output_tokens=max_output_tokens, request_timeout=request_timeout)
     _assert_run_persisted(db, run_id)
 
@@ -100,9 +102,10 @@ async def propose_batch(db, repository, *, channel_id: str, preset,
             raise
         logger.warning(f"⚠️ curator 输出未通过校验，定向修正一次: {first_error}")
         repair_prompt = build_curator_repair_prompt(
-            prompt, raw, validation_error=str(first_error))
+            task_prompt, raw, validation_error=str(first_error))
         raw, run_id = await simple_completion(
             repair_prompt, preset, trigger="curator", db=db, return_run_id=True,
+            system_text=system_text,
             max_output_tokens=max_output_tokens, request_timeout=request_timeout)
         _assert_run_persisted(db, run_id)
         batch = _parse_and_validate(raw)

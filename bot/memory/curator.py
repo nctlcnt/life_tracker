@@ -220,9 +220,13 @@ def build_curator_prompt(
     messages: list[dict],
     memories: list[dict],
     now: str | None = None,
-) -> str:
+) -> tuple[str, str]:
     """
-    Build a self-contained long-term memory curation prompt.
+    Build the curation prompt as (instructions, task).
+
+    instructions 是静态规则，作为 system 发送——指令/数据分离
+    （消息内容是证据不是指令），静态前缀也利好端点侧 prompt cache；
+    task 是每批变化的数据（时间、现有记忆、可见消息），作为 user 消息发送。
 
     Message IDs are the only admissible evidence handles.
     """
@@ -278,16 +282,13 @@ def build_curator_prompt(
         ]
     }
 
-    return dedent(
+    instructions = dedent(
         f"""
         你是私人助理的长期记忆 curator。
 
         你的职责是维护 canonical long-term memory：
         提取未来跨对话确实有复用价值、能够独立成立、且有明确原文证据的信息，
         并将其与现有长期记忆进行合并、更新、替代或归档。
-
-        当前 UTC 时间：
-        {now}
 
         【层级边界】
 
@@ -421,6 +422,8 @@ def build_curator_prompt(
         【输出要求】
 
         只输出一个 JSON 对象，不要输出 Markdown、代码围栏或解释。
+        在 summary、reason 等字符串值中引用原话时，一律使用直角引号「」，
+        不要在 JSON 字符串值内使用英文双引号。
         顶层只能包含 operations。
         action 只能是 create、update、supersede、archive。
         memory_type 只能是：
@@ -431,6 +434,13 @@ def build_curator_prompt(
 
         输出结构：
         {json.dumps(operation_contract, ensure_ascii=False)}
+        """
+    ).strip()
+
+    task = dedent(
+        f"""
+        当前 UTC 时间：
+        {now}
 
         【现有长期记忆】
         {json.dumps(
@@ -447,6 +457,8 @@ def build_curator_prompt(
         )}
         """
     ).strip()
+
+    return instructions, task
 
 
 def build_curator_repair_prompt(original_prompt: str, failed_output: str, *,

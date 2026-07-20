@@ -111,15 +111,19 @@ def test_prompt_and_interval_expose_stable_evidence_ids(db):
 
     messages = load_curator_interval(
         db, channel_id=CHANNEL, after_message_id=0, limit=10)
-    prompt = build_curator_prompt(
+    system_text, task = build_curator_prompt(
         messages=messages, memories=[], now="2026-07-17T00:00:00+00:00")
 
     assert [message["id"] for message in messages] == [first, second]
-    assert f'"message_id":{first}' in prompt
-    assert "第一句话" in prompt
-    assert '"created_at":' in prompt
-    assert "当前 UTC 时间" in prompt
-    assert "2026-07-17T00:00:00+00:00" in prompt
+    assert f'"message_id":{first}' in task
+    assert "第一句话" in task
+    assert '"created_at":' in task
+    assert "当前 UTC 时间" in task
+    assert "2026-07-17T00:00:00+00:00" in task
+    # 指令/数据分离：规则只在 system，批数据不得混进 system
+    assert "只输出一个 JSON 对象" in system_text
+    assert "直角引号「」" in system_text
+    assert "第一句话" not in system_text
 
 
 def test_apply_create_and_cursor_are_one_transaction(repository, db):
