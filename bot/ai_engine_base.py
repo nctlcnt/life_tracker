@@ -364,12 +364,14 @@ async def simple_completion(prompt: str, call_with_tools_fn, preset: Preset,
                             return_run_id: bool = False,
                             max_output_tokens: int | None = None,
                             request_timeout: float | None = None,
-                            system_text: str | None = None):
+                            system_text: str | None = None,
+                            temperature: float | None = None):
     """
     轻量 AI 调用：无工具、无历史消息、无动态上下文。
     用于天气报告等独立的一次性生成任务。
     system_text 提供时作为 system 块发送（引擎侧接受已拍平的字符串），
     用于 curator 等需要指令/数据分离的任务。
+    temperature 仅在显式给出时随请求发送（判断类任务用低值稳定输出）。
     """
     messages = [{"role": "user", "content": prompt}]
     trace_messages = (
@@ -385,6 +387,7 @@ async def simple_completion(prompt: str, call_with_tools_fn, preset: Preset,
             tool_names=set(),  # 空集 → 不传工具
             max_output_tokens=max_output_tokens,
             request_timeout=request_timeout,
+            temperature=temperature,
         )
         trace.finalize(final_text=reply, db=db)
         return (reply, trace_entry["id"]) if return_run_id else reply

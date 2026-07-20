@@ -89,6 +89,7 @@ async def propose(args) -> dict:
         limit=args.limit,
         max_output_tokens=args.max_output_tokens,
         request_timeout=args.request_timeout,
+        temperature=args.temperature,
         repair=not args.no_repair,
     )
 
@@ -119,6 +120,12 @@ def main() -> None:
              "outlive the 120s chat default.",
     )
     parser.add_argument(
+        "--temperature", type=float,
+        default=curator_service.DEFAULT_TEMPERATURE,
+        help="Sampling temperature; judgment tasks want low values. "
+             "Endpoints that reject the param fall back automatically.",
+    )
+    parser.add_argument(
         "--no-repair", action="store_true",
         help="Disable the one-shot repair round after a failed validation "
              "(useful for measuring raw model compliance).",
@@ -138,6 +145,8 @@ def main() -> None:
         parser.error("--max-output-tokens must be positive")
     if args.request_timeout <= 0:
         parser.error("--request-timeout must be positive")
+    if not 0 <= args.temperature <= 2:
+        parser.error("--temperature must be within [0, 2]")
     result = asyncio.run(run(args))
     rendered = json.dumps(result, ensure_ascii=False, indent=2)
     if args.output:

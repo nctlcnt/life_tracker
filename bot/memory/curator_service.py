@@ -24,6 +24,8 @@ logger = get_logger(__name__)
 
 DEFAULT_MAX_OUTPUT_TOKENS = 16384
 DEFAULT_REQUEST_TIMEOUT = 600.0
+# 判断类任务要一致性不要创造性；端点不认这个参数时引擎会自动去参重试
+DEFAULT_TEMPERATURE = 0.2
 
 
 def resolve_curator_preset():
@@ -49,6 +51,7 @@ async def propose_batch(db, repository, *, channel_id: str, preset,
                         limit: int = 50,
                         max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
                         request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
+                        temperature: float | None = DEFAULT_TEMPERATURE,
                         repair: bool = True,
                         auto_apply: bool = False) -> dict:
     """跑一个 curator 批次。返回 proposal dict（与 CLI dry-run 输出同构）。
@@ -78,7 +81,7 @@ async def propose_batch(db, repository, *, channel_id: str, preset,
 
     raw, run_id = await simple_completion(
         task_prompt, preset, trigger="curator", db=db, return_run_id=True,
-        system_text=system_text,
+        system_text=system_text, temperature=temperature,
         max_output_tokens=max_output_tokens, request_timeout=request_timeout)
     _assert_run_persisted(db, run_id)
 
@@ -105,7 +108,7 @@ async def propose_batch(db, repository, *, channel_id: str, preset,
             task_prompt, raw, validation_error=str(first_error))
         raw, run_id = await simple_completion(
             repair_prompt, preset, trigger="curator", db=db, return_run_id=True,
-            system_text=system_text,
+            system_text=system_text, temperature=temperature,
             max_output_tokens=max_output_tokens, request_timeout=request_timeout)
         _assert_run_persisted(db, run_id)
         batch = _parse_and_validate(raw)

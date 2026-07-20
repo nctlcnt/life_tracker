@@ -72,11 +72,13 @@ async def simple_completion(prompt: str, preset: Preset,
                             return_run_id: bool = False,
                             max_output_tokens: int | None = None,
                             request_timeout: float | None = None,
-                            system_text: str | None = None):
+                            system_text: str | None = None,
+                            temperature: float | None = None):
     return await _base_simple_completion(
         prompt, _call_with_tools, preset, trigger=trigger, db=db,
         return_run_id=return_run_id, max_output_tokens=max_output_tokens,
-        request_timeout=request_timeout, system_text=system_text)
+        request_timeout=request_timeout, system_text=system_text,
+        temperature=temperature)
 
 
 def _log_usage(usage: dict | None) -> None:
@@ -102,7 +104,8 @@ async def _call_with_tools(db: Database, prompt: PromptParts | str | None,
                            tool_names: set | None = None,
                            memory_service: MemoryService | None = None,
                            max_output_tokens: int | None = None,
-                           request_timeout: float | None = None) -> str:
+                           request_timeout: float | None = None,
+                           temperature: float | None = None) -> str:
     """httpx 直接调用 OpenAI 兼容端点，处理多轮 tool calling。"""
     model = preset.model
     url = _endpoint_url(preset)
@@ -145,6 +148,8 @@ async def _call_with_tools(db: Database, prompt: PromptParts | str | None,
                     token_param: max_output_tokens or 4096,
                     "messages": full_messages,
                 }
+                if temperature is not None:
+                    payload["temperature"] = temperature
                 if tools:
                     payload["tools"] = tools
 
@@ -165,6 +170,12 @@ async def _call_with_tools(db: Database, prompt: PromptParts | str | None,
                         and "max_completion_tokens" in resp.text):
                     logger.info("🔁 端点拒绝 max_tokens，改用 max_completion_tokens 重试")
                     token_param = "max_completion_tokens"
+                    continue
+                # gpt-5 系官方端点只接受默认 temperature；被明确拒绝时去参重试
+                if (resp.status_code == 400 and "temperature" in payload
+                        and "temperature" in resp.text):
+                    logger.info("🔁 端点拒绝 temperature，去掉该参数重试")
+                    temperature = None
                     continue
                 break
 
