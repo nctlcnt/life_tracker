@@ -1,7 +1,9 @@
 # 架构决策记录(ADR)
 
 记录本项目中**难以逆转、且有真实备选被否掉**的架构决策。
-过程性讨论留在 Linear issue/comment 里;ADR 是讨论沉淀后的定论,两边互相链接。
+过程性讨论留在项目管理 issue/comment 里;ADR 是讨论沉淀后的定论。
+issue 可以链接 ADR;ADR 只描述稳定的能力依赖,不引用易改名、拆分或
+迁移的 ticket 编号。
 
 ## 约定
 
@@ -27,3 +29,5 @@
 |---|---|---|
 | [0001](0001-memory-v4-four-layer-model.md) | 记忆系统 v4 —— 四层记忆模型与严格 curator 管线 | Accepted |
 | [0002](0002-fixed-batch-model-comparison.md) | 模型选型用同批消息对照评测 | Accepted |
+| [0003](0003-evidence-groups.md) | 证据组模型 —— evidence 扩展为带双维角色的消息组 | Accepted |
+| [0004](0004-consolidation-pipeline.md) | 记忆巩固管线 —— 发现模式并经用户确认后记住 | Accepted |
