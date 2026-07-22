@@ -1,8 +1,8 @@
-# ADR-0002: 模型选型用同批消息对照评测
+# Curator 模型固定批次对照评测
 
-- 状态:Accepted
-- 日期:2026-07-19
-- 关联:ADR-0001(curator 管线)、curator 调度与模型选型
+- 文档性质：可持续追加的 eval protocol + results ledger，不是 ADR
+- 建立日期：2026-07-19
+- 架构背景：[Memory v4 architecture design](../docs/modules/memory/plan/memory-v4-design.md)
 
 ## 背景
 
@@ -15,7 +15,7 @@ curator / compact 换模型是常态需求(额度、价格、新模型上市),�
 此前的随手测试(拿当时最新的一批消息试新模型)无法区分"这批消息难"
 还是"这个模型差",结论不可比也不可积累。
 
-## 决策
+## 评测协议
 
 换 curator / compact 模型时,必须用**同一批固定输入**对现任主力模型做
 对照评测,批大小固定 50(实测的可靠性上限)。判据固定三条,按序淘汰:
@@ -29,10 +29,10 @@ curator / compact 换模型是常态需求(额度、价格、新模型上市),�
    总结是歪的"这类畸变,而这恰恰是决定敢不敢开 auto_apply 的那一条。
 
 失败样本连同通过样本一起留档(`data/curator_proposals/`),模型的
-已知毛病(如 glm 的 fence 随机复发)记入对应项目管理 issue,由 issue
-反向链接本 ADR;ADR 不保存易漂移的 ticket 编号。
+已知毛病(如 glm 的 fence 随机复发)记入对应项目管理 issue。本文只记录
+可复现的准入方法和评测结果，不作为运行时 preset 的事实来源。
 
-## 考虑过并否决的方案
+## 方法选择
 
 - **拿不同批次随手测**:输入不受控,"模型差"和"批次难"混淆,
   否决——这正是本 ADR 要取代的做法;

@@ -1,6 +1,6 @@
 # Life Tracker 部署与灾备
 
-本文记录当前 VPS 上的真实运维方式，不是通用云服务器安装教程。测试、构建和灾备演练的最近结果统一记录在 [operations-validation.md](operations-validation.md)。
+本文记录当前 VPS 上的真实运维方式，不是通用云服务器安装教程。测试、构建和灾备演练的最近结果统一记录在 [OPERATIONS-LOG.md](../OPERATIONS-LOG.md)。
 
 ## 1. 当前生产拓扑
 

@@ -2,7 +2,7 @@
 
 > 最后整理: 2026-05-05
 > 规则: 此文件是 plan 总览入口。specs/todos/archive 已迁 Linear (LT team)，本文件保留指针；ideas 仍为本地 markdown
-> 技术难题沉淀见 [devlog.md](../devlog.md)
+> 技术难题沉淀见 [development_log.md](../../development_log.md)
 
 ## 近期计划更新
 
@@ -35,8 +35,8 @@
 
 没升级成 spec,可能永远不会做。**不要在这里排序,也不要强迫自己处理**。
 
-- [inspiration.md](1-ideas/inspiration.md) — 15 段原始想法流水（#2–#8 是 Q2 整合 plan 的源头；#9–#15 为 2026-05-03 新增）
-- [dispatch-cost-estimate.md](1-ideas/dispatch-cost-estimate.md) — Flash+Smart 分发成本调研(Phase 2 决策依据)
+- [inspiration.md](inspiration.md) — 15 段原始想法流水（#2–#8 是 Q2 整合 plan 的源头；#9–#15 为 2026-05-03 新增）
+- `dispatch-cost-estimate.md` — Flash+Smart 分发成本调研（历史文件，当前仓库未保留）
 
 ## 📋 执行清单 (todos)
 
