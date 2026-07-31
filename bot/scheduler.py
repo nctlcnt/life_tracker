@@ -16,6 +16,7 @@ from datetime import datetime, time, timedelta
 from bot.ai_engine import scheduled_action
 from bot.database import Database
 from bot.memory import MemoryService
+from bot.prompts import get_prompt_template
 from bot.logger import get_logger
 import config
 
