@@ -20,6 +20,7 @@ from bot.ai_engine import scheduled_action
 from bot.database import Database
 from bot.memory import MemoryService
 from bot.memory.curator import CURATOR_NAME
+from bot.prompts import get_prompt_template
 from bot.logger import get_logger
 import config
 
@@ -593,7 +594,8 @@ class Scheduler:
             if reminder.get("group_id"):
                 remaining = self.db.get_pending_reminders_by_group(reminder["group_id"])
                 total = self.db.count_reminders_in_group(reminder["group_id"])
-                group_info = f"（这是关于此事的第{total - len(remaining)}条提醒，共{total}条）"
+                # 当前这条要等发送成功后才 mark done，此刻仍算在 remaining 里，故 +1
+                group_info = f"（这是关于此事的第{total - len(remaining) + 1}条提醒，共{total}条）"
             return (
                 f"{reminder['action']}\n"
                 f"优先级: {reminder.get('priority', 'normal')}\n"
