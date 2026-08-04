@@ -539,39 +539,35 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                 window=window.trace_info() if window else None)
     final_reply: str | None = None
     try:
+        # 逐轮过滤 [SILENT]：中间轮的真实文字立即发送，[SILENT] 静默吞掉。
+        # 两个分支共用，sent_texts 因此是「真正发给用户的内容」的唯一记录。
+        sent_texts: list[str] = []
+
+        async def _silent_filter(text: str):
+            if "[SILENT]" not in text:
+                sent_texts.append(text)
+                if send_callback:
+                    await send_callback(text)
+
+        reply = await call_with_tools_fn(
+            db, prompt_parts, messages,
+            send_callback=_silent_filter,
+            preset=preset,
+            tool_names=tool_names,
+            memory_service=memory_service,
+        )
+
         if allow_silent:
-            # 逐轮过滤 [SILENT]：中间轮的真实文字立即发送，[SILENT] 静默吞掉。
-            # 修复：旧逻辑把 send_callback=None 传入 _call_with_tools，导致工具轮
-            # 的文字全部攒到最后；而最终拼接结果一旦包含 [SILENT] 就整体丢弃。
-            sent_texts: list[str] = []
-
-            async def _silent_filter(text: str):
-                if "[SILENT]" not in text:
-                    sent_texts.append(text)
-                    if send_callback:
-                        await send_callback(text)
-
-            await call_with_tools_fn(
-                db, prompt_parts, messages,
-                send_callback=_silent_filter,
-                preset=preset,
-                tool_names=tool_names,
-                memory_service=memory_service,
-            )
-
             if sent_texts:
                 final_reply = "\n".join(sent_texts)
-        else:
-            reply = await call_with_tools_fn(
-                db, prompt_parts, messages,
-                send_callback=send_callback,
-                preset=preset,
-                tool_names=tool_names,
-                memory_service=memory_service,
-            )
-
-            if reply and "[SILENT]" not in reply:
-                final_reply = reply
+        elif reply and "[SILENT]" not in reply:
+            final_reply = reply
+        elif sent_texts:
+            # AI 在工具轮已经把话说出去了，最后一轮才回 [SILENT]。消息确实
+            # 送达了，返回 None 会让调用方误判「没发出去」——reminder 因此
+            # 不被 mark_reminder_done，留在 pending 且触发时间已过，
+            # _reminder_loop 会以 wait=0 立刻重入，每轮都白烧一次 AI 调用。
+            final_reply = "\n".join(sent_texts)
 
         if final_reply:
             db.add_message("assistant", final_reply)
