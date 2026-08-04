@@ -1093,8 +1093,21 @@ class Database:
         return messages
 
     @staticmethod
+    def _message_timestamp(item: dict) -> str:
+        try:
+            return datetime.fromisoformat(item["created_at"]).astimezone().strftime("%Y-%m-%d %H:%M")
+        except (ValueError, TypeError):
+            return item.get("created_at", "")[:16]
+
+    @staticmethod
     def _to_ai_message(item: dict) -> dict | None:
-        """把一行 conversation_messages 转成 AI 引擎的 role/content 消息；不适用返回 None。"""
+        """把一行 conversation_messages 转成 AI 引擎的 role/content 消息；不适用返回 None。
+
+        两侧都打 [时间] 前缀。assistant 侧同样要打，是因为 _ensure_valid_messages
+        会把连续同角色消息拼成一条：用户长时间不回复时，几天内的主动消息会塌缩成
+        一整块无日期文本，模型无从分辨哪句是刚说的、哪句是三天前说的，于是反复
+        重复同样的问候。前缀是这块文本里唯一的时间锚点。
+        """
         role = item.get("role")
         if role not in {"user", "assistant"}:
             return None
@@ -1102,13 +1115,10 @@ class Database:
         if role == "user":
             content = metadata.get("current_content")
             if not content:
-                try:
-                    ts = datetime.fromisoformat(item["created_at"]).astimezone().strftime("%Y-%m-%d %H:%M")
-                except (ValueError, TypeError):
-                    ts = item.get("created_at", "")[:16]
-                content = f"[{ts}] {item.get('content') or ''}".strip()
+                content = f"[{Database._message_timestamp(item)}] {item.get('content') or ''}".strip()
         else:
-            content = item.get("content") or ""
+            raw = item.get("content") or ""
+            content = f"[{Database._message_timestamp(item)}] {raw}".strip() if raw else raw
         if not content:
             return None
         return {"role": role, "content": content}

@@ -3,6 +3,7 @@
 纯装配逻辑：不涉及 AI 调用，不涉及行为切换。
 """
 import json
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -192,3 +193,40 @@ def test_memory_service_delegation(db):
     _add(db, "user", "hi", 1)
     w = service.context_window(CHANNEL)
     assert w.tail_count == 1
+
+
+TS_PREFIX = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] ")
+
+
+def test_assistant_messages_carry_timestamp_prefix(db):
+    """assistant 侧也要带 [时间] 前缀。
+
+    _ensure_valid_messages 会把连续同角色消息拼成一条：用户长时间不回复时，
+    几天的主动消息塌缩成一整块无日期文本，模型分不清哪句是刚说的，于是把
+    同样的问候重复发一遍。前缀是那块文本里唯一的时间锚点。
+    """
+    _add(db, "assistant", "早呀", 1)
+    w = assemble_window(db, CHANNEL)
+    content = w.messages[-1]["content"]
+    assert TS_PREFIX.match(content), content
+    assert content.endswith("早呀")
+
+
+def test_user_current_content_not_double_prefixed(db):
+    """user 消息入库时已带前缀（current_content），不能再加一次。"""
+    _add(db, "user", "在吗", 1)
+    content = assemble_window(db, CHANNEL).messages[-1]["content"]
+    assert content == "[2026-07-17 10:00] 在吗"
+
+
+def test_merged_assistant_run_keeps_one_anchor_per_message(db):
+    """连续 assistant 消息合并后，每条各自的时间锚点都要留在块里。"""
+    from bot.ai_engine_base import _ensure_valid_messages
+
+    _add(db, "user", "在吗", 1)
+    for n, text in enumerate(["早呀", "该睡了", "早呀（第二天）"], start=2):
+        _add(db, "assistant", text, n)
+    merged = _ensure_valid_messages(list(assemble_window(db, CHANNEL).messages))
+    blob = merged[-1]["content"]
+    assert len(re.findall(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]", blob)) == 3
+    assert "早呀" in blob and "该睡了" in blob

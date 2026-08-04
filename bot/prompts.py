@@ -378,7 +378,11 @@ TOOL_ROUND_REMINDER = "[系统提示] 上一轮你说的话已经发出去了，
 # 而不是塞进全局 SYSTEM_PROMPT 每次请求都带。
 TOOL_POST_HINTS = {
     "list_reminders": (
-        "[决策辅助] 刚查了 pending reminder。程序会在触发时自动合并临近提醒；"
+        "[决策辅助] 刚查了 pending reminder。触发时程序只会把 5 分钟内到期的"
+        "多条 reminder 并成一次发送——固定时段的 check-in（早间开启、睡前提醒）"
+        "是另一条独立通道，不会和 reminder 合并，紧挨着也会各发一条。"
+        "所以道早安、盘点当天重点、睡前收尾这些 check-in 已经在做的事，"
+        "不要再单独建 reminder，否则同一件事会被说两遍。"
         "如果用户明确要替换或取消已有提醒，"
         "要替换旧的先 delete_reminder（单条）或 cancel_reminders（整组）再 set。"
     ),
