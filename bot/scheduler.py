@@ -325,15 +325,24 @@ class Scheduler:
         if check_in:
             await self._do_check_in(check_in, timestamp)
 
-    async def _do_check_in(self, check_in: dict, timestamp: str):
-        """Execute a configurable system check-in."""
+    async def _do_check_in(self, check_in: dict, timestamp: str,
+                           force: bool = False) -> dict:
+        """Execute a configurable system check-in.
+
+        force=True 供 Admin 页面手动测试触发使用：跳过 enabled 门禁和"用户正在
+        输入"的让路判断，并且不写 last_fired_at——因为 _already_fired_for_window
+        依据该字段判断当天窗口是否已触发，测试若写了它就会抑制当天真正的定时触发。
+        """
         name = check_in.get("name") or "check_in"
-        if not check_in.get("enabled"):
+        result = {"ok": False, "reply": None, "error": None, "skipped": None}
+        if not force and not check_in.get("enabled"):
             logger.info(f"⏭️ check-in 已关闭，跳过: {name}")
-            return
-        if name == "random_poll" and self.is_user_typing():
+            result["skipped"] = "disabled"
+            return result
+        if not force and name == "random_poll" and self.is_user_typing():
             logger.info("⏭️ 用户正在输入，跳过本次随机 check-in")
-            return
+            result["skipped"] = "user_typing"
+            return result
         should_mark_fired = False
         async with self._ai_lock:
             try:
@@ -355,14 +364,40 @@ class Scheduler:
                     window=window,
                 )
                 should_mark_fired = True
+                result["ok"] = True
+                result["reply"] = reply
                 if reply:
                     logger.info(f"📋 check-in {name}: {reply[:50]}...")
             except Exception as e:
                 logger.exception(f"❌ check-in 出错 [{name}]: {e}")
+                result["error"] = f"{type(e).__name__}: {e}"
             finally:
-                if should_mark_fired:
+                if should_mark_fired and not force:
                     self.db.mark_check_in_fired(check_in["id"])
                 self.notify_ai_call_done()
+        return result
+
+    async def trigger_check_in_now(self, check_in_id) -> dict:
+        """Admin 页面手动触发一次 check-in：走真实链路，但不写 last_fired_at。
+
+        真实链路意味着 AI 会真的发 Discord 消息、tool_profile 允许的工具也会真的
+        执行并写数据库，这不是无副作用的预览。
+        """
+        check_in = self.db.get_check_in(check_in_id)
+        if check_in is None:
+            return {"found": False}
+        # timestamp 必须和 _timer_loop 里的表达式完全一致，否则模板中的
+        # {timestamp} 会渲染出与真实定时触发不同的 prompt，测试就失去意义
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        started = time_module.monotonic()
+        result = await self._do_check_in(check_in, timestamp, force=True)
+        return {
+            "found": True,
+            "name": check_in.get("name"),
+            "label": check_in.get("label") or check_in.get("name"),
+            "latency_ms": round((time_module.monotonic() - started) * 1000),
+            **result,
+        }
 
     @staticmethod
     def _render_check_in_prompt(check_in: dict, timestamp: str) -> str:

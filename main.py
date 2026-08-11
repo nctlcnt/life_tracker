@@ -31,7 +31,12 @@ init_timezone(config.TIMEZONE)
 
 from bot.database import Database
 from bot.memory import MarkdownMemoryRepository, MemoryService
-from api.server import app as fastapi_app, set_check_in_changed_callback, set_database
+from api.server import (
+    app as fastapi_app,
+    set_check_in_changed_callback,
+    set_check_in_trigger,
+    set_database,
+)
 from bot import test_mode
 
 
@@ -96,6 +101,7 @@ async def main(test: bool = False, api_only: bool = False):
         )
         db._on_reminder_added = scheduler.notify_new_reminder
         set_check_in_changed_callback(scheduler.notify_ai_call_done)
+        set_check_in_trigger(scheduler.trigger_check_in_now)
         # chat 完成后通知 scheduler 重置 poll 基准（避免 45-55min 内再轮询）
         bot.on_ai_call_done = scheduler.notify_ai_call_done
 

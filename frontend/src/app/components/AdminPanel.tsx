@@ -75,6 +75,13 @@ interface CheckInsResp {
   };
 }
 
+interface CheckInTestResult {
+  ok: boolean;
+  reply: string | null;
+  error: string | null;
+  latency_ms: number;
+}
+
 interface FormData {
   name: string;
   provider: string;
@@ -428,6 +435,7 @@ function CheckInAdmin() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [editor, setEditor] = useState<{ mode: 'add' | 'edit'; original?: CheckIn } | null>(null);
+  const [testResults, setTestResults] = useState<Record<number, CheckInTestResult>>({});
 
   const load = async () => {
     try {
@@ -475,6 +483,28 @@ function CheckInAdmin() {
     }
     setEditor(null);
     await load();
+  };
+
+  // 真实链路触发：AI 会真的往 Discord 发消息，工具也会真的写数据。
+  // 没有超时限制是有意的——调度器若正在跑 AI，请求要在 _ai_lock 上排队等几十秒。
+  const testCheckIn = async (checkIn: CheckIn) => {
+    if (!window.confirm(
+      `Trigger check-in "${checkIn.name}" now?\n\n` +
+      `这会走真实链路：Discord 会真的收到消息，AI 允许调用的工具也会真的写数据。`
+    )) return;
+    setBusy(String(checkIn.id));
+    try {
+      const r: CheckInTestResult = await postJson(`/api/check-ins/${checkIn.id}/test`, {});
+      setTestResults(prev => ({ ...prev, [checkIn.id]: r }));
+      await load();
+    } catch (e) {
+      setTestResults(prev => ({
+        ...prev,
+        [checkIn.id]: { ok: false, reply: null, error: String(e), latency_ms: 0 },
+      }));
+    } finally {
+      setBusy(null);
+    }
   };
 
   const deleteCheckIn = async (checkIn: CheckIn) => {
@@ -525,6 +555,7 @@ function CheckInAdmin() {
             <th>Next picked</th>
             <th>Prompt</th>
             <th>Actions</th>
+            <th>Test</th>
           </tr>
         </thead>
         <tbody>
@@ -564,6 +595,20 @@ function CheckInAdmin() {
                   Delete
                 </button>
               </td>
+              {/* 结果里的 <pre> 会换行折行，不能放进 td.actions —— 那一列是
+                  white-space: nowrap，会被撑开。这里跟 PresetAdmin 一样单独占一列 */}
+              <td>
+                <button
+                  className="admin-btn"
+                  disabled={busy === String(checkIn.id)}
+                  onClick={() => testCheckIn(checkIn)}
+                >
+                  {busy === String(checkIn.id) ? 'Firing…' : 'Test'}
+                </button>
+                {testResults[checkIn.id] && (
+                  <CheckInTestOutput result={testResults[checkIn.id]} />
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -583,6 +628,24 @@ function CheckInAdmin() {
 
 function defaultContextConfig() {
   return Object.fromEntries(CHECK_IN_CONTEXT_KEYS.map(key => [key, true])) as Record<string, boolean>;
+}
+
+// scheduled_action 的返回值语义是「真正发给用户的内容」（见 commit 0f26042），
+// 所以 reply 为空意味着这一轮没有任何消息送达 Discord。在 allow_silent 下这是
+// 合法结果而非失败，必须和报错分开显示，否则会被误读成按钮坏了。
+function CheckInTestOutput({ result }: { result: CheckInTestResult }) {
+  const silent = result.ok && !result.reply;
+  return (
+    <div className={`test-result ${result.ok ? 'ok' : 'err'}`}>
+      <div className="meta">
+        {result.ok ? '✓' : '✗'} {result.latency_ms}ms
+        {silent && ' · 已执行 · 无消息发出'}
+      </div>
+      {!silent && (
+        <pre>{result.ok ? result.reply : (result.error ?? 'unknown error')}</pre>
+      )}
+    </div>
+  );
 }
 
 function checkInToForm(checkIn?: CheckIn): CheckInFormData {

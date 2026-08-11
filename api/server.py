@@ -33,6 +33,7 @@ app.add_middleware(ApiAuthMiddleware)
 db: Database | None = None
 memory: MemoryService | None = None
 _check_in_changed_callback = None
+_check_in_trigger_callback = None
 
 
 def set_database(database: Database, memory_service: MemoryService | None = None):
@@ -44,6 +45,12 @@ def set_database(database: Database, memory_service: MemoryService | None = None
 def set_check_in_changed_callback(callback):
     global _check_in_changed_callback
     _check_in_changed_callback = callback
+
+
+def set_check_in_trigger(callback):
+    """注入 Scheduler.trigger_check_in_now，供 Admin 页面手动触发 check-in。"""
+    global _check_in_trigger_callback
+    _check_in_trigger_callback = callback
 
 
 def _notify_check_in_changed():
@@ -423,6 +430,30 @@ async def delete_check_in(check_in_id: str):
         )
     _notify_check_in_changed()
     return {"ok": True, "deleted": check_in_id}
+
+
+@app.post("/api/check-ins/{check_in_id}/test")
+async def test_check_in(check_in_id: str):
+    """立刻触发一次 check-in，走真实链路（会真的发 Discord 消息、真的执行工具）。
+
+    与定时触发的唯一区别：不写 last_fired_at，因此不会抑制当天真正的定时触发。
+    """
+    if _check_in_trigger_callback is None:
+        raise HTTPException(
+            status_code=503,
+            detail="调度器未运行（--api-only 模式下没有 Scheduler），无法触发 check-in",
+        )
+    result = await _check_in_trigger_callback(check_in_id)
+    if not result.get("found"):
+        raise HTTPException(status_code=404, detail=f"check-in not found: {check_in_id}")
+    return {
+        "ok": bool(result.get("ok")),
+        "reply": result.get("reply"),
+        "error": result.get("error"),
+        "latency_ms": result.get("latency_ms"),
+        "name": result.get("name"),
+        "label": result.get("label"),
+    }
 
 
 @app.get("/api/settings/check-ins")

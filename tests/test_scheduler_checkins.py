@@ -213,3 +213,78 @@ def test_do_check_in_passes_execution_profile_and_marks_fired(tmp_path, monkeypa
     stored = db.get_check_in(check_in_id)
     assert stored["last_fired_at"] is not None
     assert stored["last_scheduled_for"] is None
+
+
+def test_trigger_check_in_now_runs_disabled_check_in_without_marking_fired(
+    tmp_path, monkeypatch
+):
+    """Admin 手动触发：绕过 enabled 门禁，但不能污染真实调度状态。"""
+    db = _make_db(tmp_path)
+    check_in_id = db.create_check_in(
+        name="manual_probe",
+        label="Manual probe",
+        enabled=False,
+        schedule_type="window",
+        time_start="09:00",
+        time_end="10:00",
+        prompt_template="{timestamp} | {name}",
+        tool_profile="none",
+        allow_silent=True,
+    )
+    calls = []
+
+    async def fake_scheduled_action(db_arg, prompt, timestamp, history, **kwargs):
+        calls.append({"prompt": prompt, "timestamp": timestamp, **kwargs})
+        return "probe reply"
+
+    monkeypatch.setattr(scheduler_module, "scheduled_action", fake_scheduled_action)
+    scheduler = _make_scheduler(db)
+
+    result = asyncio.run(scheduler.trigger_check_in_now(check_in_id))
+
+    # enabled=False 依然执行，这正是「启用前先测一下」的用途
+    assert len(calls) == 1
+    assert calls[0]["check_in_name"] == "manual_probe"
+    assert result["found"] is True
+    assert result["ok"] is True
+    assert result["reply"] == "probe reply"
+    assert result["error"] is None
+    assert result["latency_ms"] >= 0
+
+    # 不写 last_fired_at，否则 _already_fired_for_window 会抑制当天真正的定时触发
+    stored = db.get_check_in(check_in_id)
+    assert stored["last_fired_at"] is None
+
+
+def test_trigger_check_in_now_reports_error_instead_of_swallowing(tmp_path, monkeypatch):
+    """AI 报错时必须返回 ok=False，不能让测试按钮永远显示成功。"""
+    db = _make_db(tmp_path)
+    check_in_id = db.create_check_in(
+        name="failing_probe",
+        label="Failing probe",
+        enabled=True,
+        schedule_type="window",
+        time_start="09:00",
+        time_end="10:00",
+        prompt_template="{timestamp}",
+        tool_profile="none",
+    )
+
+    async def failing_scheduled_action(*args, **kwargs):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(scheduler_module, "scheduled_action", failing_scheduled_action)
+    scheduler = _make_scheduler(db)
+
+    result = asyncio.run(scheduler.trigger_check_in_now(check_in_id))
+
+    assert result["ok"] is False
+    assert "provider down" in result["error"]
+    assert db.get_check_in(check_in_id)["last_fired_at"] is None
+
+
+def test_trigger_check_in_now_returns_not_found_for_unknown_id(tmp_path):
+    db = _make_db(tmp_path)
+    scheduler = _make_scheduler(db)
+
+    assert asyncio.run(scheduler.trigger_check_in_now(999999)) == {"found": False}
