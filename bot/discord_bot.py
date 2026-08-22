@@ -692,16 +692,24 @@ def _poll_command(bot: LifeTrackerBot) -> app_commands.Command:
         if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
             return
         check_in = bot.db.get_check_in("random_poll")
-        enabled = bool(check_in.get("enabled")) if check_in else bot.db.get_state("poll_enabled") != "0"
+        if check_in is None:
+            # random_poll 现在是可删除的默认项。被删掉之后这个命令没有可切换的
+            # 对象了，必须说清楚——不能像以前那样照样回复「已打开」。
+            await interaction.response.send_message(
+                "⚠️ `random_poll` check-in 不存在（可能已经在 Admin 页面被删掉），"
+                "这个命令没有可切换的对象。\n"
+                "去 Admin 页面新建一条 after_ai_call 类型的 check-in，"
+                "或者打开内置的 `ttl_followup`。"
+            )
+            return
+        enabled = bool(check_in.get("enabled"))
         if switch is None:
-            ttl = "TTL follow-up 开" if bot.db.ttl_followup_enabled() else "TTL follow-up 关"
-            state = f"🔔 开启（{ttl}）" if enabled else f"🔕 关闭（{ttl}）"
+            state = "🔔 开启" if enabled else "🔕 关闭"
             await interaction.response.send_message(f"`random_poll` check-in 当前状态: {state}")
             return
         turn_on = switch == "on"
         bot.db.set_state("poll_enabled", "1" if turn_on else "0")
-        if check_in:
-            bot.db.update_check_in("random_poll", enabled=turn_on)
+        bot.db.update_check_in("random_poll", enabled=turn_on)
         # 唤醒 timer 循环即时生效；打开时顺便把基准重置到现在（45-55min 后才第一次 poll）
         if bot.on_ai_call_done:
             bot.on_ai_call_done()

@@ -53,9 +53,19 @@ def set_check_in_trigger(callback):
     _check_in_trigger_callback = callback
 
 
-def _notify_check_in_changed():
+# 改动了这些字段就意味着调度参数变了，已排好的触发时刻必须作废重排；
+# 改 prompt / instructions / tool_profile 之类的内容则不需要。
+# 注意 Admin 页面的编辑弹窗提交的是整份表单，一定会带上这里的字段，
+# 所以从界面保存时这个判断恒为真；区分只对直接调 API 的调用方有意义。
+_CHECK_IN_SCHEDULE_FIELDS = frozenset({
+    "enabled", "schedule_type", "time_start", "time_end", "days_of_week",
+    "interval_min_minutes", "interval_max_minutes",
+})
+
+
+def _notify_check_in_changed(reschedule: bool = False):
     if _check_in_changed_callback:
-        _check_in_changed_callback()
+        _check_in_changed_callback(reschedule)
 
 
 class LoginRequest(BaseModel):
@@ -384,12 +394,7 @@ def _check_in_fields_from_body(body: dict, *, partial: bool = False) -> dict:
 
 @app.get("/api/check-ins")
 async def list_check_ins():
-    return {
-        "check_ins": db.list_check_ins(),
-        "settings": {
-            "ttl_followup_enabled": db.ttl_followup_enabled(),
-        },
-    }
+    return {"check_ins": db.list_check_ins()}
 
 
 @app.post("/api/check-ins")
@@ -401,7 +406,7 @@ async def create_check_in(body: dict):
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    _notify_check_in_changed()
+    _notify_check_in_changed(reschedule=True)
     return {"ok": True, "id": check_in_id}
 
 
@@ -416,7 +421,9 @@ async def update_check_in(check_in_id: str, body: dict):
         raise HTTPException(status_code=400, detail=str(e))
     if not changed:
         raise HTTPException(status_code=404, detail=f"check-in not found: {check_in_id}")
-    _notify_check_in_changed()
+    _notify_check_in_changed(
+        reschedule=bool(_CHECK_IN_SCHEDULE_FIELDS & fields.keys())
+    )
     return {"ok": True, "changed": changed}
 
 
@@ -428,7 +435,7 @@ async def delete_check_in(check_in_id: str):
             status_code=404,
             detail=f"custom check-in not found or built-in cannot be deleted: {check_in_id}",
         )
-    _notify_check_in_changed()
+    _notify_check_in_changed(reschedule=True)
     return {"ok": True, "deleted": check_in_id}
 
 
@@ -454,19 +461,6 @@ async def test_check_in(check_in_id: str):
         "name": result.get("name"),
         "label": result.get("label"),
     }
-
-
-@app.get("/api/settings/check-ins")
-async def get_check_in_settings():
-    return {"ttl_followup_enabled": db.ttl_followup_enabled()}
-
-
-@app.patch("/api/settings/check-ins")
-async def update_check_in_settings(body: dict):
-    if "ttl_followup_enabled" in body:
-        db.set_ttl_followup_enabled(bool(body["ttl_followup_enabled"]))
-        _notify_check_in_changed()
-    return {"ok": True, "ttl_followup_enabled": db.ttl_followup_enabled()}
 
 
 @app.get("/api/todos")

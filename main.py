@@ -100,14 +100,14 @@ async def main(test: bool = False, api_only: bool = False):
             memory_service=memory,
         )
         db._on_reminder_added = scheduler.notify_new_reminder
-        set_check_in_changed_callback(scheduler.notify_ai_call_done)
+        set_check_in_changed_callback(scheduler.notify_schedule_changed)
         set_check_in_trigger(scheduler.trigger_check_in_now)
-        # chat 完成后通知 scheduler 重置 poll 基准（避免 45-55min 内再轮询）
+        # chat 完成后通知 scheduler 重置 poll 基准（避免一个间隔内再轮询）
         bot.on_ai_call_done = scheduler.notify_ai_call_done
 
         logger.info("🚀 正在启动所有服务...")
         logger.info("   - Discord Bot")
-        logger.info("   - 定时调度器 (轮询间隔: 45-55min, 基于上次 AI 调用时刻)")
+        logger.info("   - 定时调度器 (随机轮询基于上次 AI 调用时刻，间隔见各 check-in 配置)")
         logger.info(f"   - FastAPI 接口 (端口: {config.API_PORT})")
 
         # Bot token 失效时不要让 Docker 反复重启整个容器刷 Discord 登录接口。

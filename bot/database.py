@@ -403,8 +403,30 @@ class Database:
         conn.commit()
         conn.close()
 
+    # 永久内置的 check-in：built_in=1，不允许删除。原先有一个全局的
+    # checkin_ttl_followup_enabled 开关 gate 住所有 after_ai_call 类型的
+    # check-in，它会在条目自己 enabled=1 的情况下静默阻止调度，两个开关语义
+    # 重复且界面上毫无关联，所以取消了，改成这个删不掉的条目本身。
+    PERMANENT_CHECK_INS = ("ttl_followup",)
+    # 只在数据库第一次初始化时灌入的默认 check-in：built_in=0，默认开启，
+    # 用户删掉之后不会在下次启动时被重新插回来。
+    SEEDED_CHECK_INS = ("random_poll", "morning", "bedtime_1", "bedtime_2")
+    CHECK_IN_SEED_FLAG = "check_in_defaults_seeded"
+    # 间隔被锁死的内置 check-in：调度器不读这两列，Admin 页面也改不动。
+    # 数据库里仍然存着同样的值，只为在界面上如实显示。
+    LOCKED_CHECK_IN_INTERVALS = {"ttl_followup": (45, 55)}
+
     def _ensure_default_check_ins(self, conn: sqlite3.Connection) -> None:
-        """Seed built-in configurable check-ins without overwriting user edits."""
+        """Seed built-in configurable check-ins without overwriting user edits.
+
+        两类默认 check-in 的处理方式不同：
+
+        - PERMANENT_CHECK_INS 每次启动都确保存在，并且强制 built_in=1；
+        - SEEDED_CHECK_INS 只在首次初始化时灌一次，强制 built_in=0。
+          是否已经灌过记录在 app_state 的 CHECK_IN_SEED_FLAG 里——如果不记，
+          每次启动的 INSERT OR IGNORE 都会把用户刚删掉的默认项重新插回来，
+          「可删除」就形同虚设。
+        """
         rows = conn.execute("SELECT key, value FROM prompt_sections").fetchall()
         sections = {row["key"]: row["value"] for row in rows}
         state_row = conn.execute(
@@ -415,6 +437,23 @@ class Database:
             random_poll_enabled = "1"
 
         defaults = [
+            {
+                # 永久内置项：间隔硬编码 45-55min，删不掉也改不了间隔，
+                # 但可以开关、可以改 prompt。默认关闭——开着的话会和
+                # random_poll 抢同一个「上次 AI 调用」基准。
+                "name": "ttl_followup",
+                "label": "TTL follow-up",
+                "enabled": 0,
+                "schedule_type": "after_ai_call",
+                "interval_min_minutes": 45,
+                "interval_max_minutes": 55,
+                "prompt_template": sections.get("proactive_claude") or sections.get("proactive_gemini") or (
+                    "Current timestamp: {timestamp}\n\n"
+                    "Decide whether to proactively message the user. If there is nothing useful to say, respond with [SILENT]."
+                ),
+                "tool_profile": "poll",
+                "allow_silent": 1,
+            },
             {
                 "name": "random_poll",
                 "label": "Random poll",
@@ -432,7 +471,7 @@ class Database:
             {
                 "name": "morning",
                 "label": "Morning check-in",
-                "enabled": 0,
+                "enabled": 1,
                 "schedule_type": "window",
                 "time_start": "08:00",
                 "time_end": "09:00",
@@ -484,7 +523,14 @@ class Database:
             "include_calendar": True,
         })
 
+        already_seeded = conn.execute(
+            "SELECT 1 FROM app_state WHERE key = ?", (self.CHECK_IN_SEED_FLAG,)
+        ).fetchone() is not None
+
         for item in defaults:
+            permanent = item["name"] in self.PERMANENT_CHECK_INS
+            if not permanent and already_seeded:
+                continue
             conn.execute(
                 """
                 INSERT OR IGNORE INTO check_ins (
@@ -493,7 +539,7 @@ class Database:
                     prompt_template, instructions, context_config_json,
                     tool_profile, allow_silent, built_in
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item["name"],
@@ -510,16 +556,42 @@ class Database:
                     default_context,
                     item["tool_profile"],
                     item["allow_silent"],
+                    1 if permanent else 0,
                 ),
             )
 
+        if not already_seeded:
+            conn.execute(
+                """
+                INSERT INTO app_state (key, value, updated_at)
+                VALUES (?, '1', datetime('now'))
+                ON CONFLICT(key) DO NOTHING
+                """,
+                (self.CHECK_IN_SEED_FLAG,),
+            )
+
+        # 存量库迁移：morning / bedtime_* 原本也是 built_in=1（删不掉），
+        # 现在降级成普通的默认项；random_poll 反过来必须保证是 1。
+        seeded_placeholders = ",".join("?" * len(self.SEEDED_CHECK_INS))
         conn.execute(
-            """
-            INSERT INTO app_state (key, value, updated_at)
-            VALUES ('checkin_ttl_followup_enabled', '1', datetime('now'))
-            ON CONFLICT(key) DO NOTHING
-            """
+            f"UPDATE check_ins SET built_in = 0 WHERE name IN ({seeded_placeholders})",
+            self.SEEDED_CHECK_INS,
         )
+        permanent_placeholders = ",".join("?" * len(self.PERMANENT_CHECK_INS))
+        conn.execute(
+            f"UPDATE check_ins SET built_in = 1 WHERE name IN ({permanent_placeholders})",
+            self.PERMANENT_CHECK_INS,
+        )
+        # 锁定间隔的内置项：把数据库里的展示值强制同步回硬编码值。调度器根本
+        # 不读这两列，有人直接改库的话，Admin 上显示的就会和实际跑的不一致。
+        for locked_name, (lo, hi) in self.LOCKED_CHECK_IN_INTERVALS.items():
+            conn.execute(
+                "UPDATE check_ins SET interval_min_minutes = ?, interval_max_minutes = ? "
+                "WHERE name = ?",
+                (lo, hi, locked_name),
+            )
+        # 全局 TTL follow-up 开关已经取消，遗留的键会误导后来读库的人。
+        conn.execute("DELETE FROM app_state WHERE key = 'checkin_ttl_followup_enabled'")
 
     # ============ Prompt 管理 ============
 
@@ -591,6 +663,9 @@ class Database:
             else:
                 item[key] = default
         item["context_config"] = item.pop("context_config_json")
+        # 间隔是否硬编码锁死，供 Admin 页面把输入框禁掉——不然用户改了保存，
+        # 后端静默丢弃，界面上却像是改成功了。
+        item["interval_locked"] = item.get("name") in Database.LOCKED_CHECK_IN_INTERVALS
         return item
 
     @staticmethod
@@ -694,6 +769,12 @@ class Database:
             raise ValueError(f"invalid schedule_type: {updates['schedule_type']}")
         if "tool_profile" in updates and updates["tool_profile"] not in self.CHECK_IN_TOOL_PROFILES:
             raise ValueError(f"invalid tool_profile: {updates['tool_profile']}")
+        if {"interval_min_minutes", "interval_max_minutes"} & updates.keys():
+            if self._locked_interval_for(check_in_id_or_name):
+                # Admin 的编辑弹窗每次提交整份表单，必然带上这两列。这里不能报错，
+                # 否则改 prompt 会被连坐；静默丢弃即可——调度器本来就不读它们。
+                updates.pop("interval_min_minutes", None)
+                updates.pop("interval_max_minutes", None)
         if "context_config" in updates:
             updates["context_config_json"] = self._encode_json(updates.pop("context_config"), {})
         if "days_of_week" in updates:
@@ -723,6 +804,20 @@ class Database:
         conn.close()
         return affected > 0
 
+    def _locked_interval_for(self, check_in_id_or_name) -> tuple[int, int] | None:
+        """这条 check-in 的间隔是不是硬编码锁死的；不是则返回 None。"""
+        if isinstance(check_in_id_or_name, int) or str(check_in_id_or_name).isdigit():
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT name FROM check_ins WHERE id = ?",
+                (int(check_in_id_or_name),),
+            ).fetchone()
+            conn.close()
+            name = row["name"] if row else None
+        else:
+            name = str(check_in_id_or_name)
+        return self.LOCKED_CHECK_IN_INTERVALS.get(name) if name else None
+
     def delete_check_in(self, check_in_id_or_name) -> bool:
         """Delete custom check-ins. Built-ins are preserved and should be disabled."""
         conn = self._get_conn()
@@ -750,12 +845,6 @@ class Database:
             last_fired_at=fired_at or datetime.now().isoformat(timespec="seconds"),
             last_scheduled_for=None,
         )
-
-    def ttl_followup_enabled(self) -> bool:
-        return self.get_state("checkin_ttl_followup_enabled") != "0"
-
-    def set_ttl_followup_enabled(self, enabled: bool) -> None:
-        self.set_state("checkin_ttl_followup_enabled", "1" if enabled else "0")
 
     # ============ 时间轴事件 ============
 

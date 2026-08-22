@@ -66,13 +66,11 @@ interface CheckIn {
   last_scheduled_for: string | null;
   last_fired_at: string | null;
   built_in: boolean;
+  interval_locked: boolean;
 }
 
 interface CheckInsResp {
   check_ins: CheckIn[];
-  settings: {
-    ttl_followup_enabled: boolean;
-  };
 }
 
 interface CheckInTestResult {
@@ -462,18 +460,6 @@ function CheckInAdmin() {
     }
   };
 
-  const setTtl = async (enabled: boolean) => {
-    setBusy('ttl');
-    try {
-      await patchJson('/api/settings/check-ins', { ttl_followup_enabled: enabled });
-      await load();
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-
   const saveCheckIn = async (form: CheckInFormData) => {
     const body = checkInFormToBody(form);
     if (editor?.mode === 'edit' && editor.original) {
@@ -529,14 +515,6 @@ function CheckInAdmin() {
       {err && <div className="admin-msg err">{err}</div>}
 
       <div className="admin-summary">
-        <span className="badge"><b>TTL follow-up</b>{data.settings.ttl_followup_enabled ? 'on' : 'off'}</span>
-        <button
-          className="admin-btn"
-          disabled={busy === 'ttl'}
-          onClick={() => setTtl(!data.settings.ttl_followup_enabled)}
-        >
-          {data.settings.ttl_followup_enabled ? 'Turn off TTL' : 'Turn on TTL'}
-        </button>
         <button className="admin-btn primary" onClick={() => setEditor({ mode: 'add' })}>
           + Add check-in
         </button>
@@ -716,6 +694,7 @@ function CheckInEditor({
   onSubmit: (form: CheckInFormData) => Promise<void>;
 }) {
   const [form, setForm] = useState<CheckInFormData>(() => checkInToForm(original));
+  const intervalLocked = Boolean(original?.interval_locked);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -794,18 +773,27 @@ function CheckInEditor({
             </label>
           </div>
         ) : (
-          <div className="form-grid two">
-            <label className="form-row">
-              <span>Min minutes</span>
-              <input type="number" min="1" value={form.interval_min_minutes}
-                     onChange={(e) => update('interval_min_minutes', e.target.value)} />
-            </label>
-            <label className="form-row">
-              <span>Max minutes</span>
-              <input type="number" min="1" value={form.interval_max_minutes}
-                     onChange={(e) => update('interval_max_minutes', e.target.value)} />
-            </label>
-          </div>
+          <>
+            <div className="form-grid two">
+              <label className="form-row">
+                <span>Min minutes</span>
+                <input type="number" min="1" value={form.interval_min_minutes}
+                       disabled={intervalLocked}
+                       onChange={(e) => update('interval_min_minutes', e.target.value)} />
+              </label>
+              <label className="form-row">
+                <span>Max minutes</span>
+                <input type="number" min="1" value={form.interval_max_minutes}
+                       disabled={intervalLocked}
+                       onChange={(e) => update('interval_max_minutes', e.target.value)} />
+              </label>
+            </div>
+            {intervalLocked && (
+              <div className="admin-msg dim">
+                这一项的间隔是内置固定的，改不了；其余字段可以正常修改。
+              </div>
+            )}
+          </>
         )}
 
         <div className="form-grid two">

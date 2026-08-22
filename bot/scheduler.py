@@ -2,12 +2,14 @@
 定时调度模块
 两个并发循环 + 一个 asyncio.Lock 防止并发 AI 调用：
 
-1. Timer 循环：随机轮询（基于"上次 AI 调用 + 45-55min"）+ 睡前提醒
+1. Timer 循环：随机轮询（基于"上次 AI 调用 + 各条目自己的间隔"）+ 睡前提醒
 2. Reminder 循环：数据库提醒，倒计时到下一条 + asyncio.Event 响应新增
 
 轮询策略（省钱核心）：
 不再固定每 1-60min 随机倒计时，而是以"上一次 AI 调用完成时刻"为基准，
-等 45-55min 再触发。任何 chat / poll / reminder / bedtime 都会重置基准——
+等一个随机间隔再触发。间隔取自每条 check-in 自己的 interval_min/max_minutes，
+只有 Database.LOCKED_CHECK_IN_INTERVALS 里那些内置项是硬编码的。
+任何 chat / poll / reminder / bedtime 都会重置基准——
 因为 prompt 都进了 Anthropic，cache 已经付过钱。
 """
 import asyncio
@@ -24,7 +26,7 @@ from bot.prompts import get_prompt_template
 from bot.logger import get_logger
 import config
 
-# random_poll 的小窗口预算（token）：主动闲聊不需要长上下文，
+# 主动轮询（after_ai_call）的小窗口预算（token）：主动闲聊不需要长上下文，
 # 对应窗口化之前「只取最近 8 条」的省 token 特例
 POLL_WINDOW_MAX_TOKENS = 2000
 
@@ -75,9 +77,30 @@ class Scheduler:
         """外部调用：任何 AI 调用完成（chat / poll / reminder / bedtime）后调用，
         重置 poll 基准时间。chat 路径需要 Discord Bot 显式调用。"""
         self._last_ai_call_ts = datetime.now()
-        for check_in in self.db.list_check_ins(enabled_only=True):
-            if check_in.get("schedule_type") == "after_ai_call":
-                self.db.set_check_in_last_scheduled(check_in["id"], None)
+        self.notify_schedule_changed(reschedule=True)
+
+    def notify_schedule_changed(self, reschedule: bool = False):
+        """外部调用：check-in 配置被增删改，唤醒 timer 循环按新配置重算。
+
+        和 notify_ai_call_done 的区别在于**不动 _last_ai_call_ts**。编辑一条
+        check-in 并不是完成了一次 AI 调用，把两者等同起来的话，用户每在 Admin
+        页面存一次盘，after_ai_call 类型的倒计时就会整整推迟一个间隔。
+
+        reschedule=True 表示这次改的是调度参数（开关、时间窗、间隔）：已经排好
+        的触发时刻是按旧参数算出来的，必须作废重排。只改 prompt 之类的内容时
+        传 False，保留已排好的时刻，免得每存一次盘就重新掷一次随机数。这个区分
+        目前只在 API 层成立——Admin 页面的编辑弹窗每次都提交整份表单（含
+        schedule_type、enabled 等），所以从界面上保存必然走 reschedule=True。
+        即便如此也只是重新掷一次随机偏移，基准 _last_ai_call_ts 不动，
+        期望等待时长不变。
+
+        只清 after_ai_call 类型：window 类型的 _scheduled_for_window 会自己检查
+        已排时刻是否仍落在窗口内，参数变了它自然会重排。
+        """
+        if reschedule:
+            for check_in in self.db.list_check_ins(enabled_only=True):
+                if check_in.get("schedule_type") == "after_ai_call":
+                    self.db.set_check_in_last_scheduled(check_in["id"], None)
         self._timer_event.set()
 
     async def start(self):
@@ -174,7 +197,7 @@ class Scheduler:
     async def _timer_loop(self):
         """
         内存倒计时循环，负责：
-        - 随机轮询：以"上次 AI 调用 + 45-55min 随机"为基准（可用 /poll 开关）
+        - 随机轮询：以"上次 AI 调用 + 随机间隔"为基准（可用 /poll 开关）
         - 睡前提醒（每晚 22:30-23:30 和 23:30-00:00 各一次，不受开关影响）
 
         notify_ai_call_done() 触发的 _timer_event 会唤醒 sleep，
@@ -223,21 +246,29 @@ class Scheduler:
         for check_in in self.db.list_check_ins(enabled_only=True):
             schedule_type = check_in.get("schedule_type")
             if schedule_type == "after_ai_call":
-                if not self.db.ttl_followup_enabled():
-                    continue
-                min_minutes = int(check_in.get("interval_min_minutes") or 45)
-                max_minutes = int(check_in.get("interval_max_minutes") or min_minutes)
-                if max_minutes < min_minutes:
-                    max_minutes = min_minutes
-                next_time = self._scheduled_after_ai_call_time(check_in)
+                locked = Database.LOCKED_CHECK_IN_INTERVALS.get(check_in.get("name"))
+                if locked:
+                    # 内置的 TTL 项：间隔硬编码，不读数据库那两列
+                    min_minutes, max_minutes = locked
+                else:
+                    min_minutes = int(check_in.get("interval_min_minutes") or 45)
+                    max_minutes = int(check_in.get("interval_max_minutes") or min_minutes)
+                    if max_minutes < min_minutes:
+                        max_minutes = min_minutes
+                next_time = self._scheduled_after_ai_call_time(check_in, now)
                 if next_time is None:
                     seconds = random.randint(min_minutes * 60, max_minutes * 60)
                     next_time = self._last_ai_call_ts + timedelta(seconds=seconds)
+                    if next_time <= now:
+                        # 基准（上次 AI 调用）已经太旧，算出来的时刻落在过去。
+                        # 这种时刻既不能调度、又必须避免写进 last_scheduled_for，
+                        # 否则下一轮会被原样读回来再次丢弃，这个 check-in 就永久
+                        # 卡住了。改为以当前时刻为基准重算。
+                        next_time = now + timedelta(seconds=seconds)
                     self.db.set_check_in_last_scheduled(
                         check_in["id"], next_time.isoformat(timespec="seconds")
                     )
-                if next_time > now:
-                    out.append((next_time, check_in))
+                out.append((next_time, check_in))
                 continue
 
             if schedule_type == "window":
@@ -246,7 +277,14 @@ class Scheduler:
                     out.append((next_time, check_in))
         return out
 
-    def _scheduled_after_ai_call_time(self, check_in: dict) -> datetime | None:
+    def _scheduled_after_ai_call_time(self, check_in: dict, now: datetime) -> datetime | None:
+        """读回已持久化的下次触发时刻；无效或已经过期都返回 None，让调用方重算。
+
+        「已经过期」也必须算作无效：进程重启或长时间没有任何 AI 调用，都会让
+        这个时刻落到当前时刻之前。这样的时刻既不会被调度，又仍然晚于
+        _last_ai_call_ts，所以每一轮都会被原样读回来又原样丢弃，
+        对应的 check-in 就再也不会触发。
+        """
         raw = check_in.get("last_scheduled_for")
         if not raw:
             return None
@@ -255,6 +293,8 @@ class Scheduler:
         except (TypeError, ValueError):
             return None
         if scheduled <= self._last_ai_call_ts:
+            return None
+        if scheduled <= now:
             return None
         return scheduled
 
@@ -339,7 +379,8 @@ class Scheduler:
             logger.info(f"⏭️ check-in 已关闭，跳过: {name}")
             result["skipped"] = "disabled"
             return result
-        if not force and name == "random_poll" and self.is_user_typing():
+        proactive_poll = check_in.get("schedule_type") == "after_ai_call"
+        if not force and proactive_poll and self.is_user_typing():
             logger.info("⏭️ 用户正在输入，跳过本次随机 check-in")
             result["skipped"] = "user_typing"
             return result
@@ -347,11 +388,11 @@ class Scheduler:
         async with self._ai_lock:
             try:
                 prompt = self._render_check_in_prompt(check_in, timestamp)
-                # random_poll 保留小窗口省 token（原 8 条特例的 token 版）；
-                # 其余 check-in 用完整 token 窗口
+                # 主动轮询（after_ai_call）保留小窗口省 token（原 8 条特例的
+                # token 版）；定时窗口类的 check-in 用完整 token 窗口
                 window = self.memory.context_window(
                     str(config.CHANNEL_ID),
-                    max_tokens=POLL_WINDOW_MAX_TOKENS if name == "random_poll" else None,
+                    max_tokens=POLL_WINDOW_MAX_TOKENS if proactive_poll else None,
                 )
                 reply = await scheduled_action(
                     self.db, prompt, timestamp, window.messages,
