@@ -177,6 +177,103 @@ def test_tool_round_message_shapes_and_callbacks(relay_call):
                         "content": build_tool_round_hint(["list_reminders"])}
 
 
+_TOOLS_SECTION = "【工具使用策略】log 前自查同时段是否已有相同事件。"
+
+
+def _prompt_with_tools() -> PromptParts:
+    """带 {tools} 占位符的模板——默认 _prompt() 没有占位符，concise() 是空操作。"""
+    return PromptParts(mode="chat", template="你是测试助手。\n\n{tools}",
+                       values={"tools": _TOOLS_SECTION})
+
+
+def _tool_round_script():
+    tool_call = {"id": "call_1", "type": "function",
+                 "function": {"name": "list_reminders", "arguments": "{}"}}
+    return tool_call, [
+        _completion(content="我先看一眼", tool_calls=[tool_call],
+                    finish_reason="tool_calls"),
+        _completion(content="现在没有待办提醒"),
+    ]
+
+
+def test_tools_section_dropped_from_system_after_first_round(relay_call):
+    """中间轮改发 concise()：tools 使用策略只投递一次，其余 system 正文保持不变。"""
+    _, script = _tool_round_script()
+    _, calls = relay_call(script, prompt=_prompt_with_tools())
+
+    assert len(calls) == 2
+    first_system = calls[0]["payload"]["messages"][0]
+    second_system = calls[1]["payload"]["messages"][0]
+
+    assert first_system["role"] == "system"
+    assert _TOOLS_SECTION in first_system["content"]
+
+    # 第二轮：抽掉 tools 段，人格/规则正文照发
+    assert second_system["role"] == "system"
+    assert _TOOLS_SECTION not in second_system["content"]
+    assert second_system["content"] == "你是测试助手。"
+
+
+def test_tool_schema_still_sent_every_round(relay_call):
+    """省掉的是 DB 的 tools 使用策略散文，不是工具 schema——后者每轮都得发，
+    否则模型没法在中间轮继续调工具。"""
+    _, script = _tool_round_script()
+    _, calls = relay_call(script, prompt=_prompt_with_tools())
+
+    assert calls[0]["payload"]["tools"] == get_tools(None)
+    assert calls[1]["payload"]["tools"] == get_tools(None)
+
+
+def test_concise_system_keeps_tool_round_message_shape(relay_call):
+    """换 system 不能动会话消息的回填顺序。"""
+    tool_call, script = _tool_round_script()
+    result, calls = relay_call(script, prompt=_prompt_with_tools())
+
+    assert result == "我先看一眼\n现在没有待办提醒"
+    msgs = calls[1]["payload"]["messages"]
+    assert msgs[-3] == {"role": "assistant", "tool_calls": [tool_call],
+                        "content": "我先看一眼"}
+    assert msgs[-2]["role"] == "tool"
+    assert msgs[-1] == {"role": "user",
+                        "content": build_tool_round_hint(["list_reminders"])}
+
+
+def test_plain_string_prompt_unchanged_across_rounds(relay_call):
+    """simple_completion 传的是已拍平的 str，没有占位符可抽，两轮同一份。"""
+    _, script = _tool_round_script()
+    _, calls = relay_call(script, prompt="已拍平的 system 文本")
+
+    assert calls[0]["payload"]["messages"][0] == {
+        "role": "system", "content": "已拍平的 system 文本"}
+    assert calls[1]["payload"]["messages"][0] == {
+        "role": "system", "content": "已拍平的 system 文本"}
+
+
+def test_empty_system_omits_system_block_in_all_rounds(relay_call):
+    """模板整体为空时，两轮都不能发空 system 块（anthropic 系代理会 400）。"""
+    _, script = _tool_round_script()
+    _, calls = relay_call(script,
+                          prompt=PromptParts(mode="chat", template="{tools}",
+                                             values={"tools": ""}))
+
+    for call in calls:
+        assert call["payload"]["messages"][0]["role"] == "user"
+
+
+def test_system_block_dropped_when_template_is_only_tools(relay_call):
+    """边界：模板正文全靠 {tools} 撑着时，第二轮整个 system 块消失（首轮仍有）。
+    线上 main_template 有大段人格正文，concise 后仍非空，走不到这里；
+    这条只是把模板被改空后的行为钉住，避免退化成发空 system 块。"""
+    _, script = _tool_round_script()
+    _, calls = relay_call(script,
+                          prompt=PromptParts(mode="chat", template="{tools}",
+                                             values={"tools": _TOOLS_SECTION}))
+
+    assert calls[0]["payload"]["messages"][0] == {
+        "role": "system", "content": _TOOLS_SECTION}
+    assert calls[1]["payload"]["messages"][0]["role"] == "user"
+
+
 def test_think_blocks_stripped_from_display_but_kept_in_trace(relay_call):
     entry = trace.start(trigger="chat", model="claude-x", provider="relay",
                         prompt_parts=None, messages=[])

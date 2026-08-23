@@ -116,20 +116,24 @@ async def _call_with_tools(db: Database, prompt: PromptParts | str | None,
 
     logger.info(f"🌐 OpenAI-compat URL: {url}")
 
-    # 拍平 PromptParts 为单个字符串；simple_completion 路径直接传已拍平的 str
+    # 拍平 PromptParts 为单个字符串；simple_completion 路径直接传已拍平的 str。
+    # 首轮发完整 system，第二轮起改发 concise()（{tools} 展开为空）：工具 schema
+    # 每轮都在 payload["tools"] 里发，DB 的 tools 使用策略散文只有首轮需要——
+    # 模型已经决定调哪个工具了，重复投递那 ~2k 字符没有新信息。
+    # simple_completion 传进来的是已拍平的 str，没有占位符可抽，两轮同一份。
     if isinstance(prompt, str):
-        full_system = prompt
+        full_system = concise_system = prompt
+    elif prompt:
+        full_system = prompt.flatten()
+        concise_system = prompt.concise().flatten()
     else:
-        full_system = prompt.flatten() if prompt else ""
+        full_system = concise_system = ""
 
     # 按 tool_names 过滤工具子集
     tools = get_tools(tool_names)
 
-    # 无 system prompt 时不发空 system 块：部分端点（如 anthropic 系代理）
-    # 会对空 text block 直接 400
-    full_messages = (
-        [{"role": "system", "content": full_system}] if full_system else []
-    ) + list(messages)
+    # system 块每轮单独拼，所以这里只保存会话消息（不含 system）
+    convo_messages = list(messages)
     all_texts = []  # 收集发送过的文本
     sent_display_texts = set()  # 去重集合
     # GPT-5 系官方模型拒绝 max_tokens；被明确拒绝后本次调用内换用新参数
@@ -139,6 +143,12 @@ async def _call_with_tools(db: Database, prompt: PromptParts | str | None,
 
     async with httpx.AsyncClient() as client:
         for round_idx in range(5):
+            # 无 system prompt 时不发空 system 块：部分端点（如 anthropic 系代理）
+            # 会对空 text block 直接 400
+            system_text = full_system if round_idx == 0 else concise_system
+            round_messages = (
+                [{"role": "system", "content": system_text}] if system_text else []
+            ) + convo_messages
             while True:
                 payload = {
                     "model": model,
@@ -146,7 +156,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | str | None,
                     # curator 等长任务需要更大的上限（stop_reason=length 时
                     # 可见输出可能为空）
                     token_param: max_output_tokens or 4096,
-                    "messages": full_messages,
+                    "messages": round_messages,
                 }
                 if temperature is not None:
                     payload["temperature"] = temperature
@@ -250,7 +260,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | str | None,
             }
             if round_text:
                 assistant_msg["content"] = round_text
-            full_messages.append(assistant_msg)
+            convo_messages.append(assistant_msg)
 
             # 执行每个 tool
             called_names = []
@@ -272,7 +282,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | str | None,
                 trace_tool_calls.append({"name": func_name, "input": func_args, "id": tc_id})
                 trace_tool_results.append({"name": func_name, "tool_use_id": tc_id, "result": result})
 
-                full_messages.append({
+                convo_messages.append({
                     "role": "tool",
                     "tool_call_id": tc_id,
                     "content": json.dumps(result, ensure_ascii=False)
@@ -280,7 +290,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | str | None,
 
             # 在所有 tool 消息之后追加一条 system 风格的 user 消息
             # 夹带命中工具的定向 post-hint（TOOL_ROUND_REMINDER + per-tool 决策辅助）
-            full_messages.append({
+            convo_messages.append({
                 "role": "user",
                 "content": build_tool_round_hint(called_names),
             })

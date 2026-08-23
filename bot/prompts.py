@@ -15,9 +15,14 @@ small non-user-specific runtime hints.
 - 占位符替换只认 _MAIN_PLACEHOLDER_RE 里的已知 token，字面 {}（颜文字、
   JSON 示例）原样保留；占位符的值不做二次扫描。
 
-⚠️ 静态 prompt **不随 mode 变化**——chat / poll 共享完全相同的 system prompt，
-   最大化 1h ephemeral cache 命中率。模式差异通过 scheduler 模板
-   （PROACTIVE / REMINDER / BEDTIME / MORNING）在 user message 里标识。
+⚠️ 静态 prompt **不随 mode 变化**——chat / poll 共享完全相同的 system prompt。
+   模式差异通过 scheduler 模板（PROACTIVE / REMINDER / BEDTIME / MORNING）
+   在 user message 里标识。
+   共用的**本意**是提高 1h ephemeral cache 命中率，但这个收益尚未被证实：
+   2026-08-22 统计最近七天 ai_traces，check_in 路径 19 轮、31 万 prompt tokens，
+   cached_tokens 恒为 0，一次未命中；chat 只有 2 轮命中。原因未查明（可能是
+   relay 行为、前缀不稳定，或单模板化之后 cache_control 分块失效）。
+   LT-156 负责查明并给出结论，在那之前不要把"共用模板 = 省钱"当作已成立的前提。
 
 引擎消费 PromptParts 的方法：
 - prompt.flatten() → 单个 system 字符串（OpenAI 兼容格式）
@@ -414,8 +419,21 @@ TOOL_POST_HINTS = {
         "如果用户明确要替换或取消已有提醒，"
         "要替换旧的先 delete_reminder（单条）或 cancel_reminders（整组）再 set。"
     ),
+    "add_deadline": (
+        "[决策辅助] 刚建了 deadline，系统会自动倒计时，它也会出现在"
+        "【待完成的 Deadline】里。回头看一眼【你现在记着的事】："
+        "如果里面有一条只是记着这个截止时间本身，那它现在是重复的，"
+        "用 delete_memory 删掉。关于这件事的其他信息（她打算怎么准备、"
+        "在担心什么、相关的安排）留在 memory 里，不要一起删。"
+    ),
     # set_reminder 后不做去重自检：pending reminder 列表已经常驻 Block 4
     # 上下文，模型每次进入新一轮就能看到队列，不需要再 round-trip 一次 list。
+    #
+    # timeline 类工具（log / update / delete）不配 post-hint：
+    # "同一件事延续就 update 而不是新建"是**下笔之前**的判断，依据是常驻
+    # 上下文里的【今天完整 Timeline】，模型在首轮就该做完。等 tool_result
+    # 回来再提醒，错误的记录已经写进去了，而且 log_timeline_event 是调用
+    # 频率最高的工具，每次都追加一段等于持续加价买一句没用的话。
 }
 
 
