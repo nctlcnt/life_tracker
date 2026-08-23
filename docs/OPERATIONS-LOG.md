@@ -14,7 +14,7 @@
 
 ## 当前基线
 
-最后更新：2026-07-18 01:33 UTC
+最后更新：2026-08-23 00:58 UTC
 
 | 检查项 | 最近执行时间（UTC） | 状态 | 结果/证据 | 下次动作 |
 |---|---|---|---|---|
@@ -26,7 +26,7 @@
 | Production 容器状态 | 2026-07-18 01:33 | PASS | app `(healthy)`，restart=0；Discord bot/scheduler 启动日志正常 | 每次部署后重跑 |
 | SQLite quick check | 2026-07-18 01:33 | PASS | `PRAGMA quick_check` → `ok`；部署前快照 `pre-compact-timefix-20260718-012157.db` integrity=`ok` | 每次部署后重跑 |
 | Litestream 写入 R2 | 2026-07-17 13:33 | PASS | 部署后 `wal segment written`（position 00000261/00000262） | 每次部署后检查复制；每季度恢复演练 |
-| 本地 SQLite 快照恢复 | 未知 | NOT TESTED | 部署前快照 `pre-deploy-20260717.db` quick_check=ok，但未演练恢复启动 | 下次高风险部署前演练 |
+| 本地 SQLite 快照恢复 | 2026-08-23 00:58 | PASS | `scripts/backup_and_verify.py --label pre-status-ladder`：在线备份 API 拍快照 `pre-status-ladder-20260823-005850.db`（39.4 MB），恢复到临时路径后 `integrity_check` → `ok`，24 张表行数逐张比对通过 | 每次破坏性迁移前重跑 |
 | R2/Litestream 完整恢复 | 2026-07-11 13:30 | PASS | 从 R2 恢复到全新 `/tmp` 路径；integrity check、数据新鲜度和 API-only smoke test 均通过 | 2026-10 前重跑，或 Litestream/R2 变更后立即重跑 |
 | 网络监听/路由审计 | 2026-07-17 13:34 | PASS | `infra audit`：life-tracker 监听 `127.0.0.1:8080` 无异常；5 个告警均属 staging/llm-gateway/未登记工具进程，与部署前基线一致 | 每次部署后重跑 |
 | Dashboard/API 鉴权 | 2026-07-17 06:55 | PASS | 自动验收全部通过；用户随后从真实浏览器确认登录和 Dashboard 使用“完全正常” | 每次鉴权/路由变更后重跑 |
@@ -37,11 +37,21 @@
 
 1. `life.purrden.cc` 仍是公网路由，但 Dashboard/API 已有应用层鉴权；Cloudflare Access 仍可作为额外防线，不再是保密性的唯一前置。
 2. 外部 Dockge staging 权威 compose 的端口绑定尚未满足 VPS 私有监听纪律；仓库内历史参考文件已收紧，但不能替代外部文件。
-3. 本地 SQLite `.backup` 快照的恢复流程尚未单独演练；R2/Litestream 恢复已于 2026-07-11 通过。
+3. ~~本地 SQLite `.backup` 快照的恢复流程尚未单独演练~~ 已于 2026-08-23 演练通过，见下方演练记录；工具固化为 `scripts/backup_and_verify.py`。
 4. 2026-07-12 已决定暂不备份 `data/ai_traces/*.jsonl`。主机完全损坏时允许丢失 JSONL 原始 trace；SQLite 中的 `ai_runs`/`tool_calls` 仍由 Litestream 保护。
 5. `npm ci` 报告 1 low、2 moderate、2 high；需单独运行 `npm audit` 评估可达性和升级影响，禁止未经审查直接 `--force`。
 
 ## 演练记录
+
+### 2026-08-23 00:58 UTC — 本地 SQLite 快照恢复演练（首次）
+
+- 触发原因：记忆表状态阶梯改造需要重建 `personal_memories`（SQLite 无法修改 `CHECK`，只能重建表），属于破坏性迁移，按纪律必须先备份并演练恢复。
+- 工具：新增 `scripts/backup_and_verify.py`。它用 `sqlite3` 的在线备份 API 而不是 `cp`——生产库是 WAL 模式且 bot 在跑，直接复制文件可能拿到缺少 WAL 尾部的中间状态。
+- 快照：`data/backups/pre-status-ladder-20260823-005850.db`，39.4 MB。
+- 恢复演练：把快照拷到临时目录打开，`PRAGMA integrity_check` → `ok`；再与源库逐表比对行数，24 张表全部一致。
+- 为什么要比行数：`integrity_check` 只证明文件结构没坏，证明不了内容还在。快照拍错源、拍到空库这类问题只有比对行数才会暴露。
+- 结论：本条从 `NOT TESTED` 改为 `PASS`。这是该项目**第一次**真正演练本地快照恢复；此前只验证过 R2/Litestream 路径（2026-07-11）。
+- 未覆盖：本次只验证了「快照可以打开且内容完整」，**没有**验证「用这个快照启动应用并正常服务」。真要做完整回滚时，还需要停容器、换文件、起容器这一段。
 
 ### 2026-07-11 13:29 UTC — Litestream/R2 隔离恢复演练
 

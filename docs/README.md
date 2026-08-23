@@ -8,7 +8,7 @@
 |------|-----------|------|--------|
 | 现在 | 系统当前是什么样 | `codebase/` | 覆盖更新（活文档）可使用skill learn-codebase 生成 |
 | 将来 | 接下来打算怎么改 | `plan/` | 改完即归档 |
-| 过去 | 当时为什么这么决定 | `adr/` | 不可变 |
+| 过去 | 当时为什么这么决定 | `adr/`（目前为空）；memory 模块记在自己的设计文档里 | 不可变 |
 | 记录 | 某件验证何时成功 | `OPERATIONS-LOG.md` | 只追加 |
 
 ## 目录结构
@@ -19,15 +19,44 @@ docs/
 ├── codebase/                 # 【现在】全局现状（跨模块）
 ├── modules/                  # 重点模块，按模块聚合
 │   └── memory/
-│       ├── README.md         # 这块现在是什么样（现状入口）
-│       ├── design.md         # 当前设计（会演化，覆盖更新）
-│       ├── plan/             # 每次迭代的施工方案（改完归档）
-│       ├── decisions.md      # 难以反悔的关键决定（极少）
-│       └── archive/          # 被推翻的方案、旧版本
+│       ├── GLOSSARY.md       # 本模块术语的规范名与决定状态
+│       ├── DEVELOPMENT-LOG.md  # 已经发生的实现演进（只追加）
+│       └── plan/
+│           ├── memory-v4-design.md          # 当前认可的目标设计
+│           ├── memory-v4-implementation.md  # 施工顺序、阻塞项、验收
+│           ├── memory_database_schema_plan.md  # 具体表结构与操作契约
+│           └── archives/     # 被推翻的方案、旧版本
 ├── plan/                     # 【将来】零散的、跨模块的一次性方案
-├── adr/                      # 【过去】全局关键决定
-└── OPERATIONS-LOG.md  # 运维验证台账（只追加）
+├── adr/                      # 【过去】全局关键决定（**目前为空**，见下）
+└── OPERATIONS-LOG.md         # 运维验证台账（只追加）
 ```
+
+### memory 模块为什么与上面的通用布局不同（2026-08-22 记录）
+
+通用布局设想的是 `README.md` 加 `design.md` 加 `plan/` 加 `decisions.md` 加 `archive/`。
+memory 模块实际长成了另一个样子，这里说明差异和原因，避免下次有人照着通用布局去找文件：
+
+- **没有 `README.md` 和 `design.md`，目标设计放在 `plan/memory-v4-design.md`。**
+  它是一份 living architecture design，既描述目标结构又标注每项的实现状态，
+  职责上介于"竣工图"和"施工图"之间。按下面「design 与 plan 的区别」的划分，
+  它更该放在 `modules/memory/design.md`。**这是一处已知的位置偏差**：
+  多个 Linear issue 的描述已经指向现在这个路径，挪动要连带改那些引用，
+  所以先记录、不动。
+- **没有 `decisions.md`。** 关键决定和被否决的替代方案记在
+  `plan/memory-v4-design.md` 的第 1.1 节和第 12 节里。
+- **`archives/` 比通用布局多一个 s**，且位于 `plan/` 之下而不是模块根下。
+- **多出 `GLOSSARY.md`**：这个模块的术语反复漂移过，需要一份规范名单独管理。
+  它同时标注每个词条的决定状态（已定 / 倾向 / 待定 / 弃用）。
+- **多出 `DEVELOPMENT-LOG.md`**：记录已经发生的实现演进，与目标设计分开，
+  避免把"计划要做"写成"已经做完"。
+
+### `adr/` 目前为空
+
+原有的 ADR-0001 至 0005 已在 commit `33c1304` 的文档重组和后续整理中全部删除，
+内容分别并入 memory 模块的设计文档与术语表。下面的「ADR 写作纪律」仍然有效，
+只是当前没有在写的 ADR。**注意 Linear 上部分历史描述仍引用 ADR-0003 / ADR-0004**，
+那些引用指向已不存在的文件；LT-133、LT-136、LT-137 三个 issue 已于 2026-08-22 更正，
+其余若发现同类引用，一律改指 `modules/memory/` 下的对应文档。
 
 可执行的东西不放 docs：常规测试进项目根 `tests/`，模型/策略选型评测进项目根 `evals/`。docs 只放给人读的描述性文档。
 
