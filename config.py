@@ -53,6 +53,19 @@ ALLOWED_USER_ID: int = int(_cfg.get("discord", {}).get("allowed_user_id", 0) or 
 # Bot 只在这个 channel 里听消息、推主动消息。prod / staging 各自配置不同 id。
 CHANNEL_ID: int = int(_cfg.get("discord", {}).get("channel_id", 0) or 0)
 
+# ── 用户称呼 ───────────────────────────────────────────────────────────
+# bot 怎么称呼使用者。它只在**渲染时**出现——记忆条目本身不带主语。
+#
+# 为什么不把称呼写进记忆文本：这是单用户系统，personal_memories 每一行说的
+# 都是同一个人，主语是冗余的。把它写进 claim 会让改称呼变成一次全表重写，
+# 还会逼 curator 学会输出占位符（它会写错，触发修复轮）、逼 validator 加规则
+# 拦截漏网的字面量。名字只在记忆块的标题里出现一次，改称呼就只是改这一个值。
+#
+# 注意这跟 curator 指令里的"用户消息 / 助理消息"是两回事：那里说的是
+# role='user' 这个 schema 概念，不是称呼，不要一起替换。
+USER_DISPLAY_NAME: str = str(
+    _cfg.get("user", {}).get("display_name", "") or "她").strip()
+
 # ── AI Presets ─────────────────────────────────────────────────────────
 # config.json 里维护一张 presets 表，每条 preset 是一套
 # { provider, api_key, base_url, model, use_v1_suffix }
@@ -340,6 +353,14 @@ CURATOR_MAX_INTERVAL_HOURS: float = float(
 CURATOR_BATCH_LIMIT: int = int(_memory.get("curator_batch_limit", 20) or 20)
 # curator 专用 preset 名；空/无效回落 active preset
 CURATOR_PRESET: str = str(_memory.get("curator_preset", "") or "")
+
+# 长期记忆的读取源。False = 旧的 data/memory.md，True = personal_memories
+# 按注入权限分档。
+#
+# 留成开关而不是直接切，是因为这是**用户能立刻感觉到**的变化：两个来源的
+# 内容不一样（memory.md 30 条，数据库 21 条经人工确认的种子），切过去之后
+# bot 会"忘掉"没被确认的那些。出问题时要能一秒退回去。
+MEMORY_READ_FROM_DB: bool = bool(_memory.get("read_from_db", False))
 
 # ── 天气 ───────────────────────────────────────────────────────────────
 # tomorrow.io API；api_key 空时天气模块会静默降级（返回 None，不影响主流程）

@@ -238,6 +238,34 @@ def _format_memories(memories: list[dict] | None,
     return f"{LABEL_MEMORIES}\n" + "\n".join(lines)
 
 
+def format_memory_tiers(*, asserted: list[dict], hedged: list[dict],
+                        display_name: str) -> str:
+    """按注入权限分档渲染记忆块。
+
+    两档**必须分开成块**，不能拼成一段文本。这是设计的核心不变量：
+    `assert` 档是用户确认过的事实，可以直接用；`hedge` 档只有证据支持、
+    没有用户确认，引用时必须带限定语。混在同一段里，模型就没有依据区分两者，
+    "写入侧放行、读取侧把关"这个设计就落空了。
+
+    称呼只出现在块标题里，条目本身不带主语——这是单用户系统，每一行说的都是
+    同一个人。这样改称呼就只是改一个配置值，而不是全表重写文本。
+    """
+    parts = []
+    if asserted:
+        parts.append(
+            f"{LABEL_MEMORIES}\n"
+            f"以下是关于 {display_name} 的事，已经确认过，可以直接当事实用：\n"
+            + "\n".join(f"- [id={m['id']}] {m['summary']}" for m in asserted))
+    if hedged:
+        parts.append(
+            f"【还不确定的印象】\n"
+            f"以下关于 {display_name} 的说法有证据支持，但本人还没有确认过。"
+            f"提到时必须带上限定语（例如「你之前好像提过……」），"
+            f"不要当成确定的事实：\n"
+            + "\n".join(f"- [id={m['id']}] {m['summary']}" for m in hedged))
+    return "\n\n".join(parts)
+
+
 def _format_relevant_history(snippets: list[dict] | None) -> str:
     """memory v3 Part B2：语义检索命中的历史对话片段。
     每条展示 embedding_context（带前几轮上下文的拼接文本），短消息才有主题信息。"""

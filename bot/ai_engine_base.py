@@ -9,7 +9,8 @@ AI 引擎公共模块
 import asyncio
 
 from bot.tools import POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, TOOLS
-from bot.prompts import build_prompt, PromptParts
+from bot.memory.personal_repository import PersonalMemoryRepository
+from bot.prompts import build_prompt, format_memory_tiers, PromptParts
 from bot.memory import MemoryRecallDisabled, MemoryRecallUnavailable, MemoryService
 from bot.weather import is_morning, get_weather_brief
 from bot.google_calendar import CalendarNotConfigured, CalendarQueryError, get_calendar_context
@@ -90,8 +91,19 @@ def _build_prompt(db: Database, mode: str,
         return context_config.get(key, True)
 
     memory = _memory_service(db, memory_service)
-    memories = memory.list_durable() if include("include_memories") else []
-    memory_markdown = memory.durable_markdown() if include("include_memories") else ""
+    memories, memory_markdown, memory_tiers = [], "", ""
+    if include("include_memories"):
+        if config.MEMORY_READ_FROM_DB:
+            # 按注入权限取，不按 status 取：两者一一对应，但对应关系是设计决定，
+            # 不该被每个调用点各记一份（见 status_ladder）。
+            repository = PersonalMemoryRepository(db)
+            memory_tiers = format_memory_tiers(
+                asserted=repository.list_by_permission("assert"),
+                hedged=repository.list_by_permission("hedge"),
+                display_name=config.USER_DISPLAY_NAME)
+        else:
+            memories = memory.list_durable()
+            memory_markdown = memory.durable_markdown()
     today_timeline = db.get_today_events() if include("include_today_timeline") else []
 
     # Deadline：先自动过期，再取 active
@@ -112,7 +124,9 @@ def _build_prompt(db: Database, mode: str,
         mode,
         sections=db.get_prompt_sections(),
         memories=memories or None,
-        memory_markdown=memory_markdown or None,
+        # 分档渲染好的整块直接当 markdown 传：_format_memories 的第一条分支就是
+        # "有现成文本就原样用"，两条来源共用同一个占位符，互斥。
+        memory_markdown=(memory_tiers or memory_markdown) or None,
         relevant_history=relevant_history or None,
         today_timeline=today_timeline or None,
         weather=weather,
