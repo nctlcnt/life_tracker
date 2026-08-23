@@ -265,9 +265,22 @@ class Scheduler:
                         # 否则下一轮会被原样读回来再次丢弃，这个 check-in 就永久
                         # 卡住了。改为以当前时刻为基准重算。
                         next_time = now + timedelta(seconds=seconds)
+                    next_time = self._clamp_to_active_window(check_in, next_time)
                     self.db.set_check_in_last_scheduled(
                         check_in["id"], next_time.isoformat(timespec="seconds")
                     )
+                else:
+                    # 读回来的时刻同样要过时段检查，不能只查重新计算的那条路径。
+                    # 时段是后加的，或者被改窄了，库里都可能存着一个当时合法、
+                    # 现在越界的时刻——它会原样读回来直接触发，把新设的时段绕过去。
+                    # （实测：给「随手说一句」加上 09:00-22:00 之后，
+                    #   它仍然按改之前存的 00:37 排队。）
+                    clamped = self._clamp_to_active_window(check_in, next_time)
+                    if clamped != next_time:
+                        next_time = clamped
+                        self.db.set_check_in_last_scheduled(
+                            check_in["id"], next_time.isoformat(timespec="seconds")
+                        )
                 out.append((next_time, check_in))
                 continue
 
@@ -276,6 +289,39 @@ class Scheduler:
                 if next_time is not None:
                     out.append((next_time, check_in))
         return out
+
+    def _clamp_to_active_window(self, check_in: dict, when: datetime) -> datetime:
+        """把 after_ai_call 的触发时刻推进到允许的时段内。
+
+        `window` 类型本来就只在 time_start~time_end 之间触发，但 `after_ai_call`
+        以前完全不读这两列——间隔从上一次 AI 调用起算，睡前那次对话就足以把下一次
+        主动消息推到凌晨。实测 8 月在悉尼时间 02、03、04 点各响过一次。
+        之所以只有一次而不是每天，是因为夜里没有 AI 调用可以挂靠，不是因为有保护。
+
+        两列为空表示不限时段，保持旧行为。
+        """
+        start_raw = check_in.get("time_start")
+        end_raw = check_in.get("time_end")
+        if not start_raw or not end_raw:
+            return when
+
+        start_t = self._parse_hhmm(start_raw)
+        end_t = self._parse_hhmm(end_raw)
+        # 跨零点的时段（例如 22:00~06:00）语义是"这段之内可以响"，
+        # 判断要分成两段：当天 start 之后，或次日 end 之前。
+        if start_t <= end_t:
+            in_window = start_t <= when.time() <= end_t
+        else:
+            in_window = when.time() >= start_t or when.time() <= end_t
+        if in_window:
+            return when
+
+        # 落在时段外：推到下一个 start。同日的 start 已经过去就推到明天，
+        # 避免把时刻推回过去导致这一轮又被丢弃。
+        candidate = datetime.combine(when.date(), start_t)
+        if candidate <= when:
+            candidate += timedelta(days=1)
+        return candidate
 
     def _scheduled_after_ai_call_time(self, check_in: dict, now: datetime) -> datetime | None:
         """读回已持久化的下次触发时刻；无效或已经过期都返回 None，让调用方重算。
