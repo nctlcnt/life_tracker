@@ -14,18 +14,18 @@
 
 ## 当前基线
 
-最后更新：2026-08-23 00:58 UTC
+最后更新：2026-08-23 13:39 UTC
 
 | 检查项 | 最近执行时间（UTC） | 状态 | 结果/证据 | 下次动作 |
 |---|---|---|---|---|
-| Python 全部自动测试 | 2026-07-18 01:30 | PASS | `.venv/bin/python -m pytest -q`：156 passed，25.42s（含 compact 时间锚点、模板和修正重试测试） | 每次部署前重跑 |
+| Python 全部自动测试 | 2026-08-23 13:35 | PASS | `.venv/bin/python -m pytest -q`：236 passed，33.21s（含状态阶梯、schema contract、注入分档、备份恢复相关新增 38 条） | 每次部署前重跑 |
 | 前端生产构建 | 2026-07-18 01:26 | PASS | `make deploy-local` Docker frontend-builder 构建成功 | 每次部署前重跑 |
 | npm 干净安装 | 2026-07-17 03:58 | PASS | `npm ci` 安装 287 packages；audit findings 与 07-11 相同，仍待审查 | 审查 audit findings；依赖变更后重跑 |
 | npm Docker builder | 2026-07-18 01:31 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功（含 frontend-builder） | Dockerfile/依赖变更后重跑 |
-| Production health endpoint | 2026-07-18 01:33 | PASS | `/internal/health` 200 | 每次部署后重跑 |
-| Production 容器状态 | 2026-07-18 01:33 | PASS | app `(healthy)`，restart=0；Discord bot/scheduler 启动日志正常 | 每次部署后重跑 |
-| SQLite quick check | 2026-07-18 01:33 | PASS | `PRAGMA quick_check` → `ok`；部署前快照 `pre-compact-timefix-20260718-012157.db` integrity=`ok` | 每次部署后重跑 |
-| Litestream 写入 R2 | 2026-07-17 13:33 | PASS | 部署后 `wal segment written`（position 00000261/00000262） | 每次部署后检查复制；每季度恢复演练 |
+| Production health endpoint | 2026-08-23 13:39 | PASS | `/internal/health` 200 | 每次部署后重跑 |
+| Production 容器状态 | 2026-08-23 13:39 | PASS | app `(healthy)`；Discord bot 上线（ひより#5775）、scheduler 启动、启动日志零 error/exception | 每次部署后重跑 |
+| SQLite quick check | 2026-08-23 13:39 | PASS | `PRAGMA quick_check` → `ok`；部署前快照 `pre-onboarding-seed-20260823-045043.db` integrity=`ok` | 每次部署后重跑 |
+| Litestream 写入 R2 | 2026-08-23 13:38 | PASS | 部署后 `wal segment written`（generation f8f62c83c2d3df4f，position 000003e0/000003e1） | 每次部署后检查复制；每季度恢复演练 |
 | 本地 SQLite 快照恢复 | 2026-08-23 00:58 | PASS | `scripts/backup_and_verify.py --label pre-status-ladder`：在线备份 API 拍快照 `pre-status-ladder-20260823-005850.db`（39.4 MB），恢复到临时路径后 `integrity_check` → `ok`，24 张表行数逐张比对通过 | 每次破坏性迁移前重跑 |
 | R2/Litestream 完整恢复 | 2026-07-11 13:30 | PASS | 从 R2 恢复到全新 `/tmp` 路径；integrity check、数据新鲜度和 API-only smoke test 均通过 | 2026-10 前重跑，或 Litestream/R2 变更后立即重跑 |
 | 网络监听/路由审计 | 2026-07-17 13:34 | PASS | `infra audit`：life-tracker 监听 `127.0.0.1:8080` 无异常；5 个告警均属 staging/llm-gateway/未登记工具进程，与部署前基线一致 | 每次部署后重跑 |
@@ -42,6 +42,16 @@
 5. `npm ci` 报告 1 low、2 moderate、2 high；需单独运行 `npm audit` 评估可达性和升级影响，禁止未经审查直接 `--force`。
 
 ## 演练记录
+
+### 2026-08-23 13:38 UTC — 记忆状态阶梯与种子数据部署
+
+- 内容：6 个 commit，`2a51d43`..`0d2b78e`。记忆表状态阶梯（三值→五值）、onboarding 种子入库、按注入权限分档读取（**开关默认关闭**）、设计文档重写，以及工具轮第二轮起改发精简 system prompt。
+- 部署方式：`make deploy-local`（`compose.yaml`，Dockge 管理的 prod 栈，自动读 `.env.prod`）。
+- 部署前：236 个 Python 测试通过；快照 `pre-onboarding-seed-20260823-045043.db`，integrity `ok`，24 张表行数比对通过。
+- 部署后：容器 `(healthy)`；`/internal/health` 200；Discord bot 上线（ひより#5775 → channel 1503879130679083028）；scheduler 启动；启动日志零 error / exception；`PRAGMA quick_check` → `ok`；Litestream 恢复写入（generation `f8f62c83c2d3df4f`）。
+- **本次唯一生效的行为变化是工具轮的精简 system prompt**（以及 `add_deadline` 的一条 post-hint）。记忆读取侧由 `memory.read_from_db` 开关控制，当前为 `False`，仍读 `data/memory.md`。刻意这样安排：两批都会改变可感知的行为，同时上线就无法归因。
+- 数据库迁移在此之前就已经跑过（做种子入库时 `Database()` 初始化触发），因此部署前存在一段**旧代码配新库**的版本错位。当时无害——`curator_auto_enabled` 为 `False`，没有代码路径读写 `personal_memories`——本次部署消除了该错位。
+- 未覆盖：真实 Discord 对话中的多轮工具调用行为尚未验证，这正是精简 system prompt 影响的路径，需要用户实际使用后确认。
 
 ### 2026-08-23 00:58 UTC — 本地 SQLite 快照恢复演练（首次）
 
