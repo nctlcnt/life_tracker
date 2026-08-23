@@ -10,6 +10,7 @@ import pytest
 
 from bot.database import Database
 from bot.memory import curator_service
+from bot.memory.curator import CURATOR_MEMORY_TYPES, CURATOR_NAME
 from bot.memory.personal_repository import PersonalMemoryRepository
 from config import Preset
 
@@ -102,11 +103,13 @@ def test_repair_round_recovers_fenced_output(db, repository, preset, monkeypatch
     assert "校验错误" in calls[1] and "```json" in calls[1]
     assert "以后回复短一点" in calls[1]
     # 指令走 system 块，首轮与修复轮携带同一份
-    assert systems[0] and "证据规则" in systems[0]
+    assert systems[0]
+    assert all(name in systems[0] for name in CURATOR_MEMORY_TYPES)
+    assert "以后回复短一点" not in systems[0]
     assert systems[0] == systems[1]
     # dry-run 不落库
-    assert repository.list(status="active") == []
-    assert repository.get_cursor("memory-curator-v1", CHANNEL)["last_message_id"] == 0
+    assert repository.list() == []
+    assert repository.get_cursor(CURATOR_NAME, CHANNEL)["last_message_id"] == 0
 
 
 def test_repair_disabled_or_still_failing_raises(db, repository, preset, monkeypatch):
@@ -139,9 +142,9 @@ def test_auto_apply_persists_and_advances_cursor(db, repository, preset, monkeyp
 
     assert result["mode"] == "auto-apply"
     assert result["apply_result"]["applied"] is True
-    memories = repository.list(status="active")
+    memories = repository.list()
     assert len(memories) == 1 and memories[0]["summary"] == "用户喜欢简短回复"
-    cursor = repository.get_cursor("memory-curator-v1", CHANNEL)
+    cursor = repository.get_cursor(CURATOR_NAME, CHANNEL)
     assert cursor["last_message_id"] == message_id
 
 
@@ -155,9 +158,9 @@ def test_auto_apply_empty_batch_still_advances_cursor(db, repository, preset, mo
         db, repository, channel_id=CHANNEL, preset=preset, auto_apply=True))
 
     assert result["apply_result"]["applied"] is True
-    assert repository.list(status="active") == []
+    assert repository.list() == []
     assert repository.get_cursor(
-        "memory-curator-v1", CHANNEL)["last_message_id"] == message_id
+        CURATOR_NAME, CHANNEL)["last_message_id"] == message_id
 
 
 def test_no_messages_short_circuits_without_model_call(db, repository, preset, monkeypatch):

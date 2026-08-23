@@ -9,6 +9,10 @@ from bot.ai_engine_base import simple_completion
 from bot import trace
 from config import Preset
 from bot.memory.curator import (
+    CURATOR_ACTIONS,
+    CURATOR_NAME,
+    CURATOR_EVIDENCE_ROLES,
+    CURATOR_MEMORY_TYPES,
     build_curator_prompt,
     load_curator_interval,
     parse_curator_batch,
@@ -17,7 +21,7 @@ from bot.memory.personal_repository import PersonalMemoryRepository
 
 
 CHANNEL = "channel-1"
-CURATOR = "memory-curator-v1"
+CURATOR = CURATOR_NAME
 
 
 @pytest.fixture
@@ -120,10 +124,15 @@ def test_prompt_and_interval_expose_stable_evidence_ids(db):
     assert '"created_at":' in task
     assert "当前 UTC 时间" in task
     assert "2026-07-17T00:00:00+00:00" in task
+    # 契约枚举只能有一份来源：prompt 教模型输出的取值必须逐个等于
+    # validator 接受的取值，否则改一处不会同步另一处（曾经手抄过一次）
+    assert all(name in system_text for name in CURATOR_MEMORY_TYPES)
+    assert all(action in system_text for action in CURATOR_ACTIONS)
+    assert all(role in system_text for role in CURATOR_EVIDENCE_ROLES)
     # 指令/数据分离：规则只在 system，批数据不得混进 system
-    assert "只输出一个 JSON 对象" in system_text
     assert "直角引号「」" in system_text
     assert "第一句话" not in system_text
+    assert "第二句话" not in system_text
 
 
 def test_apply_create_and_cursor_are_one_transaction(repository, db):

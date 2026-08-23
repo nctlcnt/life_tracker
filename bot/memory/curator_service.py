@@ -19,6 +19,7 @@ from bot.memory.curator import (
     load_curator_interval,
     parse_curator_batch,
 )
+from bot.memory.personal_repository import UNTARGETABLE_STATUSES
 
 logger = get_logger(__name__)
 
@@ -52,6 +53,7 @@ async def propose_batch(db, repository, *, channel_id: str, preset,
                         max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
                         request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
                         temperature: float | None = DEFAULT_TEMPERATURE,
+                        prompt_now: str | None = None,
                         repair: bool = True,
                         auto_apply: bool = False) -> dict:
     """跑一个 curator 批次。返回 proposal dict（与 CLI dry-run 输出同构）。
@@ -75,9 +77,12 @@ async def propose_batch(db, repository, *, channel_id: str, preset,
         }
     upto_id = int(messages[-1]["id"])
     visible_ids = {int(message["id"]) for message in messages}
-    memories = repository.list(status="active")
+    # 喂给模型的「已有记忆」清单：当前所有说法，只排掉已被替代的。
+    # 不能按某个单一状态精确筛——状态阶梯落地后，curator 自己写的低状态记忆
+    # 也必须出现在这份清单里，否则它看不见，下一批会把同一个事实再 create 一遍。
+    memories = repository.list(exclude_statuses=UNTARGETABLE_STATUSES)
     system_text, task_prompt = build_curator_prompt(
-        messages=messages, memories=memories)
+        messages=messages, memories=memories, now=prompt_now)
 
     raw, run_id = await simple_completion(
         task_prompt, preset, trigger="curator", db=db, return_run_id=True,

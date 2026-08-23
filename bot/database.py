@@ -220,9 +220,35 @@ class Database:
                 quote TEXT,
                 reason TEXT NOT NULL,
                 memory_type TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'active'
-                    CHECK(status IN ('active', 'superseded', 'archived')),
+                -- 状态阶梯（五值）。取值含义与对应的注入权限见设计文档第 5 节，
+                -- 权威常量是 bot/memory/status_ladder.LADDER_STATUSES，
+                -- 一致性由 tests/test_memory_schema_contract.py 盯住。
+                -- 默认 hypothesis 而不是某个更“正常”的档：新行在证据被汇总、
+                -- status 被真正算出来之前，只应拥有最低权限。
+                status TEXT NOT NULL DEFAULT 'hypothesis'
+                    CHECK(status IN ('hypothesis', 'provisional', 'confirmed',
+                                     'disputed', 'superseded')),
                 superseded_by INTEGER REFERENCES personal_memories(id),
+                -- 状态阶梯字段。basis 是「当前全部证据与 claim 的关系类型」
+                -- （asserted / supported / inferred），不是置信度分数；
+                -- 它参与计算 status，但不决定这条记忆存在哪里——单表方向下
+                -- 推断类记忆和已确认事实同表，靠 status 区分使用权。
+                -- 故意不给 basis / scope 加 CHECK：两者的最终枚举尚未拍板
+                -- （设计文档未决问题 1、2），加了就是造第二份副本，
+                -- 枚举定下来时还要多一次建表重写。权威在代码常量。
+                basis TEXT,
+                scope TEXT,
+                stability TEXT,
+                gap TEXT,              -- 自然语言：当前证据为什么还撑不满 claim
+                alternatives TEXT,     -- JSON 数组：与 claim 竞争的其他合理陈述
+                -- 这条记忆是怎么来的：'curator'（后台模型写的，默认）或
+                -- 'onboarding'（用户逐条审阅确认的种子数据）。
+                -- 种子数据没有 conversation_messages 来源和逐字引文——用户的
+                -- 自述不在消息表里，memory.md 的旧记录也没留下消息 id。这是
+                -- 对证据链要求的一次明确豁免，因此必须能被单独查出来：万一
+                -- 以后信任模型变了，一条 SQL 就能找到全部受影响的行，
+                -- 而不是靠猜哪些是种子。
+                provenance TEXT NOT NULL DEFAULT 'curator',
                 curator_model TEXT NOT NULL,
                 embedding TEXT,
                 embedding_model TEXT,
@@ -351,6 +377,91 @@ class Database:
             conn.execute("UPDATE reminders SET status = 'pending' WHERE done = 0 AND status = 'pending'")
         except sqlite3.OperationalError:
             pass
+
+        # 状态阶梯字段（2026-08-23）。纯加列，不动 status 的 CHECK——
+        # 三值换五值需要重建整张表，风险等级不同，单独进行。
+        # 这一步之后字段存在但全为 NULL，curator 尚未开始填；读取侧要能
+        # 接受 NULL，不要假设老行有 basis。
+        for stmt in (
+            "ALTER TABLE personal_memories ADD COLUMN basis TEXT",
+            "ALTER TABLE personal_memories ADD COLUMN scope TEXT",
+            "ALTER TABLE personal_memories ADD COLUMN stability TEXT",
+            "ALTER TABLE personal_memories ADD COLUMN gap TEXT",
+            "ALTER TABLE personal_memories ADD COLUMN alternatives TEXT",
+            "ALTER TABLE personal_memories ADD COLUMN provenance TEXT "
+            "NOT NULL DEFAULT 'curator'",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
+
+        # 注意顺序：本段必须排在上面的加列之后。重建时的 SELECT 会引用
+        # basis / scope / stability / gap / alternatives / provenance，
+        # 老库要先拿到这些列才谈得上重建。
+        # status 三值 → 五值（2026-08-23）。SQLite 改不了 CHECK，只能重建表。
+        # 触发条件是旧 CHECK 里还有 'active'；重建过的库不会再进这个分支。
+        memories_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' "
+            "AND name='personal_memories'").fetchone()
+        if memories_sql and "'active'" in (memories_sql[0] or ""):
+            # 关掉外键再重建：superseded_by 自引用本表，开着外键做
+            # DROP + RENAME 会在中间态被拒。
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.executescript("""
+                CREATE TABLE personal_memories_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    summary TEXT NOT NULL,
+                    quote TEXT,
+                    reason TEXT NOT NULL,
+                    memory_type TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'hypothesis'
+                        CHECK(status IN ('hypothesis', 'provisional', 'confirmed',
+                                         'disputed', 'superseded')),
+                    superseded_by INTEGER REFERENCES personal_memories(id),
+                    basis TEXT,
+                    scope TEXT,
+                    stability TEXT,
+                    gap TEXT,
+                    alternatives TEXT,
+                    provenance TEXT NOT NULL DEFAULT 'curator',
+                    curator_model TEXT NOT NULL,
+                    embedding TEXT,
+                    embedding_model TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    CHECK(superseded_by IS NULL OR superseded_by != id)
+                );
+
+                -- 旧状态到新阶梯的映射：
+                --   active   → hypothesis  保守到最低权限。这些行没有 basis，
+                --              算不出真正的 status；给高档位等于凭空发放断言权。
+                --   archived → disputed    独立的 archive 状态已取消。归档的语义是
+                --              「不再成立但没有替代 claim」，正好是 disputed。
+                --   superseded 原样保留。
+                INSERT INTO personal_memories_new
+                    SELECT id, summary, quote, reason, memory_type,
+                           CASE status
+                               WHEN 'active' THEN 'hypothesis'
+                               WHEN 'archived' THEN 'disputed'
+                               ELSE status
+                           END,
+                           superseded_by, basis, scope, stability, gap,
+                           alternatives, provenance, curator_model,
+                           embedding, embedding_model, created_at, updated_at
+                    FROM personal_memories;
+
+                DROP TABLE personal_memories;
+                ALTER TABLE personal_memories_new RENAME TO personal_memories;
+
+                CREATE INDEX IF NOT EXISTS idx_personal_memories_status_type_updated
+                    ON personal_memories(status, memory_type, updated_at DESC);
+            """)
+            conn.commit()
+            conn.execute("PRAGMA foreign_keys = ON")
+            from bot.logger import get_logger
+            get_logger(__name__).info(
+                "✅ personal_memories.status 已迁移到五值状态阶梯")
 
         for stmt in (
             "ALTER TABLE check_ins ADD COLUMN instructions TEXT DEFAULT ''",

@@ -88,7 +88,9 @@ def test_create_roundtrips_normalized_sources(repository, db):
     memory = repository.get(memory_id)
 
     assert memory["summary"] == "用户喜欢简短回复"
-    assert memory["status"] == "active"
+    # 新建记忆默认落在阶梯最低档：证据还没被汇总、status 还没被真正算出来
+    # 之前，它只应拥有最低权限。
+    assert memory["status"] == "hypothesis"
     assert memory["embedding"] == [1.0, 2.0]
     assert memory["source_message_ids"] == ids
     assert [source["quote"] for source in memory["sources"]] == [
@@ -123,9 +125,11 @@ def test_list_filters_status_and_type(repository, db):
         repository, [_message(db, 2)], summary="当前课程计划",
         memory_type="plan",
     )
-    assert repository.set_status(first, "archived")
+    # 独立的 archive 状态已取消：归档的语义是「不再成立但没有替代 claim」，
+    # 在新阶梯里就是 disputed。
+    assert repository.set_status(first, "disputed")
 
-    assert [item["id"] for item in repository.list(status="active")] == [second]
+    assert [item["id"] for item in repository.list(status="hypothesis")] == [second]
     assert [item["id"] for item in repository.list(memory_type="preference")] == [first]
 
 

@@ -6,11 +6,30 @@ import sqlite3
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from bot.memory.status_ladder import (
+    LADDER_STATUSES,
+    PERMISSIONS,
+    injection_permission,
+)
+
 if TYPE_CHECKING:
     from bot.memory.curator import CuratorBatch
 
 
-MEMORY_STATUSES = {"active", "superseded", "archived"}
+# 数据库里 status 的合法取值 = 状态阶梯的五个值，必须与建表语句的 CHECK
+# 逐字一致（由 tests/test_memory_schema_contract.py 盯住）。
+#
+# 这里**不重新定义**，直接引用 status_ladder：同一列的合法取值只能有一份权威。
+# 2026-08-23 之前这里另有一份 {"active", "superseded", "archived"}，
+# 三值换五值时一并替换掉了，没有留两个常量并存。
+MEMORY_STATUSES = set(LADDER_STATUSES)
+
+# 「可被操作命中」= 这条记忆还能被 attach_evidence / supersede 指向。
+# 它与「聊天能不能把它当事实用」是两个问题：后者由注入权限回答（见设计文档
+# 第 5 节）。低状态记忆照样可以被命中，否则它永远补不了证据、升不上去。
+# 单表状态阶梯落地后这里换成五值，但**不可命中的集合始终只有 superseded**，
+# 因为只有它的位置已经让给了新条目。
+UNTARGETABLE_STATUSES = {"superseded"}
 # 单一事实来源：parser、DB CHECK、此处三方必须一致（LT-136 曾因三份拷贝失配炸过 apply）
 from bot.memory.curator import CURATOR_EVIDENCE_ROLES as EVIDENCE_ROLES
 
@@ -132,6 +151,53 @@ class PersonalMemoryRepository:
         finally:
             conn.close()
 
+    def create_onboarding_seed(self, *, claim: str, reason: str,
+                               memory_type: str, status: str,
+                               basis: str = "asserted",
+                               stability: str | None = None) -> int:
+        """写入一条 onboarding 种子记忆——**没有证据来源的唯一合法入口**。
+
+        普通的 `create()` 强制要求非空 sources，并校验每条来源都真实存在于
+        `conversation_messages`。这条不变量是「每条记忆都可追溯到原始消息」的
+        执行点，不能松动。
+
+        种子记忆是对它的一次**明确豁免**，因为材料本身就不在消息表里：
+        用户的自述写在 prompt 里，`memory.md` 的旧记录没有留下消息 id。
+        豁免的正当性来自用户逐条审阅——按术语表对 confirmation 的定义，
+        那次审阅本身就是一次合法的确认事件。
+
+        豁免必须留痕，所以这些行一律 `provenance = 'onboarding'`：万一以后
+        信任模型变了，一条 SQL 就能找出全部受影响的行，而不必去猜哪些是种子。
+
+        单独开一个方法而不是给 `create()` 加参数，是为了让豁免在代码里显眼、
+        可 grep、可单独测试——加一个 `sources=None` 的默认值会让「无证据写入」
+        变成一次手滑就能触发的路径。
+        """
+        claim = self._validate_text(claim, "claim")
+        reason = self._validate_text(reason, "reason")
+        memory_type = self._validate_text(memory_type, "memory_type")
+        if status not in MEMORY_STATUSES:
+            raise ValueError(f"invalid status: {status}")
+        conn = self.database._get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                """
+                INSERT INTO personal_memories
+                    (summary, reason, memory_type, status, basis, stability,
+                     provenance, curator_model)
+                VALUES (?, ?, ?, ?, ?, ?, 'onboarding', 'onboarding-seed')
+                """,
+                (claim, reason, memory_type, status, basis, stability),
+            )
+            conn.commit()
+            return int(cursor.lastrowid)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def get(self, memory_id: int) -> dict | None:
         conn = self.database._get_conn()
         row = conn.execute(
@@ -153,7 +219,17 @@ class PersonalMemoryRepository:
         return self._decode_memory(row, sources)
 
     def list(self, *, status: str | None = None,
+             exclude_statuses: set[str] | None = None,
              memory_type: str | None = None) -> list[dict]:
+        """按状态筛选记忆。
+
+        `status` 取精确一档；`exclude_statuses` 取「除这些之外的全部」。
+        后者是 curator 查重需要的形状——它要看见当前所有说法，包括自己写的
+        低状态记忆，否则同一个事实每批都会被重新 create 一遍。
+        两个参数不能同时给，否则筛选意图会变得含糊。
+        """
+        if status is not None and exclude_statuses:
+            raise ValueError("status and exclude_statuses are mutually exclusive")
         where = []
         params = []
         if status is not None:
@@ -161,6 +237,13 @@ class PersonalMemoryRepository:
                 raise ValueError(f"invalid status: {status}")
             where.append("status = ?")
             params.append(status)
+        if exclude_statuses:
+            unknown = sorted(set(exclude_statuses) - MEMORY_STATUSES)
+            if unknown:
+                raise ValueError(f"invalid status: {unknown}")
+            placeholders = ", ".join("?" for _ in exclude_statuses)
+            where.append(f"status NOT IN ({placeholders})")
+            params.extend(sorted(exclude_statuses))
         if memory_type is not None:
             where.append("memory_type = ?")
             params.append(memory_type)
@@ -172,6 +255,36 @@ class PersonalMemoryRepository:
         ids = [int(row["id"]) for row in conn.execute(sql, params).fetchall()]
         conn.close()
         return [item for memory_id in ids if (item := self.get(memory_id)) is not None]
+
+    def list_by_permission(self, permission: str) -> list[dict]:
+        """取出所有拥有指定注入权限的记忆。
+
+        读取侧应当按**权限**取，不要按 status 取。两者虽然一一对应，但对应关系
+        是设计决定（见 status_ladder），不是调用方该复制的知识——按 status 取
+        意味着每个调用点都要自己记住"哪几档能当事实用"，加一档就要改所有地方。
+
+        `disputed` 的权限还取决于用户是否明确否认过，而那个判定标准尚未定
+        （设计文档第 12 节末尾）。在它定下来之前，本方法把 `disputed` 一律
+        按未否认处理（`probe_only`），也就是**不会**出现在 `assert` 或
+        `hedge` 的结果里——保守方向。
+        """
+        if permission not in PERMISSIONS:
+            raise ValueError(f"unknown permission: {permission}")
+        matched = [status for status in MEMORY_STATUSES
+                   if injection_permission(status) == permission]
+        if not matched:
+            return []
+        placeholders = ", ".join("?" for _ in matched)
+        conn = self.database._get_conn()
+        try:
+            ids = [int(row["id"]) for row in conn.execute(
+                f"SELECT id FROM personal_memories WHERE status IN ({placeholders}) "
+                "ORDER BY memory_type, updated_at DESC, id DESC",
+                sorted(matched)).fetchall()]
+        finally:
+            conn.close()
+        return [item for memory_id in ids
+                if (item := self.get(memory_id)) is not None]
 
     def update_content(self, memory_id: int, *, summary: str | None = None,
                        reason: str | None = None, memory_type: str | None = None,
@@ -320,7 +433,14 @@ class PersonalMemoryRepository:
         return int(cursor.lastrowid)
 
     @staticmethod
-    def _require_active_memory(conn, memory_id: int) -> dict:
+    def _require_targetable_memory(conn, memory_id: int) -> dict:
+        """取出一条仍可被操作命中的记忆。
+
+        判定是「不在 UNTARGETABLE_STATUSES 里」，不是「等于某个特定状态」。
+        写成排除式而不是白名单，是为了让状态阶梯从三值扩到五值时，
+        新增的 hypothesis / provisional / confirmed / disputed 自动保持可命中——
+        写成白名单的话，漏加一个新状态就会让那一档记忆再也无法补证据。
+        """
         row = conn.execute(
             "SELECT * FROM personal_memories WHERE id = ?",
             (int(memory_id),),
@@ -328,9 +448,9 @@ class PersonalMemoryRepository:
         if row is None:
             raise ValueError(f"unknown memory_id: {memory_id}")
         item = dict(row)
-        if item["status"] != "active":
+        if item["status"] in UNTARGETABLE_STATUSES:
             raise ValueError(
-                f"memory_id {memory_id} is not active: {item['status']}")
+                f"memory_id {memory_id} is not targetable: {item['status']}")
         return item
 
     @staticmethod
@@ -444,7 +564,7 @@ class PersonalMemoryRepository:
                         f"memory_id changed more than once in batch: "
                         f"{operation.memory_id}")
                 touched_targets.add(operation.memory_id)
-                self._require_active_memory(conn, operation.memory_id)
+                self._require_targetable_memory(conn, operation.memory_id)
         finally:
             conn.close()
 
@@ -541,7 +661,7 @@ class PersonalMemoryRepository:
                     created_ids.append(memory_id)
                     continue
 
-                self._require_active_memory(conn, int(operation.memory_id))
+                self._require_targetable_memory(conn, int(operation.memory_id))
                 if operation.action == "update":
                     updates = {"reason": operation.reason}
                     if operation.summary is not None:
