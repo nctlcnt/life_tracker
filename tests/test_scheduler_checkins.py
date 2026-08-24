@@ -422,6 +422,7 @@ def test_do_check_in_passes_execution_profile_and_marks_fired(tmp_path, monkeypa
         check_in_name,
         context_config,
         window,
+        track_scene,
     ):
         captured.update(
             {
@@ -436,6 +437,7 @@ def test_do_check_in_passes_execution_profile_and_marks_fired(tmp_path, monkeypa
                 "check_in_name": check_in_name,
                 "context_config": context_config,
                 "window": window,
+                "track_scene": track_scene,
             }
         )
         return "ok"
@@ -463,6 +465,9 @@ def test_do_check_in_passes_execution_profile_and_marks_fired(tmp_path, monkeypa
     assert captured["allow_silent"] is False
     assert captured["trigger"] == "check_in"
     assert captured["tool_profile"] == "none"
+    # track_scene 默认关闭：多数 check-in 说完就结束，不需要延续场景，
+    # 关着就不给 set_scene 工具、零成本。
+    assert captured["track_scene"] is False
     assert captured["check_in_name"] == "custom_review"
     assert captured["context_config"] == {
         "include_weather": False,

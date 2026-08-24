@@ -448,6 +448,7 @@ class Scheduler:
                     tool_profile=check_in.get("tool_profile") or "poll",
                     check_in_name=name,
                     context_config=check_in.get("context_config") or {},
+                    track_scene=bool(check_in.get("track_scene")),
                     window=window,
                 )
                 should_mark_fired = True

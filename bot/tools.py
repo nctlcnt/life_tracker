@@ -383,6 +383,43 @@ SET_TOOL_NAMES = {
 
 # 随机轮询：主要是聊天、设提醒、管记忆
 # search_history 解决 poll 没有用户消息做检索锚点的问题——AI 自己写 query 回忆
+# ── set_scene ──────────────────────────────────────────────────────────
+# 这个工具刻意写得**无机**：它不提日和、不提采访、不提本项目的任何概念，
+# 只做"把一段意图压成一句场景摘要并存下来"。任何带工具链的应用都能直接用。
+#
+# 之所以要无机：场景摘要的用途是让后续每一轮都还知道"在做什么"，而"该怎么说"
+# 由人设负责。如果这个工具的说明里混进语气要求，语气就会有两个来源、各写一份、
+# 互相漂移——那正是当前 check-in 模板已经踩过的坑。
+_SET_SCENE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "set_scene",
+        "description": (
+            "记录当前对话正在进行的场景，供后续几轮参考。"
+            "当这一轮是由某个预定任务或流程发起、而后续回复需要知道"
+            "「我们正在做什么」时调用。"
+            "只描述正在做的事，不要描述说话的语气或风格。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": (
+                        "一句话概括当前场景，控制在 50 字以内。"
+                        "写正在做什么、进行到哪一步，例如"
+                        "「今天的晚间采访，刚问了晚饭吃什么」。"
+                        "不要写语气要求，不要写待办清单，不要复述整份指令。"
+                    ),
+                },
+            },
+            "required": ["description"],
+        },
+    },
+}
+
+TOOLS.append(_SET_SCENE_TOOL)
+
 POLL_TOOL_NAMES = {
     "set_reminder", "delete_reminder", "list_reminders",
     "save_memory", "delete_memory", "update_memory",

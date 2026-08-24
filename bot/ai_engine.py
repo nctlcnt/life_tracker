@@ -67,13 +67,15 @@ async def scheduled_action(db, prompt: str, timestamp: str,
                            tool_profile: str | None = None,
                            check_in_name: str | None = None,
                            context_config: dict | None = None,
-                           memory_service=None, window=None) -> str | None:
+                           memory_service=None, window=None,
+                           track_scene: bool = False) -> str | None:
     return await _run_with_fallback(
         "scheduled_action", db, prompt, timestamp, history,
         send_callback=send_callback, allow_silent=allow_silent, trigger=trigger,
         tool_profile=tool_profile, check_in_name=check_in_name,
         context_config=context_config,
         memory_service=memory_service, window=window,
+        track_scene=track_scene,
     )
 
 

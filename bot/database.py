@@ -177,6 +177,7 @@ class Database:
                 context_config_json TEXT,
                 tool_profile TEXT NOT NULL DEFAULT 'poll',
                 allow_silent INTEGER DEFAULT 1,
+                track_scene INTEGER DEFAULT 0,
                 last_scheduled_for TEXT,
                 last_fired_at TEXT,
                 built_in INTEGER DEFAULT 0,
@@ -467,6 +468,10 @@ class Database:
             "ALTER TABLE check_ins ADD COLUMN instructions TEXT DEFAULT ''",
             "ALTER TABLE check_ins ADD COLUMN context_config_json TEXT",
             "ALTER TABLE check_ins ADD COLUMN allow_silent INTEGER DEFAULT 1",
+            # 这次 check-in 是否让工具模型记一条场景摘要，供后续几轮参考。
+            # 默认关闭：睡前提醒说完就结束、morning 也不需要延续，
+            # 只有采访这类会聊几个来回的才打开。关着就零成本。
+            "ALTER TABLE check_ins ADD COLUMN track_scene INTEGER DEFAULT 0",
             "ALTER TABLE check_ins ADD COLUMN last_scheduled_for TEXT",
             "ALTER TABLE check_ins ADD COLUMN last_fired_at TEXT",
             "ALTER TABLE check_ins ADD COLUMN built_in INTEGER DEFAULT 0",
@@ -839,9 +844,9 @@ class Database:
                 name, label, enabled, schedule_type, time_start, time_end,
                 days_of_week, interval_min_minutes, interval_max_minutes,
                 prompt_template, instructions, context_config_json,
-                tool_profile, allow_silent, built_in
+                tool_profile, allow_silent, track_scene, built_in
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """,
             (
                 name,
@@ -858,6 +863,7 @@ class Database:
                 self._encode_json(fields.get("context_config"), {}),
                 tool_profile,
                 1 if fields.get("allow_silent", True) else 0,
+                1 if fields.get("track_scene", False) else 0,
             ),
         )
         conn.commit()

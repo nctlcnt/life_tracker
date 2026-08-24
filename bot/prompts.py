@@ -173,6 +173,22 @@ class PromptParts:
         """拍平为单个字符串（Gemini / Relay 用）。"""
         return _join_nonempty(*(text for _, text in self.render_blocks()))
 
+    def with_suffix(self, text: str) -> PromptParts:
+        """返回在模板末尾追加一段文本的副本。
+
+        追加到**末尾**是有意的：末尾属于最高 cache tier（动态数据段），
+        所以这段内容变化不会让前面的稳定前缀失效。放在开头或中间会把
+        整条前缀的 cache 打掉。
+
+        用于场景状态这类"每轮都要在、但内容会随对话推进而更换"的短文本。
+        """
+        clean = str(text or "").strip()
+        if not clean:
+            return self
+        c = copy.copy(self)
+        c.template = f"{self.template}\n\n{clean}"
+        return c
+
     def concise(self) -> PromptParts:
         """返回 {tools} 展开为空的副本（中间轮省 token）。"""
         c = copy.copy(self)

@@ -7,11 +7,13 @@ AI 引擎公共模块
 - chat / scheduled_action 高层流程
 """
 import asyncio
+from datetime import datetime
 
 from bot.tools import POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, TOOLS
 from bot.memory.personal_repository import PersonalMemoryRepository
 from bot.prompts import build_prompt, format_memory_tiers, PromptParts
 from bot.memory import MemoryRecallDisabled, MemoryRecallUnavailable, MemoryService
+from bot.memory import scene_state
 from bot.weather import is_morning, get_weather_brief
 from bot.google_calendar import CalendarNotConfigured, CalendarQueryError, get_calendar_context
 from bot.database import Database
@@ -208,6 +210,22 @@ async def _search_history(db: Database, args: dict,
 def _execute_tool(db: Database, tool_name: str, args: dict,
                   memory_service: MemoryService | None = None) -> dict:
     """执行具体的工具调用，返回结果"""
+    if tool_name == "set_scene":
+        # 场景摘要写进会话状态，供后续几轮注入。这里只存不判断——
+        # 有效期（来回数、静默超时、被新场景覆盖）全部由 scene_state 机械判定，
+        # 不让模型决定"场景什么时候结束"（那不可靠）。
+        description = str(args.get("description") or "").strip()
+        if not description:
+            return {"success": False, "message": "description 不能为空"}
+        scene = scene_state.start(
+            db, str(config.CHANNEL_ID),
+            check_in_name=str(args.get("_check_in_name") or "unknown"),
+            description=description,
+            now=datetime.now(),
+        )
+        return {"success": True, "message": "场景已记录",
+                "turns_budget": scene.max_turns}
+
     if tool_name == "log_timeline_event":
         category = args.get("category", "uncategorized")
         project_name = (args.get("project_name") or "").strip() or None
@@ -456,6 +474,18 @@ async def chat(db: Database, messages: list[dict],
                            calendar=calendar, relevant_history=relevant_history,
                            memory_service=memory)
 
+    # 场景状态：让"我们正在做什么"在用户回复之后仍然存在。
+    #
+    # check-in 的模板是作为最后一条 user 消息追加的，用户一回复它就被推远，
+    # 语气随之掉回去。这里把 check-in 时记下的那句场景摘要接到 system 末尾，
+    # 每轮都在，不必重发整份模板。
+    #
+    # touch 放在这里而不是回复之后：无论这次调用成功与否，这一个来回都已经
+    # 发生了。放在成功分支里会让失败的轮次不计数，场景实际存活时间超出预算。
+    scene = scene_state.touch(db, str(config.CHANNEL_ID), datetime.now())
+    if scene is not None:
+        prompt = prompt.with_suffix(scene.as_prompt_block())
+
     trace.start(trigger="chat", model=preset.model, provider=preset.provider,
                 prompt_parts=prompt, messages=messages,
                 window=window.trace_info() if window else None)
@@ -489,7 +519,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            check_in_name: str | None = None,
                            context_config: dict | None = None,
                            memory_service: MemoryService | None = None,
-                           window=None) -> str | None:
+                           window=None,
+                           track_scene: bool = False) -> str | None:
     """
     统一的调度入口：处理主动聊天、提醒触发、睡前提醒等所有非用户消息的 AI 调用。
 
@@ -547,6 +578,12 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
         tool_names = POLL_TOOL_NAMES
     elif profile == "none":
         tool_names = set()
+
+    # set_scene 只在本次 check-in 明确打开 track_scene 时才可用。
+    # 不放进 POLL_TOOL_NAMES 之类的固定集合：那样每次主动消息都会带上它，
+    # 而多数 check-in（睡前、morning）说完就结束，不需要延续场景。
+    if track_scene and tool_names is not None:
+        tool_names = set(tool_names) | {"set_scene"}
 
     trace.start(trigger=trigger or "scheduled", model=preset.model, provider=preset.provider,
                 prompt_parts=prompt_parts, messages=messages,
