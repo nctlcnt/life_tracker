@@ -91,3 +91,35 @@ def test_no_scene_means_no_suffix(db):
         _prompt().with_suffix(scene.as_prompt_block()).flatten()
 
     assert "当前场景" not in text
+
+
+# ── 转发链完整性 ────────────────────────────────────────────────────────────
+
+def test_every_layer_of_scheduled_action_accepts_the_same_kwargs():
+    """三层 scheduled_action 的关键字参数必须一致。
+
+    调用链是 ai_engine（路由 + fallback）→ ai_engine_openai_compat（引擎适配）
+    → ai_engine_base（实现）。给它加参数要改三处，漏掉中间那层不会有任何
+    静态错误——直到真的触发一次 check-in 才炸 TypeError。
+
+    2026-08-24 加 track_scene 时就漏了适配层，部署之后才在生产上暴露。
+    """
+    import inspect
+
+    from bot import ai_engine, ai_engine_base, ai_engine_openai_compat
+
+    def kwargs_of(fn):
+        return {
+            name for name, p in inspect.signature(fn).parameters.items()
+            if p.kind is inspect.Parameter.KEYWORD_ONLY
+            or (p.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+                and p.default is not inspect.Parameter.empty)
+        }
+
+    router = kwargs_of(ai_engine.scheduled_action)
+    adapter = kwargs_of(ai_engine_openai_compat.scheduled_action)
+    base = kwargs_of(ai_engine_base.scheduled_action)
+
+    # 路由层的每个可选参数都必须能一路传到底
+    assert router <= adapter, f"适配层缺少: {sorted(router - adapter)}"
+    assert router <= base, f"实现层缺少: {sorted(router - base)}"

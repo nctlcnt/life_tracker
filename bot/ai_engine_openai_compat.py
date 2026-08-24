@@ -55,7 +55,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            tool_profile: str | None = None,
                            check_in_name: str | None = None,
                            context_config: dict | None = None,
-                           memory_service=None, window=None) -> str | None:
+                           memory_service=None, window=None,
+                           track_scene: bool = False) -> str | None:
     return await _base_scheduled_action(db, prompt, timestamp, history, _call_with_tools,
                                         preset,
                                         send_callback=send_callback,
@@ -64,7 +65,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                                         check_in_name=check_in_name,
                                         context_config=context_config,
                                         memory_service=memory_service,
-                                        window=window)
+                                        window=window,
+                                        track_scene=track_scene)
 
 
 async def simple_completion(prompt: str, preset: Preset,
