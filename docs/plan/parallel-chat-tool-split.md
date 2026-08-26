@@ -1,10 +1,10 @@
 # 聊天与工具并行分层
 
-- 状态：已定案（2026-08-26），实现尚未开始；第 9 节原来的四个未决问题已于 2026-08-24 全部定案，第 9.5 节异步带来的六个问题已于 2026-08-26 定案。第 5.3 节场景状态已经写成代码（在分支 `feat/LT-136-curator-scheduler` 上，见 `bot/memory/scene_state.py` 与 `track_scene` 工具）
+- 状态：已定案（2026-08-26），代码实现尚未开始；LT-169 已把异步基础设施的实现规格补进第 2.2、4.3、4.4、4.5 节。第 9 节原来的四个未决问题已于 2026-08-24 全部定案，第 9.5 节异步带来的六个问题已于 2026-08-26 定案。第 5.3 节场景状态已经写成代码（在分支 `feat/LT-136-curator-scheduler` 上，见 `bot/memory/scene_state.py` 与 `track_scene` 工具）
 - **2026-08-25 重大修订**：同步两拍改为**异步心跳与排队模型**，见第 0 节。凡正文旧结论与第 0 节冲突，一律按第 0 节算。受影响的章节已就地改写，改写点在第 0 节末尾列出。
 - **2026-08-26 review 定案**：静默窗口先采用 30 秒，批次最长等待 60 秒；结果表达读取最近 20 条对话；成功设置提醒时发送确认消息；记忆检索归属留待 spike；并补充分批状态、测试层次与人设修改。
 - 建立日期：2026-08-24
-- 取代：`dispatch-poc` 的串行设计（见第 8 节，四个 Backlog issue 的处置）
+- 取代：`dispatch-poc` 的串行设计（见第 8 节，旧 issue 的最终处置）
 ## 0. 用户决策记录：异步心跳与排队模型（2026-08-25）
 
 本节只记录用户明确作出的产品决定。工程手段（游标、幂等键、发送队列、批次占用时限）不属于这里，写在对应的实现章节。**本节与正文任何旧结论冲突时，按本节算。**
@@ -101,7 +101,69 @@ O[心跳 每 2 分钟] -.补漏 / 查卡死 / 投递.-> C
 旧设计靠"第一条永远先于第二条"保证顺序。异步之后这条不够用了，**换成一条更强的保证：
 所有用户可见的输出（聊天回复、工具结果、check-in、提醒）经过同一个发送队列，串行发出。**
 
-这不只是为异步服务，它同时修掉一个现在就存在的缺陷——`_ai_lock` 不覆盖用户消息路径，详见第 13 节第二条。
+这不只是为异步服务；它和下面的共享 `GenerationGate` 一起修掉一个现在就存在的缺陷——`_ai_lock` 不覆盖用户消息路径，详见第 13 节第二条。只有 outbox 而没有共享 gate，只能保证已经入队的内容不交错，不能阻止主动消息在聊天回复仍在生成时抢先入队。
+
+#### 2.2.1 发送串行与生成串行是两层，不互相取代
+
+**明确结论：发送队列不取代 `_ai_lock` 的职责，两者并存。** 但代码里不再保留一个只属于 `Scheduler` 的私有锁：把它提升为进程级 `GenerationGate`，在 `main.py` 创建一次，同时注入 `LifeTrackerBot`、`Scheduler` 和工具结果表达器。
+
+两者保护的边界不同：
+
+| 组件 | 串行化什么 | 不负责什么 |
+| --- | --- | --- |
+| `GenerationGate` | 聊天首次回复、工具结果表达、check-in、reminder 的**上下文快照与文本生成** | 不发送 Discord 消息；不包住工具 worker 本身，否则又会把两条通道串回去 |
+| `OutboundQueue` | 已经生成好的消息或 reaction 的**投递**，一个 delivery 的所有 2000 字切片发完后才取下一项 | 不阻止两个模型同时基于不同时间点的上下文生成内容 |
+
+当前 `Scheduler._ai_lock` 因此是**移动并扩展作用域**，不是删除。用户消息先写入 `conversation_messages`，随后在共享 gate 内读取 context window 并调用聊天模型；check-in 和 reminder 也必须在同一 gate 内读取窗口并生成。这样聊天回复正在生成时，主动消息不会基于中途状态生成后插到它前面。已经开始生成的主动消息不做强行取消；锁保证的是不会有两个生成过程重叠。
+
+gate 可以先用一把共享 `asyncio.Lock` 实现。持锁期间允许等待自己的 delivery 发完，因为发送 consumer **永远不获取 gate**；否则会形成 `生成 → 等发送 → 等生成锁` 的死锁。工具 worker 的执行、批次 lease 和心跳不经过这把锁，只有它产出事实清单后、需要调用聊天模型表达结果时才进入 gate。
+
+#### 2.2.2 持久发送 outbox
+
+发送队列用 SQLite outbox，而不是只放一个进程内 `asyncio.Queue`。进程内队列只能保证活着时不交错，重启会丢掉刚完成的工具结果；SQLite 行负责事实，`asyncio.Event` 只负责把 consumer 叫醒。
+
+迁移按下面的表和索引落地：
+
+```sql
+CREATE TABLE outbound_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('message', 'reaction')),
+    content TEXT,
+    reaction TEXT,
+    target_discord_message_id TEXT,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'sending', 'retry_wait', 'sent', 'failed')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    available_at TEXT NOT NULL DEFAULT (datetime('now')),
+    locked_at TEXT,
+    lease_token TEXT,
+    discord_message_ids_json TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    sent_at TEXT,
+    CHECK(
+        (kind = 'message' AND content IS NOT NULL AND reaction IS NULL
+         AND target_discord_message_id IS NULL)
+        OR
+        (kind = 'reaction' AND content IS NULL AND reaction IS NOT NULL
+         AND target_discord_message_id IS NOT NULL)
+    )
+);
+
+CREATE INDEX idx_outbound_deliveries_channel_order
+    ON outbound_deliveries(channel_id, status, id);
+```
+
+`id` 就是同一 channel 的投递顺序。consumer 每次只领取该 channel **最小的非终态 id**；如果队首处于尚未到期的 `retry_wait`，后面的项目也等待，不能越过它。领取时写 `sending / locked_at / lease_token`，发送成功写 Discord message id 列表和 `sent`；进程退出后由心跳回收过期的 `sending`。Discord API 没有幂等发送键，因此“服务端已收到、进程却在写 `sent` 前退出”仍可能造成一次重复消息；outbox 保证的是不丢、可追踪和不交错，不虚称 Discord 端 exactly-once。
+
+所有普通 channel 输出都只调用 `OutboundQueue.enqueue_*()`：聊天回复、工具结果、check-in、reminder、聊天异常兜底和普通写入的 ✅ reaction。现有 `_send_chat_chunks()` 下沉为 consumer 的低层 transport，不能再被 producer 直接调用。`source_type + source_id` 给审计看，`dedupe_key` 给重试用；例如工具结果固定用 `tool-batch:<batch_id>:result`，同一批完成两次也只能排入一项。
+
+`enqueue_message(..., wait_for_delivery=True)` 返回 delivery receipt。聊天、check-in 和 reminder 继续等待自己的 item 到 `sent / failed`，从而保留当前“实际发出才算 delivered”的语义；reminder 只有拿到 `sent` 才能 `mark_reminder_done`。入队、等待和实际发送分离后，多轮模型回调也只能排队，不能绕过顺序。
 
 
 
@@ -170,6 +232,89 @@ O[心跳 每 2 分钟] -.补漏 / 查卡死 / 投递.-> C
 **和心跳的配合（2026-08-26 定案）。** 批次使用 `pending / running / completed / retry_wait / failed` 状态。worker 领取批次时原子地写入 `running` 和 `locked_at`；默认占用有效期为 5 分钟。心跳看到占用仍有效的 `running` 批次时不得重复启动；只有占用过期，才把批次转回 `pending` 或 `retry_wait`。这是为了处理“worker 已经领取批次，但进程随后退出”的情况。
 
 未处理消息数量只能用于判断系统是否积压，不能判断某个 `running` 批次是否仍在执行。假如系统只有一条消息，worker 领取后退出，消息数量永远不会超过阈值；如果没有占用有效期，这一批会永久停留。反过来，如果每次心跳都直接重试，又可能和仍在执行的 worker 重复操作。因此，积压阈值可以另行设置，但不能替代批次状态和占用有效期。
+
+#### 4.3.1 批次状态表与 lease
+
+批次状态不能塞进 `app_state` 的 JSON：它要做条件领取、过期回收、唯一约束和审计，应该是一等表。`conversation` 来源覆盖普通用户消息；`check_in` 来源让第 9.4 节的主动模板复用同一 worker，`source_ref` 使用 `check_in:<id>:<scheduled_for>`，调度器重启也不会重复建批。
+
+```sql
+CREATE TABLE tool_batches (
+    id TEXT PRIMARY KEY,
+    worker_name TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    source_kind TEXT NOT NULL
+        CHECK(source_kind IN ('conversation', 'check_in')),
+    source_ref TEXT,
+    after_message_id INTEGER,
+    through_message_id INTEGER,
+    last_user_message_id INTEGER,
+    input_json TEXT,
+    execution_mode TEXT NOT NULL
+        CHECK(execution_mode IN ('shadow', 'apply')),
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'running', 'completed', 'retry_wait', 'failed')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    available_at TEXT NOT NULL DEFAULT (datetime('now')),
+    locked_at TEXT,
+    lease_token TEXT,
+    last_run_id TEXT REFERENCES ai_runs(id),
+    result_json TEXT,
+    delivery_kind TEXT NOT NULL DEFAULT 'none'
+        CHECK(delivery_kind IN ('none', 'reaction', 'message')),
+    delivery_status TEXT NOT NULL DEFAULT 'not_needed'
+        CHECK(delivery_status IN ('not_needed', 'pending', 'queued', 'sent',
+                                  'superseded', 'failed')),
+    supersedes_batch_id TEXT REFERENCES tool_batches(id),
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT,
+    UNIQUE(source_kind, source_ref),
+    UNIQUE(worker_name, channel_id, after_message_id, through_message_id),
+    CHECK(through_message_id IS NULL OR after_message_id IS NULL
+          OR through_message_id >= after_message_id),
+    CHECK(last_user_message_id IS NULL OR
+          (last_user_message_id > after_message_id
+           AND last_user_message_id <= through_message_id)),
+    CHECK(
+        (delivery_kind = 'none' AND delivery_status = 'not_needed')
+        OR
+        (delivery_kind != 'none' AND delivery_status != 'not_needed')
+    ),
+    CHECK(
+        (source_kind = 'conversation'
+         AND after_message_id IS NOT NULL
+         AND through_message_id IS NOT NULL
+         AND source_ref IS NULL
+         AND input_json IS NULL)
+        OR
+        (source_kind = 'check_in'
+         AND source_ref IS NOT NULL
+         AND input_json IS NOT NULL
+         AND after_message_id IS NULL
+         AND through_message_id IS NULL
+         AND last_user_message_id IS NULL)
+    )
+);
+
+CREATE UNIQUE INDEX uq_tool_batches_open_conversation
+    ON tool_batches(worker_name, channel_id)
+    WHERE source_kind = 'conversation'
+      AND status IN ('pending', 'running', 'retry_wait');
+
+CREATE INDEX idx_tool_batches_claim
+    ON tool_batches(status, available_at, locked_at, created_at);
+
+CREATE INDEX idx_tool_batches_channel_through
+    ON tool_batches(worker_name, channel_id, through_message_id);
+```
+
+`after_message_id` 是开区间起点，`through_message_id` 是冻结的闭区间终点；worker 运行期间到达的新消息一定落进下一批。`last_user_message_id` 是这一批需要加 reaction 时的 Discord 目标来源。`input_json` 只冻结非 conversation 输入；conversation 内容仍从 append-only 原表按 id 区间读取，避免复制出第二份消息真相。
+
+领取必须在 `BEGIN IMMEDIATE` 里做 compare-and-set：取一个到期的 `pending / retry_wait`，或者 `locked_at` 已超过 5 分钟的 `running`，写入新的随机 `lease_token`、当前 `locked_at`、`running` 和递增后的 `attempt_count` 后再提交。后续每一次续租、完成、失败都带 `WHERE id = ? AND status = 'running' AND lease_token = ?`；过期 worker 即使恢复，也不能覆盖新 owner 的结果。只存 `locked_at` 而没有 fencing token，仍然会留下两个 worker 同时提交的窗口。
+
+`completed` 与 `failed` 都是终态：前者包含空结果或成功结果，后者表示重试预算用完。终态事务同时保存 `result_json` 和交付要求；需要说话的结果写 `delivery_kind='message', delivery_status='pending'`，例行写入写 reaction，真正为空则 `not_needed`。心跳只负责把 pending delivery 交给第 2.2 节的 outbox；它不靠“批次已经 completed”猜测用户是否已经收到。
+
 ### 4.4 批次的输入契约
 **本节 2026-08-25 新增。** 异步之后工具模型的输入不再是"这一条用户消息"，而是"一批消息"，
 需要四条纪律：
@@ -180,6 +325,113 @@ O[心跳 每 2 分钟] -.补漏 / 查卡死 / 投递.-> C
 **三、assistant 自己的消息永远不能触发写入。** 这一条在异步下比同步下更要紧：聊天模型现在是自由说话的，它可能说出"帮你记下了"这种没有依据的话，而那句话会进对话历史被工具模型读到。**模型自己说过的话不是事实。** 游标要越过所有行，但只有用户的那些行能开一个批次。
 
 **四、写操作要有幂等键，键从"批次 id + 这一批里的第几次工具调用"来。** 不要用内容哈希：同一天"又吃了一顿麻辣烫"是合法的重复写入，内容哈希会把它当成重试挡掉。**用户在执行期间改口，走正常的修正路径。** "三点"改成"四点"这类修正，大部分会落在同一个批次里——这正是静默窗口的主要收益。如果它落在批次已经开始执行之后，那么旧批次的结果**不能直接当成最终状态发给用户**：下一个批次会看到新消息，用 update 或 delete 把状态改对，然后只表达最终状态。
+
+#### 4.4.1 `conversation_messages` 就是待处理队列
+
+不再建一张逐消息 `pending_messages` 表。现有 `conversation_messages` 已经是 append-only、`discord_message_id UNIQUE` 的持久日志，再复制一次只会制造“两边哪张算已入队”的问题。新增的只有每个 worker/channel 一行游标：
+
+```sql
+CREATE TABLE tool_worker_cursors (
+    worker_name TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    last_processed_message_id INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(worker_name, channel_id),
+    CHECK(last_processed_message_id >= 0)
+);
+```
+
+这里故意不把 `last_processed_message_id` 做成外键：初始值 `0` 没有对应消息，而且会话日志将来可能有保留/归档策略，游标仍要保留水位。它的语义只是一条单调递增的 high-water mark。
+
+消息与批次的完整流程如下：
+
+1. `on_message` 先通过 `MemoryService.ingest_message()` 提交用户消息，拿到 SQLite row id；只有新插入成功（不是重复 Discord event）才调用 `BatchCoordinator.notify_user_message(channel_id, row_id)`。这个通知只重置进程内 30 秒静默 timer，丢了也没关系，DB 行才是队列。
+2. timer 或心跳在 `BEGIN IMMEDIATE` 中读取 cursor，并确认该 channel 没有非终态 conversation batch。它冻结 `id > last_processed_message_id` 的当前最大 id 为 `through_message_id`。最新用户消息已静默 30 秒，或最早未处理用户消息已等待 60 秒，任一成立就插入 `pending` 批次；聊天模型返回 `[SILENT]` 时走同一函数的 `force=True`，立即冻结到当前消息。
+3. worker 输入严格分成两块：`(after_message_id, through_message_id]` 里的 user 行是 `new_messages`，可以触发操作；同区间的 assistant/system 行以及区间外历史只放 `context`，不能触发操作。新消息到达时不会改正在运行批次的边界。
+4. 如果区间里只有 assistant/system 行，仍写一条无需调用模型的空 `completed` batch；如果有 user 行但工具模型返回空，也按空批完成。两者都在事务里把 cursor 推到 `through_message_id`。这正是“空批也推进游标”的可审计写法。
+5. 成功、无需操作或最终失败时，事务先核对 cursor 仍等于本批的 `after_message_id`，再同时写批次终态、结果/交付要求和 cursor。`retry_wait` 不推进。最终失败只有在失败事实已经持久化、可由心跳交付时才推进，不能靠推进游标把失败吞掉。
+6. batch 执行期间到达的新 user 行，id 必然大于旧 `through_message_id`，进入下一批。若旧结果尚未交付，result dispatcher 发现有更新的 user 行时先暂缓表达，等下一批判断它是不是改口：是改口时，新批写 `supersedes_batch_id`，并把旧批仍为 `pending` 的 delivery 原子改成 `superseded`，只表达修正后的最终状态；不是改口时，旧结果照常释放，不能因为话题变化静默丢弃。若旧结果已经发出，则无法撤回，下一批必须明确发送纠正。这同时满足第 4.4 节的改口约束和第 9.5 节“迟到结果仍发送”的决定。
+
+这套 cursor 更新与 curator 的 `apply_curator_batch()` 一样，必须和批次终态处在**同一个事务**。先推进 cursor 再存结果会丢任务；先标 completed 再单独推进 cursor 会让重启重复建批。
+
+#### 4.4.2 幂等键放在独立调用账本
+
+**决定：不在 `events`、`reminders`、`deadlines` 三张业务表上各加一套列；新建统一的 `tool_batch_calls`。** 理由是 update/delete 没有新业务行可挂键，查询调用也要在重试时复用结果，未来的外部写工具更不属于这三张表。现有 `tool_calls` 是 AI trace 在整次 run 结束后 best-effort 落库，失败不能影响主流程，不能承担防重复这一条 correctness 责任。
+
+```sql
+CREATE TABLE tool_batch_calls (
+    batch_id TEXT NOT NULL REFERENCES tool_batches(id) ON DELETE RESTRICT,
+    call_index INTEGER NOT NULL CHECK(call_index >= 0),
+    tool_name TEXT NOT NULL,
+    arguments_json TEXT NOT NULL,
+    arguments_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'reserved'
+        CHECK(status IN ('reserved', 'succeeded', 'retry_wait', 'failed')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    result_json TEXT,
+    business_ref_json TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(batch_id, call_index)
+);
+
+CREATE INDEX idx_tool_batch_calls_status
+    ON tool_batch_calls(status, updated_at);
+```
+
+`call_index` 是**整个批次内**的单调序号，不是每个模型 round 重新从 0 开始。参数先做 key 排序、无多余空白的 canonical JSON，再算 SHA-256。重试命中同一 `(batch_id, call_index)` 时：
+
+- 已 `succeeded`：不执行工具，直接把持久化的 `result_json` 回放给模型；
+- `reserved / retry_wait`：只有 tool name 与参数 hash 都相同才允许续跑；
+- name 或参数不同：这是重放不确定性，批次显式失败，不能借同一幂等键执行另一件事。
+
+对本地 SQLite 写工具，“插入/领取调用账本 → 修改业务表 → 写 result/succeeded”必须共享一个 `BEGIN IMMEDIATE` 事务。当前 `Database` 的各业务方法会自行开连接并 commit，因此实现时要抽出可接收现有 connection 的 repository 方法；只在外面先插一条 ledger、里面再调用现有方法，崩在两次 commit 中间仍会重复写，**不算完成幂等**。读工具也落账本并在批次重试时复用当时结果，保证模型续跑看到同一事实快照。
+
+将来若增加外部写 API，`<batch_id>:<call_index>` 同时传给 provider 的原生 idempotency key；provider 不支持时只能做到 at-least-once，并把“请求已发出但结果未知”留成需要人工核对的失败状态，不能伪装成 exactly-once。当前 calendar 工具只读，不存在这条缺口。
+
+#### 4.4.3 模块边界与心跳职责
+
+实现放进一个小包，避免继续把状态机塞进 `discord_bot.py` 或 `scheduler.py`：
+
+| 模块 | 唯一职责 |
+| --- | --- |
+| `bot/async_pipeline/repository.py` | 上述四张表的 SQL、claim/lease CAS、幂等调用事务、cursor 与 batch 终态原子提交 |
+| `bot/async_pipeline/batcher.py` | 30 秒静默、60 秒最长等待、`[SILENT]` 强制触发；只决定何时建批，不执行模型 |
+| `bot/async_pipeline/tool_worker.py` | 装配区分 `new_messages/context` 的输入、调用工具模型、经幂等 executor 执行、产出事实清单 |
+| `bot/async_pipeline/outbound.py` | `GenerationGate` 与 `OutboundQueue`；表达结果时在 gate 内重读最近 20 条，再交给 outbox |
+| `bot/async_pipeline/heartbeat.py` | 每 2 分钟补建到期批次、回收 5 分钟过期 lease、唤醒 retry、投递 pending result；不承载正常 30 秒延迟 |
+| `main.py` | 创建这些单例并注入 bot/scheduler；生命周期启动与停止 |
+
+`discord_bot.py` 只负责“消息成功入库后通知 batcher”和把回复交给统一 outbound；`scheduler.py` 只负责产生 check-in/reminder 工作，不再自己拥有生成锁或 Discord 出口。心跳各步骤必须可独立重入：重复运行只会命中 unique/CAS，不会再建批、再调工具或再入同一条 delivery。
+
+### 4.5 开关、分阶段启用与回退
+
+配置沿用 curator 的 `enabled / apply` 两段式先例，全部默认关闭：
+
+```json
+{
+  "async_pipeline": {
+    "outbound_queue_enabled": false,
+    "tool_worker_enabled": false,
+    "tool_worker_apply": false
+  }
+}
+```
+
+对应常量为 `ASYNC_OUTBOUND_ENABLED`、`ASYNC_TOOL_WORKER_ENABLED`、`ASYNC_TOOL_APPLY`。三种有效阶段：
+
+| 阶段 | outbound | worker | apply | 行为 |
+| --- | --- | --- | --- | --- |
+| 当前基线 | off | off | off | 现有单模型 + 直接发送，迁移建表但不改变行为 |
+| LT-170 / shadow | on | off 或 on | off | 先让现有单模型走统一 gate/outbox；worker 打开时只记录拟调用，不执行业务工具 |
+| 并行正式路径 | on | on | on | 聊天模型不再拿业务工具；批次 worker 成为唯一写工具入口 |
+
+启动时强校验 `apply ⇒ worker ⇒ outbound`，不满足就拒绝启动，不能静默退成一个两边都可能写的混合态。`ASYNC_TOOL_APPLY` 同时控制两端：它为 true 时普通聊天调用显式排除业务工具；为 false 时恢复当前单模型工具集合。这样不存在“旧聊天模型和新 worker 同时 authoritative”的窗口。
+
+正常回退先等 `pending/running/retry_wait` 批次和 outbox 排空，再把 `tool_worker_apply` 关掉并重启；表和历史行原样保留，当前单模型路径恢复，outbound 可以继续开着。紧急回退时，在 Bot 重新连接 Discord **之前**执行一次 reconciliation：停止领取 apply batch，把所有非终态批次及其消息区间列入日志并标为 `failed: disabled_by_rollback`，成功过的调用仍由 `tool_batch_calls` 作证；未完成区间不自动重放到旧模型，以免部分成功后重复写。它们必须产生一条运维告警并进入人工核对，随后把 worker cursor 明确切到回退时的 `MAX(conversation_messages.id)`。未来再次启用从这个 cutover 之后开始，不能把旧模型已经处理过的消息重新扫一遍。
+
+关闭 outbox 也只允许在队列排空后进行；紧急关闭要把尚未发送的 delivery id 列出来，不能直接改回 direct send 后把它们遗忘。这里的回退目标是“一次配置 + 重启恢复旧主路径，同时把未决副作用显式暴露”，不是用删表或改 schema 回滚。
 
 
 
@@ -352,18 +604,20 @@ LT-137 原本把 `search_memory` 设计成**聊天模型的工具**。并行架�
 
 离线 replay 只验证模型输入输出，包括漏判、误判、事实保真、来源约束和指令遵守，并且要能对比不同人设版本。发送顺序、不阻塞、心跳恢复、占用过期和幂等写入必须通过单元测试、集成测试或运行时测量验证，不能用离线 replay 代替。
 
-## 8. dispatch-poc 四个 Backlog issue 的处置
+## 8. Dispatch POC 旧 issue 的最终处置（2026-08-26）
 
 | issue                         | 处置                                                                                                       |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------- |
-| LT-10 步骤 0：离线标注 escalation 样本 | 旧样本和旧标签不复用；为批次工具模型重新建立标注任务 |
+| LT-10 步骤 0：离线标注 escalation 样本 | **Done，历史产出保留**；旧样本和旧标签不复用，为批次工具模型重新建立标注任务 |
 | LT-11 步骤 1：4 份 prompt 草稿      | 已 Done。`SMALL_DECIDE` 作废（不再需要路由）；`BIG_WORKER` 的"人格留空 + 三段输出"思路**继续有效**，是第 4 节的原型；`SMALL_PARAPHRASE` 继续有效 |
-| LT-12 步骤 2：dispatch engine    | **重写**。串行数据流、`escalate_state` 持久化、pre-filter 全部不适用                                                       |
-| LT-13 步骤 3：离线 replay 验证       | 旧 issue 不沿用；按第 7 节的新验证分层重新建立任务 |
-| LT-14 步骤 4：第二 bot 进程          | 仍然适用（测试基础设施）                                                                                             |
-| LT-15 步骤 5：路由 + 配置            | 旧 issue 不沿用；等两份 prompt 和 section 分配完成后重新建立配置任务 |
+| LT-12 步骤 2：dispatch engine    | **Canceled**；串行 engine 不再重写。实现规格拆到 [LT-169](https://linear.app/chachas/issue/LT-169)，统一发送队列拆到 [LT-170](https://linear.app/chachas/issue/LT-170)，双层本体另行建任务 |
+| LT-13 步骤 3：离线 replay 验证       | **Canceled**；按第 7 节的新验证分层另行建任务 |
+| LT-14 步骤 4：第二 bot 进程          | **Backlog，保留**，只作为测试基础设施 |
+| LT-15 步骤 5：路由 + 配置            | **Canceled**；基础开关与回退已经并入 LT-169 / 第 4.5 节，模型与 section 配置随双层本体另建任务 |
+| LT-16 步骤 6：实测 2 周              | **Canceled**；等新架构具备可运行版本后重新定义观测任务 |
+| LT-17 步骤 7：最终决策               | **Canceled**；不再用旧 POC 的推 prod / 归档口径 |
 
-`bot/prompts_dispatch.py` 目前是死代码（全仓库无人 import）。单独建立一个小任务删除 `build_small_decide_prompt`，并在该任务中确认 parser 和 `build_big_worker_parts` 是否仍值得复用。
+`bot/prompts_dispatch.py` 目前是死代码（全仓库无人 import）。[LT-173](https://linear.app/chachas/issue/LT-173) 负责删除 `build_small_decide_prompt`，并确认 parser 和 `build_big_worker_parts` 是否仍值得复用。
 
 
 
@@ -477,13 +731,15 @@ User: 今天看资料看了一下午，头都晕了。
 
 前面几步都**不需要双层结构就能单独交付**，而且每一步都让现在的单模型路径变好。这是有意的：架构是个真正的项目，不该拿它当所有改进的前置条件。
 
-0. **异步基础设施**（第 0、2.1、2.2、4.4 节，2026-08-25 新增）：待处理队列与游标、统一发送队列、批次状态与幂等键、两分钟心跳。**排在最前面，因为它单独就能修掉第 13 节第二条那个乱序缺陷**，而且完全不依赖双层结构——现在的单模型路径也可以先用上统一发送队列。
+0. **异步基础设施**（第 0、2.1、2.2、4.3～4.5 节）：待处理队列与游标、统一发送队列、批次状态与幂等键、两分钟心跳。内部顺序是：**LT-169 先写完实现规格（本次已完成）→ LT-170 按第 2.2 节落统一发送队列与共享生成 gate → 再为 batch/cursor/幂等 executor/heartbeat 建实现 issue**。统一发送队列排在代码改动最前面，因为它单独就能修掉第 13 节第二条那个乱序缺陷，而且完全不依赖双层结构——现在的单模型路径也可以先用上。
 1. **人设写入数据库**（LT-168）。第 11 节的初稿写进 `identity` / `communication`，处理 11.3的三个问题。这一步同时是第 5.3 节场景状态的前置——场景描述里刻意不带语气，人设必须先接住。
 2. **天气改成常驻快照**（第 5.5 节）。跟架构无关，改动小，做完人设那个"感官外挂"才有数据可用。
 3. **重写工具策略散文**（第 5 节）。3491 字压到三分之一，删掉所有跟语气、时机、分寸有关的内容。这一步是为拆分做准备，但在现在的单模型下也是净收益。
 4. **建立验证基础**（第 7 节）。重新标注模型样本并建立离线 replay，同时为批次状态、发送顺序、心跳恢复和幂等写入建立单元测试与集成测试。
 5. **双层结构本身**（第 2–4 节）。两份 prompt、批次执行、结果表达。**依赖第 0 步。**
 6. **润色**（第 5.4 节）。依赖第 11.2 节那份 prompt，**不依赖双层结构**，可以跟 5 并行推进。它的补漏扫描可以直接挂在第 0 步那个心跳上。
+
+[LT-171](https://linear.app/chachas/issue/LT-171)（场景工具边界）、[LT-172](https://linear.app/chachas/issue/LT-172)（天气常驻快照）、[LT-173](https://linear.app/chachas/issue/LT-173)（Dispatch 死代码）互相独立，也不等待 LT-169 / LT-170，可以随时并行。它们完成后分别回写第 5.3、5.5、8、13 节的实现状态。
 ## 13. 当前分支上的两个既存缺陷
 
 这两条是 2026-08-25 review 这份设计时在代码里发现的，**跟异步无关，现在就存在**。
@@ -492,7 +748,7 @@ User: 今天看资料看了一下午，头都晕了。
 
 结果是：普通聊天里模型随时可以自己建一个场景，而场景是要注入后续每一轮的。这跟第 5.3 节"场景由 check-in 决定要不要挂"的设计直接冲突，也是"默认关闭、按需打开"这个开关被绕过的唯一入口。
 
-**二、check-in、提醒和聊天回复之间没有共同的锁。** `bot/scheduler.py:62` 的 `_ai_lock`只在 scheduler 内部使用（`:434` check-in、`:673` 提醒），而 `bot/discord_bot.py:100` 的`on_message` 完全不参与。所以用户消息的回复正在生成时，提醒或 check-in 可以先发出去，用户看到的顺序是乱的。第 2.2 节那个统一发送队列就是这一条的修法，这也是把它排进第 12 节第 0 步的理由。
+**二、check-in、提醒和聊天回复之间没有共同的锁。** `bot/scheduler.py:62` 的 `_ai_lock`只在 scheduler 内部使用（`:434` check-in、`:673` 提醒），而 `bot/discord_bot.py:100` 的`on_message` 完全不参与。所以用户消息的回复正在生成时，提醒或 check-in 可以先生成、先入队，用户看到的顺序是乱的。第 2.2 节的修法是**共享 `GenerationGate` + 统一发送 outbox**：前者串行生成，后者串行投递，少一个都没有覆盖完整问题。这也是把 LT-170 排进第 12 节第 0 步的理由。
 
 ## 附录 A：本次异步改造的原始变更清单
 
