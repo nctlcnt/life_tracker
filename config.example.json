@@ -38,6 +38,11 @@
     "path": "data/memory.md",
     "token_budget": 4000
   },
+  "async_pipeline": {
+    "outbound_queue_enabled": false,
+    "tool_worker_enabled": false,
+    "tool_worker_apply": false
+  },
   "timezone": "Australia/Sydney",
   "weather": {
     "api_key": "",

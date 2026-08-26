@@ -86,11 +86,35 @@ async def main(test: bool = False, api_only: bool = False):
 
         # 这些 import 放在这里，以便 --api-only 时无需安装 discord.py 等重依赖也能起来
         import discord
+        from bot.async_pipeline import (
+            GenerationGate,
+            OutboundDeliveryRepository,
+            OutboundQueue,
+        )
         from bot.discord_bot import LifeTrackerBot
         from bot.scheduler import Scheduler
 
+        outbound_repository = OutboundDeliveryRepository(db)
+        if not config.ASYNC_OUTBOUND_ENABLED:
+            stranded_delivery_ids = outbound_repository.non_terminal_ids()
+            if stranded_delivery_ids:
+                raise RuntimeError(
+                    "cannot disable outbound queue with non-terminal deliveries: "
+                    + ", ".join(str(item) for item in stranded_delivery_ids)
+                )
+
         # 3. 初始化 Discord Bot
-        bot = LifeTrackerBot(db, memory)
+        generation_gate = (
+            GenerationGate() if config.ASYNC_OUTBOUND_ENABLED else None)
+        bot = LifeTrackerBot(
+            db, memory, generation_gate=generation_gate)
+        outbound_queue = None
+        if config.ASYNC_OUTBOUND_ENABLED:
+            outbound_queue = OutboundQueue(
+                outbound_repository,
+                bot.deliver_outbound,
+            )
+            bot.set_outbound_queue(outbound_queue)
 
         # 4. 初始化定时调度器
         scheduler = Scheduler(
@@ -98,6 +122,7 @@ async def main(test: bool = False, api_only: bool = False):
             bot.send_proactive_message,
             is_user_typing_callback=bot.is_user_typing,
             memory_service=memory,
+            generation_gate=generation_gate,
         )
         db._on_reminder_added = scheduler.notify_new_reminder
         set_check_in_changed_callback(scheduler.notify_schedule_changed)
@@ -108,14 +133,24 @@ async def main(test: bool = False, api_only: bool = False):
         logger.info("🚀 正在启动所有服务...")
         logger.info("   - Discord Bot")
         logger.info("   - 定时调度器 (随机轮询基于上次 AI 调用时刻，间隔见各 check-in 配置)")
+        logger.info(
+            f"   - 统一发送队列: "
+            f"{'enabled' if outbound_queue else 'disabled (direct send)'}")
         logger.info(f"   - FastAPI 接口 (端口: {config.API_PORT})")
 
         # Bot token 失效时不要让 Docker 反复重启整个容器刷 Discord 登录接口。
         bot_task = asyncio.create_task(bot.start(config.DISCORD_TOKEN))
         scheduler_task = asyncio.create_task(scheduler.start())
         api_task = asyncio.create_task(api_server.serve())
+        outbound_task = (
+            asyncio.create_task(outbound_queue.run())
+            if outbound_queue else None
+        )
+        tasks = {bot_task, scheduler_task, api_task}
+        if outbound_task:
+            tasks.add(outbound_task)
         done, pending = await asyncio.wait(
-            {bot_task, scheduler_task, api_task},
+            tasks,
             return_when=asyncio.FIRST_EXCEPTION,
         )
         login_failed = any(
@@ -130,6 +165,11 @@ async def main(test: bool = False, api_only: bool = False):
             scheduler_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await scheduler_task
+            if outbound_queue and outbound_task:
+                await outbound_queue.stop()
+                outbound_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await outbound_task
             await bot.close()
             await api_task
         else:

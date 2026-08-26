@@ -362,6 +362,34 @@ CURATOR_PRESET: str = str(_memory.get("curator_preset", "") or "")
 # bot 会"忘掉"没被确认的那些。出问题时要能一秒退回去。
 MEMORY_READ_FROM_DB: bool = bool(_memory.get("read_from_db", False))
 
+# ── 聊天 / 工具异步管线（LT-170 起分阶段启用）──────────────────────────────
+# 默认全关：升级只建持久表，不改变现有发送路径。依赖方向必须是
+# apply ⇒ worker ⇒ outbound，非法组合在进程连接 Discord 前直接拒绝启动。
+_async_pipeline = _cfg.get("async_pipeline", {}) or {}
+ASYNC_OUTBOUND_ENABLED: bool = bool(
+    _async_pipeline.get("outbound_queue_enabled", False))
+ASYNC_TOOL_WORKER_ENABLED: bool = bool(
+    _async_pipeline.get("tool_worker_enabled", False))
+ASYNC_TOOL_APPLY: bool = bool(
+    _async_pipeline.get("tool_worker_apply", False))
+
+
+def _validate_async_pipeline_flags(*, outbound: bool, worker: bool,
+                                   apply: bool) -> None:
+    if apply and not worker:
+        raise ValueError(
+            "async_pipeline.tool_worker_apply requires tool_worker_enabled")
+    if worker and not outbound:
+        raise ValueError(
+            "async_pipeline.tool_worker_enabled requires outbound_queue_enabled")
+
+
+_validate_async_pipeline_flags(
+    outbound=ASYNC_OUTBOUND_ENABLED,
+    worker=ASYNC_TOOL_WORKER_ENABLED,
+    apply=ASYNC_TOOL_APPLY,
+)
+
 # ── 天气 ───────────────────────────────────────────────────────────────
 # tomorrow.io API；api_key 空时天气模块会静默降级（返回 None，不影响主流程）
 _weather = _cfg.get("weather", {})
