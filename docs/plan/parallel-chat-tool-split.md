@@ -531,6 +531,8 @@ CREATE INDEX idx_tool_batch_calls_status
 
 **三、不再使用来回数终止场景。** 现有 `bot/ai_engine_base.py:485` 会在装配聊天 prompt 时调用 `scene_state.touch`；实现阶段需要确保这个调用不再按来回数清除场景，场景只由下一个 check-in 覆盖。
 
+**实现状态（LT-171）：已在 `feat/LT-171-scene-boundaries` 完成，待合并。** 普通聊天的默认工具集会过滤 `set_scene`，只有明确启用 `track_scene` 的 check-in 才会把它加入工具集；场景不再按来回数或静默时间过期，并在下一次 check-in 调用模型前清除。旧格式状态中的预算字段会被兼容读取并忽略。
+
 ## 5.4 时间线的润色：碎片体
 
 **决定：做。但不在工具轮里做，而是写入之后异步做；并且原话和润色文本分成两列存。**
@@ -742,13 +744,13 @@ User: 今天看资料看了一下午，头都晕了。
 6. **润色**（第 5.4 节）。依赖第 11.2 节那份 prompt，**不依赖双层结构**，可以跟 5 并行推进。它的补漏扫描可以直接挂在第 0 步那个心跳上。
 
 [LT-171](https://linear.app/chachas/issue/LT-171)（场景工具边界）、[LT-172](https://linear.app/chachas/issue/LT-172)（天气常驻快照）、[LT-173](https://linear.app/chachas/issue/LT-173)（Dispatch 死代码）互相独立，也不等待 LT-169 / LT-170，可以随时并行。它们完成后分别回写第 5.3、5.5、8、13 节的实现状态。
-## 13. 当前分支上的两个既存缺陷
+## 13. Review 发现的两个既存缺陷
 
 这两条是 2026-08-25 review 这份设计时在代码里发现的，**跟异步无关，现在就存在**。
 
-**一、`set_scene` 泄漏到了普通聊天。** `bot/discord_bot.py:203` 调 `chat()` 时不传`tool_names`，于是 `bot/ai_engine_openai_compat.py:135` 走 `get_tools(None)` 返回全量工具，其中包括 `bot/tools.py:421` 追加的 `set_scene`。而 check-in 路径（`bot/ai_engine_base.py:582-586`）才按 `track_scene` 开关决定是否开放它。
+**一、`set_scene` 泄漏到了普通聊天（LT-171 已修复，待合并）。** `bot/discord_bot.py` 调 `chat()` 时不传 `tool_names`，过去 `get_tools(None)` 会返回包含 `set_scene` 的全量工具；现在默认工具集明确过滤它，check-in 路径仍只按 `track_scene` 开关开放。
 
-结果是：普通聊天里模型随时可以自己建一个场景，而场景是要注入后续每一轮的。这跟第 5.3 节"场景由 check-in 决定要不要挂"的设计直接冲突，也是"默认关闭、按需打开"这个开关被绕过的唯一入口。
+同时，LT-171 将场景终止条件与第 5.3 节对齐：普通聊天只读，提醒不清场；下一次 check-in 在模型调用前清除旧场景，并可按开关建立新场景。
 
 **二、check-in、提醒和聊天回复之间没有共同的锁。** 基线代码中 `Scheduler._ai_lock` 只在 scheduler 内部使用，而 `LifeTrackerBot.on_message` 完全不参与，所以用户消息的回复正在生成时，提醒或 check-in 可以先生成、先入队。LT-170 功能分支已按第 2.2 节实现**共享 `GenerationGate` + 统一发送 outbox**：前者串行生成，后者串行投递；开关关闭时仍保持旧基线，待合并并启用后才修复运行时乱序。
 

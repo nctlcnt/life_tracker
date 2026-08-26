@@ -116,8 +116,21 @@ def test_request_shape_bearer_auth_and_v1_suffix(relay_call):
     assert payload["max_tokens"] == 4096
     assert payload["messages"][0] == {"role": "system", "content": "你是测试助手。"}
     assert payload["messages"][1] == {"role": "user", "content": "[2026-07-17 10:00] 在吗"}
-    # tool_names=None → 全量工具，OpenAI function schema 原样传
+    # 默认聊天工具集不包含只能由 check-in 显式启用的 set_scene。
     assert payload["tools"] == get_tools(None)
+    assert "set_scene" not in {
+        tool["function"]["name"] for tool in payload["tools"]
+    }
+
+
+def test_set_scene_is_available_when_explicitly_requested(relay_call):
+    _, calls = relay_call(
+        [_completion(content="ok")], tool_names={"set_scene"}
+    )
+
+    assert [
+        tool["function"]["name"] for tool in calls[0]["payload"]["tools"]
+    ] == ["set_scene"]
 
 
 def test_v1_suffix_not_duplicated_and_optional(relay_call):
