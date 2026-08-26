@@ -14,12 +14,12 @@
 
 ## 当前基线
 
-最后更新：2026-08-23 13:39 UTC
+最后更新：2026-08-26 11:01 UTC
 
 | 检查项 | 最近执行时间（UTC） | 状态 | 结果/证据 | 下次动作 |
 |---|---|---|---|---|
-| Python 全部自动测试 | 2026-08-23 13:35 | PASS | `.venv/bin/python -m pytest -q`：236 passed，33.21s（含状态阶梯、schema contract、注入分档、备份恢复相关新增 38 条） | 每次部署前重跑 |
-| 前端生产构建 | 2026-07-18 01:26 | PASS | `make deploy-local` Docker frontend-builder 构建成功 | 每次部署前重跑 |
+| Python 全部自动测试 | 2026-08-26 10:37 | PASS | `.venv/bin/python -m pytest -q`：285 passed，40.25s（含 LT-170 outbox、lease、顺序与共享 gate 回归） | 每次部署前重跑 |
+| 前端生产构建 | 2026-08-26 10:36 | PASS | `npm run build`：Vite 生产构建成功；staging Docker frontend-builder 于 11:00 再次成功 | 每次部署前重跑 |
 | npm 干净安装 | 2026-07-17 03:58 | PASS | `npm ci` 安装 287 packages；audit findings 与 07-11 相同，仍待审查 | 审查 audit findings；依赖变更后重跑 |
 | npm Docker builder | 2026-07-18 01:31 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功（含 frontend-builder） | Dockerfile/依赖变更后重跑 |
 | Production health endpoint | 2026-08-23 13:39 | PASS | `/internal/health` 200 | 每次部署后重跑 |
@@ -30,18 +30,27 @@
 | R2/Litestream 完整恢复 | 2026-07-11 13:30 | PASS | 从 R2 恢复到全新 `/tmp` 路径；integrity check、数据新鲜度和 API-only smoke test 均通过 | 2026-10 前重跑，或 Litestream/R2 变更后立即重跑 |
 | 网络监听/路由审计 | 2026-07-17 13:34 | PASS | `infra audit`：life-tracker 监听 `127.0.0.1:8080` 无异常；5 个告警均属 staging/llm-gateway/未登记工具进程，与部署前基线一致 | 每次部署后重跑 |
 | Dashboard/API 鉴权 | 2026-07-17 06:55 | PASS | 自动验收全部通过；用户随后从真实浏览器确认登录和 Dashboard 使用“完全正常” | 每次鉴权/路由变更后重跑 |
-| Staging 启动与隔离 | 未知 | NOT TESTED | 外部 Dockge staging compose 仍使用 `8081:8081`，可能绑定所有接口 | 修正权威 compose 后再验证 |
+| Staging 启动与隔离 | 2026-08-26 11:01 | PASS | 外部 Dockge compose 已改为 `127.0.0.1:9001→8081`；容器 healthy，internal/auth health 200，测试 Discord Bot 上线，`infra audit` clean | 完成 LT-170 人工并发场景后再部署 production |
 | memory.md 独立异地备份 | 未知 | NOT TESTED | `data/memory.md` 已成为记忆权威存储（07-17 上线），Litestream 只覆盖 SQLite；迁移期靠 legacy 表 shadow 兜底 | LT-132 验收前建立独立备份并演练恢复 |
 
 ## 已知未闭环事项
 
 1. `life.purrden.cc` 仍是公网路由，但 Dashboard/API 已有应用层鉴权；Cloudflare Access 仍可作为额外防线，不再是保密性的唯一前置。
-2. 外部 Dockge staging 权威 compose 的端口绑定尚未满足 VPS 私有监听纪律；仓库内历史参考文件已收紧，但不能替代外部文件。
+2. ~~外部 Dockge staging 权威 compose 的端口绑定尚未满足 VPS 私有监听纪律~~ 已于 2026-08-26 改为登记端口 `9001` 且只绑定 `127.0.0.1`，`infra audit` 通过。
 3. ~~本地 SQLite `.backup` 快照的恢复流程尚未单独演练~~ 已于 2026-08-23 演练通过，见下方演练记录；工具固化为 `scripts/backup_and_verify.py`。
 4. 2026-07-12 已决定暂不备份 `data/ai_traces/*.jsonl`。主机完全损坏时允许丢失 JSONL 原始 trace；SQLite 中的 `ai_runs`/`tool_calls` 仍由 Litestream 保护。
 5. `npm ci` 报告 1 low、2 moderate、2 high；需单独运行 `npm audit` 评估可达性和升级影响，禁止未经审查直接 `--force`。
 
 ## 演练记录
+
+### 2026-08-26 11:01 UTC — LT-170 统一发送队列部署到 staging
+
+- 内容：commit `0902838` / PR #14；共享 `GenerationGate`、SQLite `outbound_deliveries`、单 consumer、同频道队首顺序、lease fencing/恢复、失败重试与分阶段开关。
+- 部署目标：独立 staging Bot、`config.dev.json` 和 `data-dev/life_tracker.db`；只启用 `outbound_queue_enabled`，tool worker/apply 保持关闭；production 未改动。
+- 部署前：285 个 Python 测试通过；前端生产构建通过；staging 在线备份 `data-dev/life_tracker.db.bak-20260826-110014`，`integrity_check` → `ok`。
+- 网络修正：`infra allocate life-tracker-staging api` 登记端口 9001；外部 Dockge compose 从 `8081:8081` 改为 `127.0.0.1:${PORT}:8081`，`.env` 写入 `PORT=9001`；未创建公网路由。
+- 部署后：容器 healthy；`/internal/health` 与鉴权 `/api/health` 均 200；日志确认 `OutboundQueue consumer 已启动`、统一发送队列 enabled、测试 Bot `CC#7632` 上线；outbox 表已创建且无非终态 delivery；数据库 `quick_check` → `ok`；`infra audit` → clean。
+- 未覆盖：真实 Discord 上“聊天生成中触发 check-in/reminder”、超过 2000 字分片与 ✅ reaction 的人工顺序验收，留给本轮用户测试。
 
 ### 2026-08-23 13:38 UTC — 记忆状态阶梯与种子数据部署
 
