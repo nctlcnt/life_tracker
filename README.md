@@ -86,7 +86,7 @@ make logs
 make build
 ```
 
-生产和 staging 部署细节见 [docs/deploy.md](docs/deploy.md)。
+生产和 staging 部署细节见 [docs/codebase/DEPLOYMENT.md](docs/codebase/DEPLOYMENT.md)。
 
 ## Prompt 初始化与自定义
 

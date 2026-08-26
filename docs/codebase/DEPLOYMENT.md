@@ -105,7 +105,7 @@ infra audit
 - `PRAGMA quick_check` 返回 `ok`；
 - Litestream 日志有近期 `wal segment written`，且无持续上传错误；
 - 8080 仍只监听 `127.0.0.1`；
-- 将结果追加到 `docs/operations-validation.md`。
+- 将结果追加到 `docs/OPERATIONS-LOG.md`。
 
 ## 4. Staging
 
@@ -250,7 +250,7 @@ Staging 可以用于恢复后的应用级 smoke test，但不要覆盖 `data-dev
 5. 以独立 project 启动一个临时容器，检查 health、version、timeline、memories、todos、projects、prompts 等只读端点；结构化 trace 用 SQLite `ai_runs`/`tool_calls` 验证，不要求 JSONL Trace Viewer 日期恢复。
 6. 检查容器日志没有 schema、SQLite 或启动异常。
 7. 停止并删除临时容器；确认 production 仍 healthy、Litestream 仍运行、`data/` 与 `data-dev/` 路径未被替换。
-8. 将恢复点、RPO、耗时和结果写入 `operations-validation.md`。
+8. 将恢复点、RPO、耗时和结果写入 `OPERATIONS-LOG.md`。
 
 临时 compose 的核心约束示例：
 
@@ -309,4 +309,4 @@ infra audit
 - `/home/ubuntu/stacks/life-tracker-staging/compose.yaml`：staging 权威栈
 - `litestream.yml`：R2 复制配置
 - `.github/workflows/release.yml`：tag release 构建
-- `docs/operations-validation.md`：测试、健康和灾备演练台账
+- `docs/OPERATIONS-LOG.md`：测试、健康和灾备演练台账
