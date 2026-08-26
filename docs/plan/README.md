@@ -1,34 +1,28 @@
 # 项目大脑缓存
 
-> 最后整理: 2026-05-05
+> 最后整理: 2026-08-26
 > 规则: 此文件是 plan 总览入口。specs/todos/archive 已迁 Linear (LT team)，本文件保留指针；ideas 仍为本地 markdown
 > 技术难题沉淀见 [development_log.md](../../development_log.md)
 
 ## 近期计划更新
 
-> 最近 7 天有改动的 plan 文件：
-> - **2026-05-05 archive 也迁 Linear + 进度细化**：7 个 archive → Project (6 Cancelled + 1 Completed)；4 个 active Project 加 21 个 progress issues (LT-2~LT-22) 反映步骤完成情况；planned-event Project → Completed。所有 stub 收在 `5-migrated/`
-> - **2026-05-05 specs/todos 迁移至 Linear (LT team)**：5 个 spec → Linear Project，1 个 todo → LT-1 Issue。stub 集中在 `5-migrated/`；`1-ideas/` 保持本地 markdown
-> - `1-ideas/inspiration.md` — 2026-05-03 新增想法 #9–#15（美食地图/偏好查询系统、memory 强化用户画像、bot 系统消息自动消失、觉察 channel + 轻量状态打标 agent 新思路、prompt 个人信息移出 cache 权衡）
-> - `2-specs/dispatch-poc.md` — 2026-05-01 步骤 0 + 1 完成后**暂停**，产出已合入 main：步骤 0（63 条人工标注，L1 覆盖率 22.2% 落在灰区）+ 步骤 1（`bot/prompts_dispatch.py` 4 份 prompt + parsers，342 行）。剩余步骤 2-7 未开工
-> - `2-specs/dispatch-poc.md` — 2026-04-28 新建并增补：第二 bot 进程 + 4 份 prompt + ACTIONS/FACTS 协议 + 离线标注先行；增补 escalate_state 多轮粘滞机制（Option b：跳 DECIDE 不跳 PARAPHRASE，对话风格不切换）+ 离线 replay 验证步骤（cache hit / 模型间通讯全程 log）+ 实施步骤重排（先本地 API 验证再上 Discord）
-> - `4-archive/mcp-bot-2026-04-25.md` — 2026-04-25 整体推翻（Phase 1 实施全跑通后因 TOS / 物理 / 单用户价值三层边界 revert；详 devlog 同日条目）
-> - `2-specs/planned-event.md` — 2026-04-22 多次修订（分支核查 + plan 最终化），PR #8 已合入 main，功能收尾
-> - `2-specs/2026Q2-consolidation.md` — 2026-04-23 新建（Q2 整合重构总纲 + Phase 2 dispatch 成本估算完成）；2026-04-25 抽掉原 Phase 1（已推翻）
-> - `4-archive/notes-memory-split-2026-04-25.md` — 2026-04-25 新归档（Q2 原 Phase 1 整体推翻）
+> 关键更新（新到旧）：
+> - **2026-08-26 LT-169**：在 [聊天与工具并行分层](parallel-chat-tool-split.md) 中补全异步基础设施的表结构、模块边界、锁/发送队列关系以及开关与回退契约；这是 LT-170 的实现依据。
+> - **2026-08-26 Dispatch POC 收口**：串行 Dispatch POC 已被异步并行分层取代；LT-12、LT-13、LT-15、LT-16、LT-17 Canceled，LT-14 作为测试基础设施保留。
+> - **2026-08-26 异步设计定案**：静默窗口 30 秒、批次最长等待 60 秒、心跳 2 分钟、批次占用 5 分钟；review 决策与验证层次均已写回同一份设计文档。
+> - **2026-05-05 文档迁移**：specs/todos/archive 迁至 Linear（LT team），本文件只保留入口与状态指针；ideas 继续保留本地 Markdown。
 
 ## 🎯 本周焦点 (最多 3 个)
 
 当前正在投入精力的,详细介绍改动的过程和最新进展，以追踪最近的更新。
 
-- [2026 Q2 整合重构](https://linear.app/chachas/project/2026-q2-整合重构-97639f6c6030) `0/2 active` — Phase 1 已推翻 (LT-2 Cancelled，详见 archive Project Notes+Memory); Phase 3 删除 PROTOCOLS (LT-3 Backlog, 半天); Phase 4 精力槽方向 A (LT-4 Backlog, 2-3 工作日); Phase 2 dispatch 细化到独立 Project
+- [聊天与工具并行分层](parallel-chat-tool-split.md) `0/6 backlog` — 设计已定案，代码实现尚未开始；LT-169 的实现规格已在本分支补齐，合并后再做被它阻塞的 LT-170（统一发送队列）。LT-171（场景边界）、LT-172（天气快照）、LT-173（清理 Dispatch 死代码）互不依赖，可随时并行。
 
 ## 🟢 进行中 (active)
 
 所有建了 spec 但不是本周焦点的。
 
-- [Dispatch POC 双层架构](https://linear.app/chachas/project/dispatch-poc-双层架构-d2edb322e01c) `2/8 done` — **2026-05-01 暂停**。LT-10 (步骤 0 标注) + LT-11 (步骤 1 prompt 草稿) Done; 剩 LT-12 (engine) → LT-13 (离线 replay 验证, 核心) → LT-14 (第二 bot 进程) → LT-15 (路由+config) → LT-16 (实测 2 周) → LT-17 (决策) 全 Backlog。恢复直接接 LT-12
-- [Merlin 精力调度引擎](https://linear.app/chachas/project/merlin-精力调度引擎-1a080495a02d) `0/5 backlog` — 长线。LT-18 (LLM 抽取器 benchmark, M1 prereq) → LT-19 (M1 离线管道) → LT-20 (M2 词缀固化) → LT-21 (M3 Apriori 月报) → LT-22 (M4+ 重算法)
+- [Merlin 精力调度引擎](https://linear.app/chachas/project/merlin-精力调度引擎-5003f2ea4641) — 长线、尚未启动；等当前 Hiyori 主线收尾后，再从 LLM 抽取器 benchmark 评估是否进入 M1。
 - [Obsidian 接入](https://linear.app/chachas/project/obsidian-接入-b7441f2f60eb) — `query_obsidian` 工具 + MCP server 设计稿,尚未实施 (Project 自身即 todo, 无 sub-issue)
 
 ## 💡 想法池 (ideas)
@@ -47,6 +41,8 @@
 ## 🪦 已归档 (archive, 在 Linear)
 
 被推翻或已完成沉淀。本地 stub 在 `5-migrated/`，full description 在 Linear。
+
+- **Dispatch POC 串行架构** — **Cancelled / Superseded（2026-08-26）**：LT-10、LT-11 的历史产出保留；LT-12、LT-13、LT-15、LT-16、LT-17 已取消，后续以 [聊天与工具并行分层](parallel-chat-tool-split.md) 和 LT-169～LT-173 为准；LT-14 仅保留为测试基础设施。
 
 - [Prompt 6 段正交 section](https://linear.app/chachas/project/prompt-6-段正交-section-已落地-d4d7a0f330db) — **Completed**: 6 段正交 + chat/poll unify, 2026-04-18 落地 (refactor/prompt-sections 分支)
 - [energy_type chill/drain 子标签](https://linear.app/chachas/project/energy-type-chilldrain-子标签-撤销-94c7423cc072) — **Cancelled**: 蓄水/漏水二级标签整体撤销, 后续转 Merlin 离线管道
