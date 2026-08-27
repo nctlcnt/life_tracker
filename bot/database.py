@@ -213,6 +213,43 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_tool_calls_run_id ON tool_calls(run_id);
 
+            -- LT-170: every user-visible channel delivery is first persisted here.
+            -- The asyncio event used by the consumer is only a wake-up signal; this
+            -- table is the source of truth across process restarts.
+            CREATE TABLE IF NOT EXISTS outbound_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('message', 'reaction')),
+                content TEXT,
+                reaction TEXT,
+                target_discord_message_id TEXT,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'sending', 'retry_wait',
+                                     'sent', 'failed')),
+                attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+                available_at TEXT NOT NULL DEFAULT (datetime('now')),
+                locked_at TEXT,
+                lease_token TEXT,
+                discord_message_ids_json TEXT,
+                last_error TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                sent_at TEXT,
+                CHECK(
+                    (kind = 'message' AND content IS NOT NULL AND reaction IS NULL
+                     AND target_discord_message_id IS NULL)
+                    OR
+                    (kind = 'reaction' AND content IS NULL AND reaction IS NOT NULL
+                     AND target_discord_message_id IS NOT NULL)
+                )
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_outbound_deliveries_channel_order
+                ON outbound_deliveries(channel_id, status, id);
+
             -- 记忆系统 v4：异步 curator 维护的长期记忆。旧 memories 表在
             -- LT-132 前仍是 memory.md shadow，不能复用或覆盖。
             CREATE TABLE IF NOT EXISTS personal_memories (

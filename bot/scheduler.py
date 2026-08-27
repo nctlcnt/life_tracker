@@ -1,6 +1,6 @@
 """
 定时调度模块
-两个并发循环 + 一个 asyncio.Lock 防止并发 AI 调用：
+多个并发循环 + 一个共享 GenerationGate 防止用户可见内容并发生成：
 
 1. Timer 循环：随机轮询（基于"上次 AI 调用 + 各条目自己的间隔"）+ 睡前提醒
 2. Reminder 循环：数据库提醒，倒计时到下一条 + asyncio.Event 响应新增
@@ -16,8 +16,10 @@ import asyncio
 import json
 import random
 import time as time_module
+import uuid
 from datetime import datetime, time, timedelta
 from pathlib import Path
+from bot.async_pipeline import GenerationGate
 from bot.ai_engine import scheduled_action
 from bot.database import Database
 from bot.memory import MemoryService
@@ -47,7 +49,8 @@ CURATOR_AUTO_PROPOSAL_DIR = Path("data/curator_proposals/auto")
 
 class Scheduler:
     def __init__(self, db: Database, send_callback, is_user_typing_callback=None,
-                 memory_service: MemoryService | None = None):
+                 memory_service: MemoryService | None = None,
+                 generation_gate: GenerationGate | None = None):
         """
         send_callback: 一个 async 函数，用于发送消息到 Discord
             例如 bot.send_proactive_message
@@ -59,7 +62,9 @@ class Scheduler:
         self.send = send_callback
         self.is_user_typing = is_user_typing_callback or (lambda: False)
         self._running = False
-        self._ai_lock = asyncio.Lock()  # 防止 timer 和 reminder 循环同时调用 AI
+        # main.py 在 outbox 开启时把同一个 gate 注入 Bot 与 Scheduler。
+        # 未注入时仍在 scheduler 内部串行，保持 feature flag 关闭时的基线。
+        self.generation_gate = generation_gate or GenerationGate()
         self._reminder_event = asyncio.Event()  # 新增提醒时唤醒 reminder 循环
         # 上次 AI 调用完成的时刻（用于计算下次 poll）；启动时设为 now
         self._last_ai_call_ts: datetime = datetime.now()
@@ -183,7 +188,13 @@ class Scheduler:
             f"错误：`{type(error).__name__}: {str(error)[:1200]}`"
         )
         try:
-            await self.send(message)
+            async with self.generation_gate:
+                await self.send(
+                    message,
+                    source_type="system_alert",
+                    source_id=f"calendar:{today.isoformat()}",
+                    dedupe_key=f"system-alert:calendar:{today.isoformat()}",
+                )
         except Exception as send_error:
             logger.warning(f"⚠️ Google Calendar 健康提醒发送失败: {send_error}")
 
@@ -431,7 +442,12 @@ class Scheduler:
             result["skipped"] = "user_typing"
             return result
         should_mark_fired = False
-        async with self._ai_lock:
+        scheduled_for = check_in.get("last_scheduled_for") or timestamp
+        if force:
+            scheduled_for = f"{scheduled_for}:manual:{uuid.uuid4().hex}"
+        source_id = f"{name}:{scheduled_for}"
+        send_delivery = self._delivery_callback("check_in", source_id)
+        async with self.generation_gate:
             try:
                 prompt = self._render_check_in_prompt(check_in, timestamp)
                 # 主动轮询（after_ai_call）保留小窗口省 token（原 8 条特例的
@@ -442,7 +458,7 @@ class Scheduler:
                 )
                 reply = await scheduled_action(
                     self.db, prompt, timestamp, window.messages,
-                    send_callback=self.send,
+                    send_callback=send_delivery,
                     allow_silent=bool(check_in.get("allow_silent", True)),
                     trigger="check_in",
                     tool_profile=check_in.get("tool_profile") or "poll",
@@ -464,6 +480,22 @@ class Scheduler:
                     self.db.mark_check_in_fired(check_in["id"])
                 self.notify_ai_call_done()
         return result
+
+    def _delivery_callback(self, source_type: str, source_id: str):
+        """Bind stable audit and dedupe metadata to one model invocation."""
+        delivery_index = 0
+
+        async def deliver(text: str):
+            nonlocal delivery_index
+            delivery_index += 1
+            return await self.send(
+                text,
+                source_type=source_type,
+                source_id=source_id,
+                dedupe_key=f"{source_type}:{source_id}:{delivery_index}",
+            )
+
+        return deliver
 
     async def trigger_check_in_now(self, check_in_id) -> dict:
         """Admin 页面手动触发一次 check-in：走真实链路，但不写 last_fired_at。
@@ -551,7 +583,7 @@ class Scheduler:
             if not self._running or not config.CURATOR_AUTO_ENABLED:
                 continue
             # 聊天进行中让路；冷却兼失败退避
-            if self._ai_lock.locked() or self.is_user_typing():
+            if self.generation_gate.locked() or self.is_user_typing():
                 continue
             last = self._last_curator_attempt
             if last is not None and \
@@ -601,15 +633,24 @@ class Scheduler:
         if not operations:
             return
         try:
-            if applied:
-                await self.send(
-                    f"🧠 我刚整理了一批记忆（{len(operations)} 条），"
-                    f"已经记到小本本上啦")
-            else:
-                await self.send(
-                    f"🗃️ 攒了一份记忆提案（{len(operations)} 条操作，"
-                    f"消息 {result['after_message_id']}→{result['upto_message_id']}），"
-                    f"记得 review：{path.name}")
+            async with self.generation_gate:
+                if applied:
+                    await self.send(
+                        f"🧠 我刚整理了一批记忆（{len(operations)} 条），"
+                        f"已经记到小本本上啦",
+                        source_type="curator",
+                        source_id=path.name,
+                        dedupe_key=f"curator:{path.name}:applied",
+                    )
+                else:
+                    await self.send(
+                        f"🗃️ 攒了一份记忆提案（{len(operations)} 条操作，"
+                        f"消息 {result['after_message_id']}→{result['upto_message_id']}），"
+                        f"记得 review：{path.name}",
+                        source_type="curator",
+                        source_id=path.name,
+                        dedupe_key=f"curator:{path.name}:proposal",
+                    )
         except Exception:
             logger.exception("curator 通知发送失败（不影响 proposal 落盘）")
 
@@ -668,9 +709,11 @@ class Scheduler:
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         context_action = self._format_reminder_batch(batch)
+        source_id = "batch:" + ",".join(str(item["id"]) for item in batch)
+        send_delivery = self._delivery_callback("reminder", source_id)
         delivered = False
 
-        async with self._ai_lock:
+        async with self.generation_gate:
             try:
                 prompt = get_prompt_template(
                     "reminder",
@@ -681,7 +724,7 @@ class Scheduler:
                 window = self.memory.context_window(str(config.CHANNEL_ID))
                 reply = await scheduled_action(
                     self.db, prompt, timestamp, window.messages,
-                    send_callback=self.send,
+                    send_callback=send_delivery,
                     trigger="reminder",
                     tool_profile="reminder_safe",
                     window=window,
@@ -691,18 +734,25 @@ class Scheduler:
                     delivered = True
             except Exception as e:
                 logger.exception(f"❌ 提醒处理出错: {e}")
-                delivered = await self._send_reminder_fallback(context_action)
+                delivered = await self._send_reminder_fallback(
+                    context_action, source_id)
             finally:
                 if delivered:
                     for reminder in batch:
                         self.db.mark_reminder_done(reminder["id"])
                 self.notify_ai_call_done()
 
-    async def _send_reminder_fallback(self, context_action: str) -> bool:
+    async def _send_reminder_fallback(self, context_action: str,
+                                      source_id: str = "fallback") -> bool:
         """AI 调用失败时的兜底提醒。发送成功才允许标记 reminder done。"""
         text = f"提醒到了：\n{context_action}"
         try:
-            await self.send(text)
+            await self.send(
+                text,
+                source_type="reminder_fallback",
+                source_id=source_id,
+                dedupe_key=f"reminder-fallback:{source_id}",
+            )
             logger.info("🔔 已发送兜底提醒")
             return True
         except Exception as send_err:

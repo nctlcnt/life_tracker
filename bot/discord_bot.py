@@ -2,12 +2,18 @@
 Discord 机器人模块
 负责接收和发送 Discord 消息，注册斜杠命令
 """
+import hashlib
 import re
 import discord
 from dataclasses import dataclass
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timezone, timedelta
+from bot.async_pipeline import (
+    DeliveryFailed,
+    NullGenerationGate,
+    OutboundQueue,
+)
 from bot.ai_engine import chat, simple_completion
 from bot.memory import MemoryService
 from bot.weather import get_weather_brief, get_weather_detailed, geocode_address
@@ -34,18 +40,25 @@ def _is_rate_limited_error(exc: Exception) -> bool:
 
 
 class LifeTrackerBot(commands.Bot):
-    def __init__(self, db: Database, memory_service: MemoryService | None = None):
+    def __init__(self, db: Database, memory_service: MemoryService | None = None,
+                 *, generation_gate=None,
+                 outbound_queue: OutboundQueue | None = None):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
         self.db = db
         self.memory = memory_service or MemoryService(db)
+        self.generation_gate = generation_gate or NullGenerationGate()
+        self.outbound_queue = outbound_queue
         self.last_typing_at: datetime | None = None  # 目标用户最近 typing 时刻（UTC aware）
         # typing 被 429 限流后的冷却截止时间（按 channel_id），命中时直接跳过 typing 不再撞 API
         self._typing_cooldown_until: dict[int, datetime] = {}
         # 由 main.py 注入：chat 完成时调用，用于重置 scheduler 的 poll 基准时间
         self.on_ai_call_done = None
         self.calendar_auth_session: _CalendarAuthSession | None = None
+
+    def set_outbound_queue(self, outbound_queue: OutboundQueue | None) -> None:
+        self.outbound_queue = outbound_queue
 
     def _get_typing_cooldown_until(self, channel_id: int) -> datetime | None:
         until = self._typing_cooldown_until.get(channel_id)
@@ -168,107 +181,206 @@ class LifeTrackerBot(commands.Bot):
                 "message_type": str(message.type),
             },
         )
-        # AI 上下文走 token 窗口（LT-135）：摘要 + 明文尾巴，
-        # 装配时顺带评估并后台触发 compact。当前消息已入库，包含在尾巴里。
-        window = self.memory.context_window(str(message.channel.id))
-        ai_messages = window.messages
-
         try:
-            async def send_reply(text):
-                await _send_chat_chunks(
-                    message.channel,
-                    text,
-                    db=self.db,
-                    memory_service=self.memory,
-                    role="assistant",
-                    use_typing=not self._is_typing_cooling_down(message.channel.id),
-                    on_typing_rate_limited=lambda: self._mark_typing_cooldown(
-                        message.channel.id, "Discord typing 发送限流"
-                    ),
-                )
-
-            tool_called_flag = False
-            async def on_tool_call(tool_names: list[str]):
-                nonlocal tool_called_flag
-                if not tool_called_flag and any(n in SET_TOOL_NAMES for n in tool_names):
-                    tool_called_flag = True
-                    try:
-                        await message.add_reaction("✅")
-                    except Exception as react_err:
-                        logger.warning(f"⚠️ 无法添加反馈 emoji: {react_err}")
-
-            if self._is_typing_cooling_down(message.channel.id):
-                # typing 限流冷却期，跳过 typing 直接 chat
-                await chat(
-                    self.db, ai_messages, send_callback=send_reply,
-                    tool_callback=on_tool_call, memory_service=self.memory,
-                    window=window,
-                )
-            else:
-                typing_cm = message.channel.typing()
+            # 当前消息先持久化，再进入共享 gate 读取快照并生成。主动消息必须
+            # 等这段结束后才能读取自己的上下文，因此不能抢在聊天回复前入队。
+            async with self.generation_gate:
                 try:
-                    await typing_cm.__aenter__()
-                except (discord.HTTPException, discord.RateLimited) as e:
-                    if not _is_rate_limited_error(e):
-                        raise
-                    self._mark_typing_cooldown(message.channel.id, f"Discord typing 入口限流: {e}")
-                    await chat(
-                        self.db, ai_messages, send_callback=send_reply,
-                        tool_callback=on_tool_call, memory_service=self.memory,
-                        window=window,
+                    await self._generate_chat_response(message)
+                except Exception as e:
+                    error_msg = f"❌ {type(e).__name__}: {e}"
+                    logger.exception(error_msg)
+                    await self._send_or_enqueue_message(
+                        message.channel,
+                        error_msg[:2000],
+                        source_type="chat_error",
+                        source_id=str(message.id),
+                        dedupe_key=f"chat:{message.id}:error",
                     )
-                else:
-                    try:
-                        await chat(
-                            self.db, ai_messages, send_callback=send_reply,
-                            tool_callback=on_tool_call, memory_service=self.memory,
-                            window=window,
-                        )
-                    finally:
-                        await typing_cm.__aexit__(None, None, None)
-        except Exception as e:
-            error_msg = f"❌ {type(e).__name__}: {e}"
-            logger.exception(error_msg)
-            sent = await message.channel.send(error_msg[:2000])
-            await self._record_sent_message(sent, role="assistant")
         finally:
             # cache 钱已付，通知 scheduler 重置 poll 基准（45-55min 内不再轮询）
             if self.on_ai_call_done:
                 self.on_ai_call_done()
 
-    async def send_proactive_message(self, text: str):
-        """主动发送消息（由定时器触发）"""
-        if not text or not text.strip():
-            return
-        channel = self.get_channel(config.CHANNEL_ID)
-        if channel is None:
-            try:
-                channel = await self.fetch_channel(config.CHANNEL_ID)
-            except Exception as e:
-                logger.warning(f"⚠️ 主动发送失败：无法取回频道 {config.CHANNEL_ID}: {e}")
-                return
+    async def _generate_chat_response(self, message) -> None:
+        """Generate one user-message response while the caller holds the gate."""
+        # AI 上下文走 token 窗口（LT-135）：摘要 + 明文尾巴。
+        window = self.memory.context_window(str(message.channel.id))
+        ai_messages = window.messages
+        delivery_index = 0
 
-        if not isinstance(channel, discord.TextChannel):
-            logger.warning(
-                f"⚠️ 主动发送失败：频道类型不支持: {type(channel).__name__} ({config.CHANNEL_ID})"
+        async def send_reply(text):
+            nonlocal delivery_index
+            delivery_index += 1
+            await self._send_or_enqueue_message(
+                message.channel,
+                text,
+                source_type="chat",
+                source_id=str(message.id),
+                dedupe_key=f"chat:{message.id}:message:{delivery_index}",
+            )
+
+        tool_called_flag = False
+
+        async def on_tool_call(tool_names: list[str]):
+            nonlocal tool_called_flag
+            if tool_called_flag or not any(
+                    name in SET_TOOL_NAMES for name in tool_names):
+                return
+            tool_called_flag = True
+            try:
+                await self._send_or_enqueue_reaction(
+                    message,
+                    "✅",
+                    source_type="chat_tool_feedback",
+                    source_id=str(message.id),
+                    dedupe_key=f"chat:{message.id}:reaction:success",
+                )
+            except Exception as react_err:
+                logger.warning(f"⚠️ 无法添加反馈 emoji: {react_err}")
+
+        if self._is_typing_cooling_down(message.channel.id):
+            # typing 限流冷却期，跳过 typing 直接 chat
+            await chat(
+                self.db, ai_messages, send_callback=send_reply,
+                tool_callback=on_tool_call, memory_service=self.memory,
+                window=window,
             )
             return
 
-        logger.info(f"📨 主动发送到频道 {channel.id}")
+        typing_cm = message.channel.typing()
         try:
-            await _send_chat_chunks(
+            await typing_cm.__aenter__()
+        except (discord.HTTPException, discord.RateLimited) as e:
+            if not _is_rate_limited_error(e):
+                raise
+            self._mark_typing_cooldown(
+                message.channel.id, f"Discord typing 入口限流: {e}")
+            await chat(
+                self.db, ai_messages, send_callback=send_reply,
+                tool_callback=on_tool_call, memory_service=self.memory,
+                window=window,
+            )
+        else:
+            try:
+                await chat(
+                    self.db, ai_messages, send_callback=send_reply,
+                    tool_callback=on_tool_call, memory_service=self.memory,
+                    window=window,
+                )
+            finally:
+                await typing_cm.__aexit__(None, None, None)
+
+    async def send_proactive_message(self, text: str, *,
+                                     source_type: str = "scheduled",
+                                     source_id: str = "unknown",
+                                     dedupe_key: str | None = None):
+        """主动发送 producer；outbox 开启时不直接接触 Discord transport。"""
+        if not text or not text.strip():
+            return
+        if self.outbound_queue is not None:
+            receipt = await self.outbound_queue.enqueue_message(
+                channel_id=str(config.CHANNEL_ID),
+                content=text,
+                source_type=source_type,
+                source_id=source_id,
+                dedupe_key=dedupe_key or (
+                    f"{source_type}:{source_id}:"
+                    f"{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}"),
+            )
+            if not receipt.delivered:
+                raise DeliveryFailed(receipt)
+            return receipt
+
+        channel = await self._resolve_channel(str(config.CHANNEL_ID))
+        logger.info(f"📨 主动发送到频道 {channel.id}")
+        return await self._send_or_enqueue_message(
+            channel,
+            text,
+            source_type=source_type,
+            source_id=source_id,
+            dedupe_key=dedupe_key or f"direct:{source_type}:{source_id}",
+        )
+
+    async def _send_or_enqueue_message(self, target, text: str, *,
+                                       source_type: str, source_id: str,
+                                       dedupe_key: str):
+        if self.outbound_queue is not None:
+            receipt = await self.outbound_queue.enqueue_message(
+                channel_id=str(target.id),
+                content=text,
+                source_type=source_type,
+                source_id=source_id,
+                dedupe_key=dedupe_key,
+            )
+            if not receipt.delivered:
+                raise DeliveryFailed(receipt)
+            return receipt
+
+        return await _send_chat_chunks(
+            target,
+            text,
+            db=self.db,
+            memory_service=self.memory,
+            role="assistant",
+            use_typing=not self._is_typing_cooling_down(target.id),
+            on_typing_rate_limited=lambda: self._mark_typing_cooldown(
+                target.id, "Discord typing 发送限流"
+            ),
+        )
+
+    async def _send_or_enqueue_reaction(self, message, reaction: str, *,
+                                        source_type: str, source_id: str,
+                                        dedupe_key: str):
+        if self.outbound_queue is not None:
+            receipt = await self.outbound_queue.enqueue_reaction(
+                channel_id=str(message.channel.id),
+                reaction=reaction,
+                target_discord_message_id=str(message.id),
+                source_type=source_type,
+                source_id=source_id,
+                dedupe_key=dedupe_key,
+            )
+            if not receipt.delivered:
+                raise DeliveryFailed(receipt)
+            return receipt
+        await message.add_reaction(reaction)
+        return None
+
+    async def _resolve_channel(self, channel_id: str):
+        channel = self.get_channel(int(channel_id))
+        if channel is None:
+            channel = await self.fetch_channel(int(channel_id))
+        if not hasattr(channel, "send"):
+            raise TypeError(
+                f"频道类型不支持发送: {type(channel).__name__} ({channel_id})")
+        return channel
+
+    async def deliver_outbound(self, delivery: dict) -> list[str]:
+        """Low-level transport used only by the OutboundQueue consumer."""
+        await self.wait_until_ready()
+        channel = await self._resolve_channel(str(delivery["channel_id"]))
+        if delivery["kind"] == "message":
+            return await _send_chat_chunks(
                 channel,
-                text,
+                delivery["content"],
                 db=self.db,
                 memory_service=self.memory,
                 role="assistant",
                 use_typing=not self._is_typing_cooling_down(channel.id),
                 on_typing_rate_limited=lambda: self._mark_typing_cooldown(
-                    channel.id, "Discord typing 主动发送限流"
+                    channel.id, "Discord typing OutboundQueue 限流"
                 ),
             )
-        except Exception as e:
-            logger.exception(f"❌ 主动发送失败: {e}")
+        if delivery["kind"] == "reaction":
+            target_id = int(delivery["target_discord_message_id"])
+            if hasattr(channel, "get_partial_message"):
+                target = channel.get_partial_message(target_id)
+            else:
+                target = await channel.fetch_message(target_id)
+            await target.add_reaction(delivery["reaction"])
+            return []
+        raise ValueError(f"未知 outbound kind: {delivery['kind']}")
 
     async def _record_sent_message(self, sent: discord.Message,
                                    role: str = "assistant") -> None:
@@ -777,19 +889,20 @@ async def _send_chat_chunks(target, text: str, *,
                             memory_service: MemoryService | None = None,
                             role: str = "assistant",
                             use_typing: bool = True,
-                            on_typing_rate_limited=None) -> None:
+                            on_typing_rate_limited=None) -> list[str]:
     """
     一次性发送整段 AI 回复，仅在超过 Discord 2000 字符上限时按长度兜底切分。
     发送期间保留 typing indicator。
     target: 任何支持 .send() 和 .typing() 的 Discord 通道对象
     """
     if "[SILENT]" in text:
-        return
+        return []
     text = _RE_TS_PREFIX.sub("", text).strip()
     if not text:
-        return
+        return []
     limit = 2000
     chunks = [text[i:i + limit] for i in range(0, len(text), limit)]
+    sent_ids: list[str] = []
     logger.info(f"📤 准备发送 {len(chunks)} 段消息到 {type(target).__name__}（{len(text)} 字符）")
     if use_typing:
         typing_cm = target.typing()
@@ -805,15 +918,18 @@ async def _send_chat_chunks(target, text: str, *,
                 for chunk in chunks:
                     sent = await target.send(chunk)
                     await _record_sent_chunk(db, sent, role, memory_service)
+                    sent_ids.append(str(sent.id))
             finally:
                 await typing_cm.__aexit__(None, None, None)
             logger.info("✅ 消息发送完成")
-            return
+            return sent_ids
 
     for chunk in chunks:
         sent = await target.send(chunk)
         await _record_sent_chunk(db, sent, role, memory_service)
+        sent_ids.append(str(sent.id))
     logger.info("✅ 消息发送完成")
+    return sent_ids
 
 
 async def _record_sent_chunk(db: Database | None, sent: discord.Message, role: str,

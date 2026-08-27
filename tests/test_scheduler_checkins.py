@@ -6,7 +6,7 @@ from bot.database import Database
 from bot.scheduler import Scheduler
 
 
-async def _noop_send(_message: str) -> None:
+async def _noop_send(_message: str, **_metadata) -> None:
     return None
 
 
