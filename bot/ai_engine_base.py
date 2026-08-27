@@ -211,20 +211,17 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
                   memory_service: MemoryService | None = None) -> dict:
     """执行具体的工具调用，返回结果"""
     if tool_name == "set_scene":
-        # 场景摘要写进会话状态，供后续几轮注入。这里只存不判断——
-        # 有效期（来回数、静默超时、被新场景覆盖）全部由 scene_state 机械判定，
-        # 不让模型决定"场景什么时候结束"（那不可靠）。
+        # 场景摘要写进会话状态，持续到下一个 check-in 触发。
         description = str(args.get("description") or "").strip()
         if not description:
             return {"success": False, "message": "description 不能为空"}
-        scene = scene_state.start(
+        scene_state.start(
             db, str(config.CHANNEL_ID),
             check_in_name=str(args.get("_check_in_name") or "unknown"),
             description=description,
             now=datetime.now(),
         )
-        return {"success": True, "message": "场景已记录",
-                "turns_budget": scene.max_turns}
+        return {"success": True, "message": "场景已记录"}
 
     if tool_name == "log_timeline_event":
         category = args.get("category", "uncategorized")
@@ -480,9 +477,7 @@ async def chat(db: Database, messages: list[dict],
     # 语气随之掉回去。这里把 check-in 时记下的那句场景摘要接到 system 末尾，
     # 每轮都在，不必重发整份模板。
     #
-    # touch 放在这里而不是回复之后：无论这次调用成功与否，这一个来回都已经
-    # 发生了。放在成功分支里会让失败的轮次不计数，场景实际存活时间超出预算。
-    scene = scene_state.touch(db, str(config.CHANNEL_ID), datetime.now())
+    scene = scene_state.load(db, str(config.CHANNEL_ID), datetime.now())
     if scene is not None:
         prompt = prompt.with_suffix(scene.as_prompt_block())
 
@@ -538,6 +533,11 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     if check_in_name:
         label = f"{label} [{check_in_name}]"
     logger.info(f"{label} ▸ scheduled_action 开始 [{timestamp}]")
+
+    # 任何新的 check-in 都是旧场景唯一的终止条件。启用 track_scene 的
+    # check-in 可在随后的工具轮重新写入；reminder 不属于 check-in。
+    if trigger in {"poll", "bedtime", "check_in"}:
+        scene_state.clear(db, str(config.CHANNEL_ID))
 
     # 注：历史为空不代表"没聊过"——也可能是 bot 刚重启或 Discord 历史拉取失败。
     # 此时仍然继续调用 AI，让它基于 memory / 待触发提醒 / 当前时间 / 天气等

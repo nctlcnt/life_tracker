@@ -443,7 +443,11 @@ SCHEDULED_TOOL_NAMES = POLL_TOOL_NAMES | REMINDER_TOOL_NAMES
 def get_tools(tool_names=None):
     """Return OpenAI-style tools, optionally filtered by function name."""
     if tool_names is None:
-        return TOOLS
+        # ``set_scene`` is check-in-only. Ordinary chat uses the default
+        # tool set, while an opted-in check-in requests it explicitly.
+        return [
+            tool for tool in TOOLS
+            if tool["function"]["name"] != "set_scene"
+        ]
     return [t for t in TOOLS if t["function"]["name"] in tool_names]
-
 
