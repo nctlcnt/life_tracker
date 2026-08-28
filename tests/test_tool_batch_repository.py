@@ -4,6 +4,9 @@
 提供的那几个方法。
 """
 
+import threading
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from bot.async_pipeline import (
@@ -11,6 +14,8 @@ from bot.async_pipeline import (
     BatchSourceConflict,
     ToolBatchRepository,
 )
+from bot.async_pipeline.repository import _utc_text
+from bot.async_pipeline.tool_batches import LEASE_SECONDS
 from bot.database import Database
 
 
@@ -252,3 +257,135 @@ def test_a_rejected_argument_leaves_no_row_behind(db, repository):
     conn = db._get_conn()
     assert conn.execute("SELECT COUNT(*) FROM tool_batches").fetchone()[0] == 0
     conn.close()
+
+
+# --- 领取与 fencing ---------------------------------------------------------
+
+
+# 建批时 available_at 与 created_at 由数据库按真实时间写入，所以基准时刻
+# 必须晚于它们，否则待领取的批次会被判成「还没到时候」。取一小时之后，
+# 测试因此不绑定任何具体日期。
+NOW = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(hours=1)
+
+
+def _later(seconds: float) -> datetime:
+    return NOW + timedelta(seconds=seconds)
+
+
+def test_claiming_marks_the_batch_running(repository):
+    batch, _ = _conversation(repository)
+    claimed = repository.claim_next(now=NOW)
+    assert claimed["id"] == batch["id"]
+    assert claimed["status"] == "running"
+    assert claimed["attempt_count"] == 1
+    assert claimed["lease_token"]
+    assert claimed["locked_at"] is not None
+
+
+def test_claiming_an_empty_table_returns_none(repository):
+    assert repository.claim_next(now=NOW) is None
+
+
+def test_a_running_batch_is_not_claimed_again_while_the_lease_holds(
+        repository):
+    _conversation(repository)
+    first = repository.claim_next(now=NOW)
+    assert first is not None
+    assert repository.claim_next(now=_later(LEASE_SECONDS - 1)) is None
+
+
+def test_an_expired_lease_is_reclaimed_on_the_next_claim(repository):
+    """卡住的批次：上一个持有者把它标成 running 之后进程退出了。"""
+    _conversation(repository)
+    first = repository.claim_next(now=NOW)
+    second = repository.claim_next(now=_later(LEASE_SECONDS + 1))
+    assert second is not None
+    assert second["id"] == first["id"]
+    assert second["attempt_count"] == 2
+    assert second["lease_token"] != first["lease_token"]
+
+
+def test_the_previous_holder_can_no_longer_write(repository):
+    """fencing 的意义：过期持有者缓过来也改不动这一行。"""
+    _conversation(repository)
+    first = repository.claim_next(now=NOW)
+    second = repository.claim_next(now=_later(LEASE_SECONDS + 1))
+    assert repository.renew_lease(
+        first["id"], first["lease_token"], now=_later(LEASE_SECONDS + 2)
+    ) is False
+    assert repository.renew_lease(
+        second["id"], second["lease_token"], now=_later(LEASE_SECONDS + 2)
+    ) is True
+
+
+def test_renewing_pushes_the_expiry_out(repository):
+    _conversation(repository)
+    claimed = repository.claim_next(now=NOW)
+    assert repository.renew_lease(
+        claimed["id"], claimed["lease_token"], now=_later(60)) is True
+    # 续租之后，原本该过期的时刻还不会被回收
+    assert repository.claim_next(now=_later(LEASE_SECONDS + 1)) is None
+    assert repository.claim_next(now=_later(LEASE_SECONDS + 61)) is not None
+
+
+def test_renewing_an_unknown_or_finished_batch_fails(db, repository):
+    _conversation(repository)
+    claimed = repository.claim_next(now=NOW)
+    assert repository.renew_lease("does-not-exist", "x", now=NOW) is False
+    assert repository.renew_lease(claimed["id"], "wrong-token", now=NOW) is False
+    _set_status(db, claimed["id"], "completed")
+    assert repository.renew_lease(
+        claimed["id"], claimed["lease_token"], now=NOW) is False
+
+
+@pytest.mark.parametrize("terminal_status", ["completed", "failed"])
+def test_terminal_batches_are_never_claimed(db, repository, terminal_status):
+    batch, _ = _conversation(repository)
+    _set_status(db, batch["id"], terminal_status)
+    assert repository.claim_next(now=_later(86400)) is None
+
+
+def test_a_batch_waiting_to_retry_is_not_claimed_early(db, repository):
+    batch, _ = _conversation(repository)
+    conn = db._get_conn()
+    conn.execute(
+        "UPDATE tool_batches SET status = 'retry_wait', available_at = ? "
+        "WHERE id = ?",
+        (_utc_text(_later(120)), batch["id"]))
+    conn.commit()
+    conn.close()
+    assert repository.claim_next(now=_later(60)) is None
+    assert repository.claim_next(now=_later(180))["id"] == batch["id"]
+
+
+def test_batches_are_claimed_in_creation_order(repository):
+    first, _ = _check_in(repository, source_ref="check_in:1:09:00")
+    second, _ = _check_in(repository, source_ref="check_in:1:21:00")
+    assert repository.claim_next(now=NOW)["id"] == first["id"]
+    assert repository.claim_next(now=NOW)["id"] == second["id"]
+
+
+def test_a_worker_only_claims_its_own_batches(db, repository):
+    _conversation(repository)
+    other = ToolBatchRepository(db, worker_name="other_worker")
+    assert other.claim_next(now=NOW) is None
+    assert repository.claim_next(now=NOW) is not None
+
+
+def test_two_concurrent_claims_do_not_both_win(db, repository):
+    """两个调用同时领同一批，只有一个能拿到。"""
+    _conversation(repository)
+    results = []
+
+    def claim():
+        results.append(ToolBatchRepository(db).claim_next(now=NOW))
+
+    threads = [threading.Thread(target=claim) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    claimed = [r for r in results if r is not None]
+    assert len(claimed) == 1
+    assert claimed[0]["attempt_count"] == 1
