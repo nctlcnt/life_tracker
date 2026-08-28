@@ -191,3 +191,57 @@ def test_the_flag_is_editable(tmp_path):
 
     db.update_check_in(check_in["id"], skip_when_unanswered=False)
     assert db.get_check_in(check_in["id"])["skip_when_unanswered"] == 0
+
+
+# ── 窗口不再把自己的旧发言当素材 ─────────────────────────────────────
+
+def test_unanswered_tail_is_dropped_from_the_window():
+    from bot.scheduler import _drop_unanswered_tail
+
+    messages = [
+        {"role": "user", "content": "在的"},
+        {"role": "assistant", "content": "聊了两句"},
+        {"role": "user", "content": "嗯嗯"},
+        {"role": "assistant", "content": "自言自语 1"},
+        {"role": "assistant", "content": "自言自语 2"},
+        {"role": "assistant", "content": "自言自语 3"},
+    ]
+    kept, dropped = _drop_unanswered_tail(messages)
+
+    assert dropped == 3
+    assert kept[-1] == {"role": "user", "content": "嗯嗯"}
+    # 用户说过的话一条都不能少
+    assert [m for m in kept if m["role"] == "user"] == [
+        {"role": "user", "content": "在的"},
+        {"role": "user", "content": "嗯嗯"},
+    ]
+
+
+def test_window_is_untouched_when_the_user_spoke_last():
+    from bot.scheduler import _drop_unanswered_tail
+
+    messages = [
+        {"role": "assistant", "content": "早呀"},
+        {"role": "user", "content": "早"},
+    ]
+    kept, dropped = _drop_unanswered_tail(messages)
+
+    assert dropped == 0
+    assert kept == messages
+
+
+def test_dropping_an_all_assistant_window_keeps_nothing():
+    """极端情况：窗口里全是自己的话，不能崩，也不能留下素材。"""
+    from bot.scheduler import _drop_unanswered_tail
+
+    messages = [{"role": "assistant", "content": f"第 {i} 条"} for i in range(4)]
+    kept, dropped = _drop_unanswered_tail(messages)
+
+    assert dropped == 4
+    assert kept == []
+
+
+def test_empty_window_is_handled():
+    from bot.scheduler import _drop_unanswered_tail
+
+    assert _drop_unanswered_tail([]) == ([], 0)

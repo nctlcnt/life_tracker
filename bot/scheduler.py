@@ -48,6 +48,22 @@ CURATOR_AUTO_PROPOSAL_DIR = Path("data/curator_proposals/auto")
 # Prompt 模板统一在 bot/prompts.py 里定义，避免多处重复维护同一条规则
 
 
+def _drop_unanswered_tail(messages: list[dict]) -> tuple[list[dict], int]:
+    """摘掉窗口末尾那串没人回应的自己发言，返回 (新列表, 摘掉的条数)。
+
+    LT-174 需求五：日和自己的旧发言不能成为新话题的来源。08-25 到 08-28
+    那 19 条里，API gateway 被提了 7 次、Yochi 3 次，就是因为窗口末尾全是
+    她自己说的话，下一轮又从里面挑话题，形成正反馈。
+
+    只摘末尾连续的 assistant 消息，等价于"最后一条用户消息之后的部分"。
+    用户说过的话一条都不动——素材来源仍然是用户，这正是需求想要的。
+    """
+    end = len(messages)
+    while end > 0 and messages[end - 1].get("role") == "assistant":
+        end -= 1
+    return messages[:end], len(messages) - end
+
+
 class Scheduler:
     def __init__(self, db: Database, send_callback, is_user_typing_callback=None,
                  memory_service: MemoryService | None = None,
@@ -498,8 +514,22 @@ class Scheduler:
                     str(config.CHANNEL_ID),
                     max_tokens=POLL_WINDOW_MAX_TOKENS if proactive_poll else None,
                 )
+                # 主动联系一律看不到自己那串无人回应的发言，避免拿它当新素材。
+                # 换成一句计数：她仍然知道自己已经说了多少、该收敛，但拿不到
+                # 具体内容去翻新。window 对象本身不动，compact 游标照常推进。
+                messages, dropped = _drop_unanswered_tail(window.messages)
+                if dropped:
+                    messages = messages + [{
+                        "role": "user",
+                        "content": (
+                            f"[系统提示：在这之后你已经主动说过 {dropped} 条，"
+                            f"她一条都还没有回。这些是你自己说的话，不是新的素材，"
+                            f"不要从里面翻话题，也不要换个说法再说一遍。]"
+                        ),
+                    }]
+                    logger.info(f"🔇 主动联系窗口摘掉 {dropped} 条无人回应的自己发言")
                 reply = await scheduled_action(
-                    self.db, prompt, timestamp, window.messages,
+                    self.db, prompt, timestamp, messages,
                     send_callback=send_delivery,
                     allow_silent=bool(check_in.get("allow_silent", True)),
                     trigger="check_in",
