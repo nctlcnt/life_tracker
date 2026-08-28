@@ -172,30 +172,63 @@ def test_a_delivery_is_handed_off_only_once(db, repository, heartbeat):
 
 
 def test_a_repeat_handoff_is_absorbed_by_the_dedupe_key(
-        db, repository, heartbeat, monkeypatch):
-    """入队成功、推进状态之前崩掉：下一轮重复入队，但被去重挡住。
+        db, repository, heartbeat):
+    """同一批结果交付两次，发送队列里仍然只有一条。
 
-    这正是「先入队再推进」这个顺序成立的前提。反过来的话，那条投递会
-    停在 queued 却从没入过队，永久丢失。
+    这正是「先入队再推进」这个顺序成立的前提：进程若在入队之后、推进
+    状态之前退出，那一行仍是 pending，下一轮会重新交一次，而这条测试
+    证明重新交是幂等的。反过来的顺序会让那条投递停在 queued 却从没入
+    过队，永久丢失。
     """
     _say(db, "user", "刚吃完午饭")
     asyncio.run(heartbeat.tick())
     batch = _finish(repository, delivery_kind="reaction")
 
-    def boom(*_args, **_kwargs):
-        raise RuntimeError("推进状态时断电")
-
-    monkeypatch.setattr(repository, "advance_delivery", boom)
-    with pytest.raises(RuntimeError):
-        asyncio.run(heartbeat._deliver())
-
+    pending = repository.pending_deliveries()[0]
+    assert asyncio.run(heartbeat._deliver_one(pending)) is True
     assert len(_deliveries(db)) == 1
-    assert repository.get(batch["id"])["delivery_status"] == "pending"
 
-    monkeypatch.undo()
-    assert asyncio.run(heartbeat.tick())["delivered"] == [batch["id"]]
+    # 直接改库把状态退回 pending，模拟推进那一步没有落库。advance_delivery
+    # 本身不接受退回 pending——那不是一次合法的推进，只是这里要造的故障。
+    conn = db._get_conn()
+    conn.execute("UPDATE tool_batches SET delivery_status = 'pending' "
+                 "WHERE id = ?", (batch["id"],))
+    conn.commit()
+    conn.close()
+    assert asyncio.run(heartbeat._deliver_one(pending)) is True
     assert len(_deliveries(db)) == 1
     assert repository.get(batch["id"])["delivery_status"] == "queued"
+
+
+def test_one_bad_delivery_does_not_block_the_others(
+        db, repository, heartbeat, alerts, monkeypatch):
+    """一条投递出意外，后面几条照样要交出去。"""
+    # 这里只排批、不投递：跑整轮 tick 的话第一批会先被交出去，
+    # 后面就造不出「两条都等着投递」的局面了。
+    _say(db, "user", "第一件事")
+    heartbeat._plan()
+    first = _finish(repository, delivery_kind="message",
+                    result={"say": "第一句"})
+    _say(db, "user", "第二件事")
+    heartbeat._plan()
+    second = _finish(repository, delivery_kind="message",
+                     result={"say": "第二句"})
+
+    original = heartbeat.outbound.enqueue_message
+
+    async def flaky(*args, **kwargs):
+        if kwargs.get("source_id") == first["id"]:
+            raise RuntimeError("入队时炸了")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(heartbeat.outbound, "enqueue_message", flaky)
+    delivered = asyncio.run(heartbeat._deliver())
+
+    assert delivered == [second["id"]]
+    assert ("delivery_failed", {"batch_id": first["id"],
+                                "error": "入队时炸了"}) in alerts
+    # 出错的那条没有推进状态，下一轮会重新交
+    assert repository.get(first["id"])["delivery_status"] == "pending"
 
 
 def test_a_missing_reaction_target_fails_the_delivery_with_an_alert(

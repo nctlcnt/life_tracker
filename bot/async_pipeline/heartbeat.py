@@ -143,11 +143,22 @@ class BatchHeartbeat:
         return [batch["id"] for batch in reaped]
 
     async def _deliver(self) -> list[str]:
-        """投递：把已经结束、还没送出去的结果交给统一发送队列。"""
+        """投递：把已经结束、还没送出去的结果交给统一发送队列。
+
+        一条投递出意外不能连累后面几条。这里不推进状态，所以下一轮会
+        重新交一次，而 dedupe_key 保证重复交付是幂等的。
+        """
         handed_off = []
         for batch in self.repository.pending_deliveries():
-            if await self._deliver_one(batch):
-                handed_off.append(batch["id"])
+            try:
+                if await self._deliver_one(batch):
+                    handed_off.append(batch["id"])
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.exception(f"❗ 投递批次结果时出错: {batch['id']}: {e}")
+                self._alert("delivery_failed", {"batch_id": batch["id"],
+                                                "error": str(e)})
         return handed_off
 
     async def _deliver_one(self, batch: dict[str, Any]) -> bool:
