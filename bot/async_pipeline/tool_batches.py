@@ -55,6 +55,24 @@ def _decode(row) -> dict[str, Any] | None:
     return item
 
 
+def _decode_call(row) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    item = dict(row)
+    item["succeeded"] = bool(item["succeeded"])
+    for raw_key, key in (("arguments_json", "arguments"),
+                         ("result_json", "result")):
+        raw = item.get(raw_key)
+        if raw:
+            try:
+                item[key] = json.loads(raw)
+            except json.JSONDecodeError:
+                item[key] = None
+        else:
+            item[key] = None
+    return item
+
+
 class ToolBatchRepository:
     """`tool_batches` 的建批与读取。领取与终态属于后面几步。"""
 
@@ -359,6 +377,92 @@ class ToolBatchRepository:
             )
             conn.commit()
             return cursor.rowcount == 1
+        finally:
+            conn.close()
+
+    # --- 单次工具调用与幂等 --------------------------------------------------
+
+    def completed_calls(self, batch_id: str) -> dict[int, dict[str, Any]]:
+        """这一批里已经成功执行过的调用，按序号索引。
+
+        worker 重新领到一批活时（上一次执行中途崩溃），要先看这里，跳过
+        已经成功的那几次，不能从头再来一遍——那会把同一条 timeline 写
+        两次。失败的调用不在其中，它们应当重试。
+        """
+        conn = self.db._get_conn()
+        try:
+            return {
+                int(row["call_index"]): _decode_call(row)
+                for row in conn.execute(
+                    "SELECT * FROM tool_batch_calls "
+                    "WHERE batch_id = ? AND succeeded = 1 "
+                    "ORDER BY call_index",
+                    (str(batch_id),))
+            }
+        finally:
+            conn.close()
+
+    def calls(self, batch_id: str) -> list[dict[str, Any]]:
+        """这一批里的全部调用记录，成功与失败都在内，供审计与回退核对。"""
+        conn = self.db._get_conn()
+        try:
+            return [_decode_call(row) for row in conn.execute(
+                "SELECT * FROM tool_batch_calls WHERE batch_id = ? "
+                "ORDER BY call_index", (str(batch_id),))]
+        finally:
+            conn.close()
+
+    def record_call(self, batch_id: str, call_index: int, *, tool_name: str,
+                    arguments: dict[str, Any] | None = None,
+                    result: Any = None, succeeded: bool,
+                    now=None) -> tuple[dict[str, Any], bool]:
+        """记下这一批里第 call_index 次调用，返回 (记录, 是否写入)。
+
+        已经成功的那一次不会被覆盖：返回既有记录并把第二项置为 False，
+        告诉调用方这次调用之前就做过了。失败的记录可以被后来的重试结果
+        覆盖，否则一次失败会把这个序号永久占住。
+        """
+        if int(call_index) < 0:
+            raise ValueError("call_index 不能为负")
+        if not str(tool_name).strip():
+            raise ValueError("tool_name is required")
+        now_text = _utc_text(now)
+
+        conn = self.db._get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                """
+                INSERT INTO tool_batch_calls
+                    (batch_id, call_index, tool_name, arguments_json,
+                     result_json, succeeded, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(batch_id, call_index) DO UPDATE SET
+                    tool_name = excluded.tool_name,
+                    arguments_json = excluded.arguments_json,
+                    result_json = excluded.result_json,
+                    succeeded = excluded.succeeded,
+                    updated_at = excluded.updated_at
+                WHERE tool_batch_calls.succeeded = 0
+                """,
+                (str(batch_id), int(call_index), str(tool_name),
+                 json.dumps(arguments, ensure_ascii=False)
+                 if arguments is not None else None,
+                 json.dumps(result, ensure_ascii=False)
+                 if result is not None else None,
+                 1 if succeeded else 0, now_text, now_text),
+            )
+            written = cursor.rowcount == 1
+            row = conn.execute(
+                "SELECT * FROM tool_batch_calls "
+                "WHERE batch_id = ? AND call_index = ?",
+                (str(batch_id), int(call_index)),
+            ).fetchone()
+            conn.commit()
+            return _decode_call(row), written
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 

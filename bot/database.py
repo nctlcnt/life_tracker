@@ -347,6 +347,25 @@ class Database:
                 PRIMARY KEY(worker_name, channel_id)
             );
 
+            -- LT-176：一批活里每一次工具调用的记录，同时充当幂等键。
+            --
+            -- 键是「批次 id + 这一批里的第几次调用」，不是内容哈希：同一天
+            -- 又吃了一顿麻辣烫是合法的重复写入，用内容做键会把它当成重试挡掉。
+            --
+            -- 已经成功的调用不会被覆盖，失败的可以被后来的重试结果覆盖；
+            -- 这张表因此也是回退时「哪些调用确实执行过」的证据。
+            CREATE TABLE IF NOT EXISTS tool_batch_calls (
+                batch_id TEXT NOT NULL REFERENCES tool_batches(id),
+                call_index INTEGER NOT NULL CHECK(call_index >= 0),
+                tool_name TEXT NOT NULL,
+                arguments_json TEXT,
+                result_json TEXT,
+                succeeded INTEGER NOT NULL CHECK(succeeded IN (0, 1)),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY(batch_id, call_index)
+            );
+
             -- 记忆系统 v4：异步 curator 维护的长期记忆。旧 memories 表在
             -- LT-132 前仍是 memory.md shadow，不能复用或覆盖。
             CREATE TABLE IF NOT EXISTS personal_memories (
