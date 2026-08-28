@@ -27,6 +27,10 @@ EXECUTION_MODES = frozenset({"shadow", "apply"})
 # 已经不在了，下一次领取会把它取回来重新执行。
 LEASE_SECONDS = 300.0
 
+DELIVERY_KINDS = frozenset({"none", "reaction", "message"})
+DELIVERY_STATUSES = frozenset({"not_needed", "pending", "queued", "sent",
+                               "superseded", "failed"})
+
 
 class BatchSourceConflict(ValueError):
     """同一个 source_ref 被用在了另一批内容不同的活上。"""
@@ -304,6 +308,184 @@ class ToolBatchRepository:
             )
             conn.commit()
             return cursor.rowcount == 1
+        finally:
+            conn.close()
+
+    # --- 终态 ---------------------------------------------------------------
+
+    def mark_completed(
+        self, batch_id: str, lease_token: str, *,
+        result: dict[str, Any] | None = None,
+        delivery_kind: str = "none",
+        last_run_id: str | None = None,
+        now=None,
+    ) -> bool:
+        """这一批干完了，同时记下结果和该怎么交付。
+
+        交付要求必须和结果一起落库，不能等投递的时候再补：批次已经结束，
+        那时候没有持有者能保证这两次写入都成功。三种交付方式对应第 2.1
+        节——例行写入加一个反应，需要说话的走消息，确实没有产出就不交付。
+
+        `delivery_status` 由 `delivery_kind` 推导，调用方写不出「说要发
+        消息但状态是不需要」这种组合；后续的状态流转交给 advance_delivery。
+        """
+        if delivery_kind not in DELIVERY_KINDS:
+            raise ValueError(
+                f"delivery_kind must be one of {sorted(DELIVERY_KINDS)}")
+        delivery_status = "not_needed" if delivery_kind == "none" else "pending"
+        return self._finish(
+            batch_id, lease_token, status="completed",
+            result=result, delivery_kind=delivery_kind,
+            delivery_status=delivery_status, last_run_id=last_run_id,
+            error=None, now=now)
+
+    def mark_failed(self, batch_id: str, lease_token: str, error: str, *,
+                    last_run_id: str | None = None, now=None) -> bool:
+        """重试预算用完了，这一批不再执行。
+
+        失败同样是终态，`last_error` 必须留下来：这一批覆盖的那段消息
+        里的活没有做，需要有人能查到，而不是让它悄悄消失。
+        """
+        return self._finish(
+            batch_id, lease_token, status="failed", result=None,
+            delivery_kind="none", delivery_status="not_needed",
+            last_run_id=last_run_id, error=str(error), now=now)
+
+    def mark_retry(self, batch_id: str, lease_token: str, error: str, *,
+                   retry_after_seconds: float = 0.0, now=None) -> bool:
+        """这一次没成，过一会儿再试。
+
+        `retry_after_seconds` 之内不会被领取。这不是终态，占用会被释放，
+        重试次数已经在领取时加过了。
+        """
+        moment = now or datetime.now(timezone.utc)
+        now_text = _utc_text(moment)
+        available_at = _utc_text(
+            moment + timedelta(seconds=max(0.0, retry_after_seconds)))
+        conn = self.db._get_conn()
+        try:
+            cursor = conn.execute(
+                """
+                UPDATE tool_batches
+                SET status = 'retry_wait', available_at = ?, last_error = ?,
+                    updated_at = ?, locked_at = NULL, lease_token = NULL
+                WHERE id = ? AND status = 'running' AND lease_token = ?
+                """,
+                (available_at, str(error), now_text,
+                 str(batch_id), str(lease_token)),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
+        finally:
+            conn.close()
+
+    def _finish(self, batch_id: str, lease_token: str, *, status: str,
+                result: dict[str, Any] | None, delivery_kind: str,
+                delivery_status: str, last_run_id: str | None,
+                error: str | None, now=None) -> bool:
+        now_text = _utc_text(now)
+        conn = self.db._get_conn()
+        try:
+            cursor = conn.execute(
+                """
+                UPDATE tool_batches
+                SET status = ?, result_json = ?,
+                    delivery_kind = ?, delivery_status = ?,
+                    last_run_id = COALESCE(?, last_run_id),
+                    last_error = ?, completed_at = ?, updated_at = ?,
+                    locked_at = NULL, lease_token = NULL
+                WHERE id = ? AND status = 'running' AND lease_token = ?
+                """,
+                (status,
+                 json.dumps(result, ensure_ascii=False) if result is not None
+                 else None,
+                 delivery_kind, delivery_status, last_run_id, error,
+                 now_text, now_text, str(batch_id), str(lease_token)),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
+        finally:
+            conn.close()
+
+    # --- 交付与运维查询 -----------------------------------------------------
+
+    def pending_deliveries(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """已经结束、但结果还没有送出去的批次，按结束顺序排。
+
+        LT-177 的心跳靠它取活，而不是靠「批次已经 completed」去猜用户
+        是不是已经收到了。
+        """
+        conn = self.db._get_conn()
+        try:
+            return [_decode(row) for row in conn.execute(
+                """
+                SELECT * FROM tool_batches
+                WHERE worker_name = ? AND delivery_status = 'pending'
+                ORDER BY completed_at, rowid
+                LIMIT ?
+                """,
+                (self.worker_name, int(limit)),
+            )]
+        finally:
+            conn.close()
+
+    def advance_delivery(self, batch_id: str, *, from_status: str,
+                         to_status: str, now=None) -> bool:
+        """推进交付状态，只有当前状态符合预期时才动。
+
+        投递本身可能被重复触发（心跳每两分钟跑一次），靠这个条件保证
+        同一条结果不会被送出去两次。
+        """
+        for value in (from_status, to_status):
+            if value not in DELIVERY_STATUSES:
+                raise ValueError(
+                    f"delivery_status must be one of "
+                    f"{sorted(DELIVERY_STATUSES)}")
+        now_text = _utc_text(now)
+        conn = self.db._get_conn()
+        try:
+            cursor = conn.execute(
+                """
+                UPDATE tool_batches
+                SET delivery_status = ?, updated_at = ?
+                WHERE id = ? AND delivery_status = ?
+                """,
+                (to_status, now_text, str(batch_id), from_status),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
+        finally:
+            conn.close()
+
+    def non_terminal_count(self) -> int:
+        """还没结束的批次有多少。回退之前要等它归零。"""
+        conn = self.db._get_conn()
+        try:
+            return int(conn.execute(
+                f"""
+                SELECT COUNT(*) FROM tool_batches
+                WHERE worker_name = ?
+                  AND status IN ({', '.join('?' for _ in OPEN_STATUSES)})
+                """,
+                (self.worker_name, *sorted(OPEN_STATUSES)),
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
+    def non_terminal_ids(self, *, limit: int = 100) -> list[str]:
+        """还没结束的批次的 id。紧急回退时要把它们显式列出来，不能遗忘。"""
+        conn = self.db._get_conn()
+        try:
+            return [row["id"] for row in conn.execute(
+                f"""
+                SELECT id FROM tool_batches
+                WHERE worker_name = ?
+                  AND status IN ({', '.join('?' for _ in OPEN_STATUSES)})
+                ORDER BY created_at, rowid
+                LIMIT ?
+                """,
+                (self.worker_name, *sorted(OPEN_STATUSES), int(limit)),
+            )]
         finally:
             conn.close()
 

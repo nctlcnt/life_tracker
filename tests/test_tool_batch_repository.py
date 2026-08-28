@@ -389,3 +389,168 @@ def test_two_concurrent_claims_do_not_both_win(db, repository):
     claimed = [r for r in results if r is not None]
     assert len(claimed) == 1
     assert claimed[0]["attempt_count"] == 1
+
+
+# --- 终态 -------------------------------------------------------------------
+
+
+def _claimed(repository):
+    _conversation(repository)
+    return repository.claim_next(now=NOW)
+
+
+def test_completing_stores_the_result_and_clears_the_lease(repository):
+    batch = _claimed(repository)
+    assert repository.mark_completed(
+        batch["id"], batch["lease_token"],
+        result={"wrote": ["timeline"]}, delivery_kind="reaction",
+        last_run_id="run-1", now=_later(5)) is True
+
+    done = repository.get(batch["id"])
+    assert done["status"] == "completed"
+    assert done["result"] == {"wrote": ["timeline"]}
+    assert done["delivery_kind"] == "reaction"
+    assert done["delivery_status"] == "pending"
+    assert done["last_run_id"] == "run-1"
+    assert done["completed_at"] is not None
+    assert done["lease_token"] is None
+    assert done["locked_at"] is None
+
+
+def test_an_empty_result_needs_no_delivery(repository):
+    batch = _claimed(repository)
+    assert repository.mark_completed(
+        batch["id"], batch["lease_token"], now=_later(5)) is True
+    done = repository.get(batch["id"])
+    assert (done["delivery_kind"], done["delivery_status"]) == (
+        "none", "not_needed")
+
+
+def test_a_result_that_needs_saying_is_marked_pending(repository):
+    batch = _claimed(repository)
+    repository.mark_completed(
+        batch["id"], batch["lease_token"], delivery_kind="message",
+        result={"say": "提醒设好了"}, now=_later(5))
+    done = repository.get(batch["id"])
+    assert (done["delivery_kind"], done["delivery_status"]) == (
+        "message", "pending")
+
+
+def test_completing_rejects_an_unknown_delivery_kind(repository):
+    batch = _claimed(repository)
+    with pytest.raises(ValueError):
+        repository.mark_completed(
+            batch["id"], batch["lease_token"], delivery_kind="embed")
+
+
+def test_failing_keeps_the_error_and_needs_no_delivery(repository):
+    batch = _claimed(repository)
+    assert repository.mark_failed(
+        batch["id"], batch["lease_token"], "重试预算用完", now=_later(5)) is True
+    done = repository.get(batch["id"])
+    assert done["status"] == "failed"
+    assert done["last_error"] == "重试预算用完"
+    assert done["completed_at"] is not None
+    assert done["delivery_status"] == "not_needed"
+
+
+def test_retrying_releases_the_lease_and_waits(repository):
+    batch = _claimed(repository)
+    assert repository.mark_retry(
+        batch["id"], batch["lease_token"], "上游超时",
+        retry_after_seconds=120, now=_later(5)) is True
+
+    waiting = repository.get(batch["id"])
+    assert waiting["status"] == "retry_wait"
+    assert waiting["last_error"] == "上游超时"
+    assert waiting["lease_token"] is None
+    assert repository.claim_next(now=_later(60)) is None
+
+    again = repository.claim_next(now=_later(200))
+    assert again["id"] == batch["id"]
+    assert again["attempt_count"] == 2
+
+
+@pytest.mark.parametrize("finish", [
+    lambda repo, b, token: repo.mark_completed(b, token),
+    lambda repo, b, token: repo.mark_failed(b, token, "x"),
+    lambda repo, b, token: repo.mark_retry(b, token, "x"),
+])
+def test_a_stale_token_cannot_finish_the_batch(repository, finish):
+    """过期持有者缓过来也写不进结果，这正是 fencing 要防的。"""
+    _conversation(repository)
+    first = repository.claim_next(now=NOW)
+    second = repository.claim_next(now=_later(LEASE_SECONDS + 1))
+    assert finish(repository, first["id"], first["lease_token"]) is False
+    assert repository.get(first["id"])["status"] == "running"
+    assert finish(repository, second["id"], second["lease_token"]) is True
+
+
+def test_a_batch_cannot_be_finished_twice(repository):
+    batch = _claimed(repository)
+    token = batch["lease_token"]
+    assert repository.mark_completed(batch["id"], token) is True
+    assert repository.mark_completed(batch["id"], token) is False
+
+
+def test_finishing_frees_the_channel_for_the_next_batch(repository):
+    batch = _claimed(repository)
+    repository.mark_completed(batch["id"], batch["lease_token"])
+    _, created = _conversation(
+        repository, after_message_id=20, through_message_id=30,
+        last_user_message_id=25)
+    assert created is True
+
+
+# --- 交付与运维查询 ---------------------------------------------------------
+
+
+def test_pending_deliveries_lists_only_what_still_needs_sending(repository):
+    said = _claimed(repository)
+    repository.mark_completed(said["id"], said["lease_token"],
+                              delivery_kind="message", now=_later(5))
+    silent, _ = _check_in(repository)
+    claimed_silent = repository.claim_next(now=_later(10))
+    repository.mark_completed(claimed_silent["id"],
+                              claimed_silent["lease_token"], now=_later(15))
+
+    pending = repository.pending_deliveries()
+    assert [item["id"] for item in pending] == [said["id"]]
+
+
+def test_advancing_a_delivery_is_a_one_way_step(repository):
+    batch = _claimed(repository)
+    repository.mark_completed(batch["id"], batch["lease_token"],
+                              delivery_kind="message", now=_later(5))
+
+    assert repository.advance_delivery(
+        batch["id"], from_status="pending", to_status="queued") is True
+    # 心跳重复触发时，同一条结果不会被再送一次
+    assert repository.advance_delivery(
+        batch["id"], from_status="pending", to_status="queued") is False
+    assert repository.advance_delivery(
+        batch["id"], from_status="queued", to_status="sent") is True
+    assert repository.get(batch["id"])["delivery_status"] == "sent"
+    assert repository.pending_deliveries() == []
+
+
+def test_advancing_rejects_an_unknown_status(repository):
+    with pytest.raises(ValueError):
+        repository.advance_delivery("x", from_status="pending",
+                                    to_status="delivered")
+
+
+def test_non_terminal_queries_track_what_is_still_open(db, repository):
+    assert repository.non_terminal_count() == 0
+    assert repository.non_terminal_ids() == []
+
+    batch = _claimed(repository)
+    check_in, _ = _check_in(repository)
+    assert repository.non_terminal_count() == 2
+    assert set(repository.non_terminal_ids()) == {batch["id"], check_in["id"]}
+
+    repository.mark_completed(batch["id"], batch["lease_token"])
+    assert repository.non_terminal_ids() == [check_in["id"]]
+
+    other = ToolBatchRepository(db, worker_name="other_worker")
+    assert other.non_terminal_count() == 0
