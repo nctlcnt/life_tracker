@@ -55,6 +55,24 @@ def _decode(row) -> dict[str, Any] | None:
     return item
 
 
+def _decode_call(row) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    item = dict(row)
+    item["succeeded"] = bool(item["succeeded"])
+    for raw_key, key in (("arguments_json", "arguments"),
+                         ("result_json", "result")):
+        raw = item.get(raw_key)
+        if raw:
+            try:
+                item[key] = json.loads(raw)
+            except json.JSONDecodeError:
+                item[key] = None
+        else:
+            item[key] = None
+    return item
+
+
 class ToolBatchRepository:
     """`tool_batches` 的建批与读取。领取与终态属于后面几步。"""
 
@@ -92,6 +110,54 @@ class ToolBatchRepository:
             ).fetchone())
         finally:
             conn.close()
+
+    # --- 游标 ---------------------------------------------------------------
+
+    def get_cursor(self, channel_id: str) -> int:
+        """这个频道已经处理到哪一条消息了，没有记录时是 0。"""
+        conn = self.db._get_conn()
+        try:
+            row = conn.execute(
+                """
+                SELECT last_processed_message_id FROM tool_batch_cursors
+                WHERE worker_name = ? AND channel_id = ?
+                """,
+                (self.worker_name, str(channel_id)),
+            ).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+
+    def advance_cursor(self, channel_id: str, message_id: int) -> bool:
+        """把游标往前推。只能前进，不能后退。
+
+        单调是这里唯一重要的性质：推进发生在两个地方（批次结束时，以及
+        跳过一段只有自己发言的尾巴时），重复推进和乱序推进都必须无害，
+        否则一段消息会被重新执行一遍。
+        """
+        conn = self.db._get_conn()
+        try:
+            return self._advance_cursor(conn, channel_id, message_id)
+        finally:
+            conn.commit()
+            conn.close()
+
+    def _advance_cursor(self, conn, channel_id: str, message_id: int) -> bool:
+        """在调用方的事务里推进游标，供终态事务复用。"""
+        cursor = conn.execute(
+            """
+            INSERT INTO tool_batch_cursors
+                (worker_name, channel_id, last_processed_message_id, updated_at)
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(worker_name, channel_id) DO UPDATE SET
+                last_processed_message_id = excluded.last_processed_message_id,
+                updated_at = datetime('now')
+            WHERE excluded.last_processed_message_id
+                  > tool_batch_cursors.last_processed_message_id
+            """,
+            (self.worker_name, str(channel_id), int(message_id)),
+        )
+        return cursor.rowcount == 1
 
     # --- 建批 ---------------------------------------------------------------
 
@@ -314,6 +380,111 @@ class ToolBatchRepository:
         finally:
             conn.close()
 
+    # --- 单次工具调用与幂等 --------------------------------------------------
+
+    def completed_calls(self, batch_id: str) -> dict[int, dict[str, Any]]:
+        """这一批里已经成功执行过的调用，按序号索引。
+
+        worker 重新领到一批活时（上一次执行中途崩溃），要先看这里，跳过
+        已经成功的那几次，不能从头再来一遍——那会把同一条 timeline 写
+        两次。失败的调用不在其中，它们应当重试。
+        """
+        conn = self.db._get_conn()
+        try:
+            return {
+                int(row["call_index"]): _decode_call(row)
+                for row in conn.execute(
+                    "SELECT * FROM tool_batch_calls "
+                    "WHERE batch_id = ? AND succeeded = 1 "
+                    "ORDER BY call_index",
+                    (str(batch_id),))
+            }
+        finally:
+            conn.close()
+
+    def calls(self, batch_id: str) -> list[dict[str, Any]]:
+        """这一批里的全部调用记录，成功与失败都在内，供审计与回退核对。"""
+        conn = self.db._get_conn()
+        try:
+            return [_decode_call(row) for row in conn.execute(
+                "SELECT * FROM tool_batch_calls WHERE batch_id = ? "
+                "ORDER BY call_index", (str(batch_id),))]
+        finally:
+            conn.close()
+
+    def record_call(self, batch_id: str, call_index: int, lease_token: str, *,
+                    tool_name: str, arguments: dict[str, Any] | None = None,
+                    result: Any = None, succeeded: bool,
+                    now=None) -> tuple[dict[str, Any] | None, bool]:
+        """记下这一批里第 call_index 次调用，返回 (记录, 是否写入)。
+
+        和这个类里其他写操作一样要带 lease_token。少了它就会出现这种情况：
+        某次执行卡在挂起的调用上，占用过期，这一批被重新领取并重新执行，
+        随后那个挂起的调用返回、把自己的结果记进同一个序号；而成功的记录
+        不允许覆盖，新持有者真正的结果反而写不进去。**记录不归自己的批次，
+        返回的第一项是 None**，调用方看到就该停下，不要再往下执行。
+
+        已经成功的那一次不会被覆盖：返回既有记录并把第二项置为 False，
+        告诉调用方这次调用之前就做过了。失败的记录可以被后来的重试结果
+        覆盖，否则一次失败会把这个序号永久占住。
+        """
+        if int(call_index) < 0:
+            raise ValueError("call_index 不能为负")
+        if not str(tool_name).strip():
+            raise ValueError("tool_name is required")
+        now_text = _utc_text(now)
+
+        conn = self.db._get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                """
+                INSERT INTO tool_batch_calls
+                    (batch_id, call_index, tool_name, arguments_json,
+                     result_json, succeeded, created_at, updated_at)
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                WHERE EXISTS (
+                    SELECT 1 FROM tool_batches
+                    WHERE id = ? AND status = 'running' AND lease_token = ?
+                )
+                ON CONFLICT(batch_id, call_index) DO UPDATE SET
+                    tool_name = excluded.tool_name,
+                    arguments_json = excluded.arguments_json,
+                    result_json = excluded.result_json,
+                    succeeded = excluded.succeeded,
+                    updated_at = excluded.updated_at
+                WHERE tool_batch_calls.succeeded = 0
+                """,
+                (str(batch_id), int(call_index), str(tool_name),
+                 json.dumps(arguments, ensure_ascii=False)
+                 if arguments is not None else None,
+                 json.dumps(result, ensure_ascii=False)
+                 if result is not None else None,
+                 1 if succeeded else 0, now_text, now_text,
+                 str(batch_id), str(lease_token)),
+            )
+            written = cursor.rowcount == 1
+            still_ours = conn.execute(
+                "SELECT 1 FROM tool_batches "
+                "WHERE id = ? AND status = 'running' AND lease_token = ?",
+                (str(batch_id), str(lease_token)),
+            ).fetchone() is not None
+            if not still_ours:
+                conn.commit()
+                return None, False
+            row = conn.execute(
+                "SELECT * FROM tool_batch_calls "
+                "WHERE batch_id = ? AND call_index = ?",
+                (str(batch_id), int(call_index)),
+            ).fetchone()
+            conn.commit()
+            return _decode_call(row), written
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     # --- 终态 ---------------------------------------------------------------
 
     def mark_completed(
@@ -389,7 +560,19 @@ class ToolBatchRepository:
         now_text = _utc_text(now)
         conn = self.db._get_conn()
         try:
-            cursor = conn.execute(
+            conn.execute("BEGIN IMMEDIATE")
+            batch = conn.execute(
+                """
+                SELECT source_kind, channel_id, through_message_id
+                FROM tool_batches
+                WHERE id = ? AND status = 'running' AND lease_token = ?
+                """,
+                (str(batch_id), str(lease_token)),
+            ).fetchone()
+            if batch is None:
+                conn.rollback()
+                return False
+            conn.execute(
                 """
                 UPDATE tool_batches
                 SET status = ?, result_json = ?,
@@ -405,8 +588,19 @@ class ToolBatchRepository:
                  delivery_kind, delivery_status, last_run_id, error,
                  now_text, now_text, str(batch_id), str(lease_token)),
             )
+            # 游标和终态必须在同一个事务里推进。分两次写的话，中间崩溃会
+            # 留下「批次已经结束、但游标还停在它前面」的状态，下一轮规划
+            # 会把同一段消息重新排一遍。判定为不需要动手的空批次同样要推
+            # 进——这跟 curator 那条「空批 apply 也推进 cursor」是一回事。
+            if (batch["source_kind"] == "conversation"
+                    and batch["through_message_id"] is not None):
+                self._advance_cursor(conn, batch["channel_id"],
+                                     batch["through_message_id"])
             conn.commit()
-            return cursor.rowcount == 1
+            return True
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 

@@ -7,6 +7,7 @@ from .outbound import (
     NullGenerationGate,
     OutboundQueue,
 )
+from .batch_planner import plan_next_batch
 from .repository import OutboundDeliveryRepository
 from .tool_batches import (
     TOOL_WORKER,
@@ -24,4 +25,5 @@ __all__ = [
     "OutboundDeliveryRepository",
     "OutboundQueue",
     "ToolBatchRepository",
+    "plan_next_batch",
 ]
