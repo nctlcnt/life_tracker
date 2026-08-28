@@ -8,12 +8,20 @@ from .outbound import (
     OutboundQueue,
 )
 from .repository import OutboundDeliveryRepository
+from .tool_batches import (
+    TOOL_WORKER,
+    BatchSourceConflict,
+    ToolBatchRepository,
+)
 
 __all__ = [
+    "TOOL_WORKER",
+    "BatchSourceConflict",
     "DeliveryFailed",
     "DeliveryReceipt",
     "GenerationGate",
     "NullGenerationGate",
     "OutboundDeliveryRepository",
     "OutboundQueue",
+    "ToolBatchRepository",
 ]

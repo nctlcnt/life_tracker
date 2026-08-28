@@ -250,6 +250,90 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_outbound_deliveries_channel_order
                 ON outbound_deliveries(channel_id, status, id);
 
+            -- LT-175：工具 worker 的批次状态表。异步之后工具模型的输入是
+            -- 「一批消息」而不是「一条消息」，这张表记录每一批的来源区间、
+            -- 执行状态与交付要求。状态不能塞进 app_state 的 JSON：它需要
+            -- 条件领取、过期回收、唯一约束和审计，必须是一等表。
+            --
+            -- 两个外键（last_run_id、supersedes_batch_id）目前只有文档意义：
+            -- SQLite 默认不检查外键，而 _get_conn() 不执行 PRAGMA foreign_keys，
+            -- 打开它会同时影响库里所有的表，属于独立决定，不在本 issue 范围内。
+            CREATE TABLE IF NOT EXISTS tool_batches (
+                id TEXT PRIMARY KEY,
+                worker_name TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                source_kind TEXT NOT NULL
+                    CHECK(source_kind IN ('conversation', 'check_in')),
+                source_ref TEXT,
+                after_message_id INTEGER,
+                through_message_id INTEGER,
+                last_user_message_id INTEGER,
+                input_json TEXT,
+                execution_mode TEXT NOT NULL
+                    CHECK(execution_mode IN ('shadow', 'apply')),
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'running', 'completed',
+                                     'retry_wait', 'failed')),
+                attempt_count INTEGER NOT NULL DEFAULT 0
+                    CHECK(attempt_count >= 0),
+                available_at TEXT NOT NULL DEFAULT (datetime('now')),
+                locked_at TEXT,
+                lease_token TEXT,
+                last_run_id TEXT REFERENCES ai_runs(id),
+                result_json TEXT,
+                delivery_kind TEXT NOT NULL DEFAULT 'none'
+                    CHECK(delivery_kind IN ('none', 'reaction', 'message')),
+                delivery_status TEXT NOT NULL DEFAULT 'not_needed'
+                    CHECK(delivery_status IN ('not_needed', 'pending', 'queued',
+                                              'sent', 'superseded', 'failed')),
+                supersedes_batch_id TEXT REFERENCES tool_batches(id),
+                last_error TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT,
+                UNIQUE(source_kind, source_ref),
+                UNIQUE(worker_name, channel_id, after_message_id,
+                       through_message_id),
+                CHECK(through_message_id IS NULL OR after_message_id IS NULL
+                      OR through_message_id >= after_message_id),
+                CHECK(last_user_message_id IS NULL OR
+                      (last_user_message_id > after_message_id
+                       AND last_user_message_id <= through_message_id)),
+                CHECK(
+                    (delivery_kind = 'none' AND delivery_status = 'not_needed')
+                    OR
+                    (delivery_kind != 'none' AND delivery_status != 'not_needed')
+                ),
+                CHECK(
+                    (source_kind = 'conversation'
+                     AND after_message_id IS NOT NULL
+                     AND through_message_id IS NOT NULL
+                     AND source_ref IS NULL
+                     AND input_json IS NULL)
+                    OR
+                    (source_kind = 'check_in'
+                     AND source_ref IS NOT NULL
+                     AND input_json IS NOT NULL
+                     AND after_message_id IS NULL
+                     AND through_message_id IS NULL
+                     AND last_user_message_id IS NULL)
+                )
+            );
+
+            -- 同一个 worker 在同一个频道，同时只能有一批未终结的 conversation
+            -- 批次。约束按字段值分组判断，因此 worker_name 必须由所有写入方
+            -- 使用同一个常量，取值不一致会让这条索引失去作用。
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_tool_batches_open_conversation
+                ON tool_batches(worker_name, channel_id)
+                WHERE source_kind = 'conversation'
+                  AND status IN ('pending', 'running', 'retry_wait');
+
+            CREATE INDEX IF NOT EXISTS idx_tool_batches_claim
+                ON tool_batches(status, available_at, locked_at, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_tool_batches_channel_through
+                ON tool_batches(worker_name, channel_id, through_message_id);
+
             -- 记忆系统 v4：异步 curator 维护的长期记忆。旧 memories 表在
             -- LT-132 前仍是 memory.md shadow，不能复用或覆盖。
             CREATE TABLE IF NOT EXISTS personal_memories (
