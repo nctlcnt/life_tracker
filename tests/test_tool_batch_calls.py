@@ -18,16 +18,18 @@ def repository(db):
 
 @pytest.fixture
 def batch(repository):
-    item, _ = repository.create_conversation_batch(
+    """一批已经领取的活。没领过就没有 lease_token，也就写不了调用记录。"""
+    repository.create_conversation_batch(
         channel_id="chan-1", after_message_id=0, through_message_id=10,
         last_user_message_id=10, execution_mode="apply")
-    return item
+    return repository.claim_next()
 
 
 def _record(repository, batch, index, *, tool_name="log_timeline_event",
-            arguments=None, result=None, succeeded=True):
+            arguments=None, result=None, succeeded=True, lease_token=None):
     return repository.record_call(
-        batch["id"], index, tool_name=tool_name,
+        batch["id"], index, lease_token or batch["lease_token"],
+        tool_name=tool_name,
         arguments=arguments if arguments is not None else {"text": "吃了午饭"},
         result=result, succeeded=succeeded)
 
@@ -117,19 +119,52 @@ def test_an_untouched_batch_has_no_calls(repository, batch):
     assert repository.completed_calls(batch["id"]) == {}
 
 
-@pytest.mark.parametrize("overrides", [
-    {"index": -1},
-    {"tool_name": "  "},
-])
-def test_bad_arguments_are_rejected(repository, batch, overrides):
-    index = overrides.pop("index", 0)
+def test_a_negative_call_index_is_rejected(repository, batch):
     with pytest.raises(ValueError):
-        _record(repository, batch, index, **overrides)
+        _record(repository, batch, -1)
+
+
+def test_a_blank_tool_name_is_rejected(repository, batch):
+    with pytest.raises(ValueError):
+        _record(repository, batch, 0, tool_name="  ")
 
 
 def test_a_call_without_arguments_or_result_is_allowed(repository, batch):
     record, written = repository.record_call(
-        batch["id"], 0, tool_name="search_memory", succeeded=True)
+        batch["id"], 0, batch["lease_token"],
+        tool_name="search_memory", succeeded=True)
     assert written is True
     assert record["arguments"] is None
     assert record["result"] is None
+
+
+def test_a_stale_holder_cannot_record_anything(db, repository, batch):
+    """过期持有者缓过来也记不进结果，否则新持有者真正的结果会被挡掉。
+
+    成功的记录不允许覆盖，所以如果旧的执行流程先把自己的结果写进某个
+    序号，新持有者写同一个序号就只会拿到 written=False，真正做过的事
+    反而丢了。这里在写入这一层挡住它。
+    """
+    from bot.async_pipeline.tool_batches import LEASE_SECONDS
+    from datetime import datetime, timedelta, timezone
+
+    later = datetime.now(timezone.utc) + timedelta(seconds=LEASE_SECONDS + 1)
+    reclaimed = repository.claim_next(now=later)
+    assert reclaimed["id"] == batch["id"]
+
+    record, written = _record(repository, batch, 0,
+                              lease_token=batch["lease_token"])
+    assert record is None
+    assert written is False
+    assert repository.calls(batch["id"]) == []
+
+    record, written = _record(repository, batch, 0,
+                              lease_token=reclaimed["lease_token"])
+    assert written is True
+    assert record["result"] is None
+
+
+def test_recording_into_a_finished_batch_is_rejected(repository, batch):
+    repository.mark_completed(batch["id"], batch["lease_token"])
+    record, written = _record(repository, batch, 0)
+    assert (record, written) == (None, False)

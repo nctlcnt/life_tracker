@@ -412,11 +412,17 @@ class ToolBatchRepository:
         finally:
             conn.close()
 
-    def record_call(self, batch_id: str, call_index: int, *, tool_name: str,
-                    arguments: dict[str, Any] | None = None,
+    def record_call(self, batch_id: str, call_index: int, lease_token: str, *,
+                    tool_name: str, arguments: dict[str, Any] | None = None,
                     result: Any = None, succeeded: bool,
-                    now=None) -> tuple[dict[str, Any], bool]:
+                    now=None) -> tuple[dict[str, Any] | None, bool]:
         """记下这一批里第 call_index 次调用，返回 (记录, 是否写入)。
+
+        和这个类里其他写操作一样要带 lease_token。少了它就会出现这种情况：
+        某次执行卡在挂起的调用上，占用过期，这一批被重新领取并重新执行，
+        随后那个挂起的调用返回、把自己的结果记进同一个序号；而成功的记录
+        不允许覆盖，新持有者真正的结果反而写不进去。**记录不归自己的批次，
+        返回的第一项是 None**，调用方看到就该停下，不要再往下执行。
 
         已经成功的那一次不会被覆盖：返回既有记录并把第二项置为 False，
         告诉调用方这次调用之前就做过了。失败的记录可以被后来的重试结果
@@ -436,7 +442,11 @@ class ToolBatchRepository:
                 INSERT INTO tool_batch_calls
                     (batch_id, call_index, tool_name, arguments_json,
                      result_json, succeeded, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                WHERE EXISTS (
+                    SELECT 1 FROM tool_batches
+                    WHERE id = ? AND status = 'running' AND lease_token = ?
+                )
                 ON CONFLICT(batch_id, call_index) DO UPDATE SET
                     tool_name = excluded.tool_name,
                     arguments_json = excluded.arguments_json,
@@ -450,9 +460,18 @@ class ToolBatchRepository:
                  if arguments is not None else None,
                  json.dumps(result, ensure_ascii=False)
                  if result is not None else None,
-                 1 if succeeded else 0, now_text, now_text),
+                 1 if succeeded else 0, now_text, now_text,
+                 str(batch_id), str(lease_token)),
             )
             written = cursor.rowcount == 1
+            still_ours = conn.execute(
+                "SELECT 1 FROM tool_batches "
+                "WHERE id = ? AND status = 'running' AND lease_token = ?",
+                (str(batch_id), str(lease_token)),
+            ).fetchone() is not None
+            if not still_ours:
+                conn.commit()
+                return None, False
             row = conn.execute(
                 "SELECT * FROM tool_batch_calls "
                 "WHERE batch_id = ? AND call_index = ?",
