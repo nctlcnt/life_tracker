@@ -8,6 +8,7 @@ from .outbound import (
     OutboundQueue,
 )
 from .batch_planner import plan_next_batch
+from .heartbeat import BatchHeartbeat
 from .repository import OutboundDeliveryRepository
 from .tool_batches import (
     TOOL_WORKER,
@@ -17,6 +18,7 @@ from .tool_batches import (
 
 __all__ = [
     "TOOL_WORKER",
+    "BatchHeartbeat",
     "BatchSourceConflict",
     "DeliveryFailed",
     "DeliveryReceipt",
