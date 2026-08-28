@@ -572,3 +572,72 @@ def test_advancing_to_not_needed_is_rejected(repository):
         repository.advance_delivery(batch["id"], from_status="pending",
                                     to_status="not_needed")
     assert repository.get(batch["id"])["delivery_status"] == "pending"
+
+
+# --- 重试预算用完 -----------------------------------------------------------
+
+
+def _exhaust(repository, attempts):
+    """反复领取并标记重试，把 attempt_count 堆到指定次数。"""
+    for _ in range(attempts):
+        claimed = repository.claim_next(now=NOW)
+        assert claimed is not None
+        repository.mark_retry(claimed["id"], claimed["lease_token"], "上游超时")
+
+
+def test_reaping_gives_up_on_a_batch_that_used_its_budget(repository):
+    batch, _ = _conversation(repository)
+    _exhaust(repository, 3)
+
+    reaped = repository.reap_exhausted(max_attempts=3)
+    assert [item["id"] for item in reaped] == [batch["id"]]
+    done = repository.get(batch["id"])
+    assert done["status"] == "failed"
+    assert done["last_error"] == "重试预算用完"
+    assert done["completed_at"] is not None
+
+
+def test_reaping_leaves_a_batch_still_within_budget(repository):
+    batch, _ = _conversation(repository)
+    _exhaust(repository, 2)
+    assert repository.reap_exhausted(max_attempts=3) == []
+    assert repository.get(batch["id"])["status"] == "retry_wait"
+
+
+@pytest.mark.parametrize("status", ["pending", "running", "completed"])
+def test_reaping_only_touches_batches_waiting_to_retry(
+        db, repository, status):
+    """只有 retry_wait 没有持有者，其余状态都不能从外面改。"""
+    batch, _ = _conversation(repository)
+    _set_status(db, batch["id"], status)
+    conn = db._get_conn()
+    conn.execute("UPDATE tool_batches SET attempt_count = 9 WHERE id = ?",
+                 (batch["id"],))
+    conn.commit()
+    conn.close()
+    assert repository.reap_exhausted(max_attempts=3) == []
+    assert repository.get(batch["id"])["status"] == status
+
+
+def test_reaping_advances_the_cursor_like_any_other_terminal_state(
+        repository):
+    batch, _ = _conversation(repository)
+    _exhaust(repository, 3)
+    repository.reap_exhausted(max_attempts=3)
+    assert repository.get_cursor("chan-1") == batch["through_message_id"]
+
+
+def test_reaping_a_check_in_batch_leaves_the_cursor_alone(repository):
+    _check_in(repository)
+    _exhaust(repository, 3)
+    reaped = repository.reap_exhausted(max_attempts=3)
+    assert len(reaped) == 1
+    assert repository.get_cursor("chan-1") == 0
+
+
+def test_reaping_is_scoped_to_one_worker(db, repository):
+    _conversation(repository)
+    _exhaust(repository, 3)
+    other = ToolBatchRepository(db, worker_name="other_worker")
+    assert other.reap_exhausted(max_attempts=3) == []
+    assert len(repository.reap_exhausted(max_attempts=3)) == 1

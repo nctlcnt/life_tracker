@@ -604,6 +604,56 @@ class ToolBatchRepository:
         finally:
             conn.close()
 
+    def reap_exhausted(self, *, max_attempts: int,
+                       error: str = "重试预算用完", now=None
+                       ) -> list[dict[str, Any]]:
+        """把重试次数已经用完的批次终结掉，返回被终结的那些。
+
+        不需要 lease_token：`retry_wait` 状态下这一批没有持有者，等着被
+        重新领取。心跳靠它把「一直失败、一直重试」的批次收尾，并据此发出
+        告警——那一段消息里的活确实没做，必须有人知道。
+
+        终结同样是终态，所以游标照常推进，理由和 mark_failed 一样：不推进
+        的话下一轮规划会一直重排同一段消息。
+        """
+        now_text = _utc_text(now)
+        conn = self.db._get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                """
+                SELECT * FROM tool_batches
+                WHERE worker_name = ? AND status = 'retry_wait'
+                  AND attempt_count >= ?
+                ORDER BY created_at, rowid
+                """,
+                (self.worker_name, int(max_attempts)),
+            ).fetchall()
+            reaped = []
+            for row in rows:
+                conn.execute(
+                    """
+                    UPDATE tool_batches
+                    SET status = 'failed', last_error = ?,
+                        completed_at = ?, updated_at = ?,
+                        locked_at = NULL, lease_token = NULL
+                    WHERE id = ? AND status = 'retry_wait'
+                    """,
+                    (str(error), now_text, now_text, row["id"]),
+                )
+                if (row["source_kind"] == "conversation"
+                        and row["through_message_id"] is not None):
+                    self._advance_cursor(conn, row["channel_id"],
+                                         row["through_message_id"])
+                reaped.append(_decode(row))
+            conn.commit()
+            return reaped
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     # --- 交付与运维查询 -----------------------------------------------------
 
     def pending_deliveries(self, *, limit: int = 50) -> list[dict[str, Any]]:
