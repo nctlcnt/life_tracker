@@ -284,16 +284,16 @@ def test_check_in_batches_do_not_occupy_the_conversation_slot(conn):
     assert _insert(conn, CHECK_IN, source_ref="check_in:2:2026-08-28T21:00")
 
 
-def test_a_different_worker_name_defeats_the_channel_constraint(conn):
-    """这条约束按 worker_name 分组判断，所以取值必须全局统一。
+def test_a_different_worker_name_defeats_both_constraints(conn):
+    """两条约束都按 worker_name 分组判断，所以取值必须全局统一。
 
-    这不是想要的行为，而是把「worker_name 用同一个常量」这条要求
-    钉在测试里：一旦有人写了别的值，这条索引就不再起作用。
+    这里插入的第二行与第一行区间完全相同、频道也相同，本该同时撞上
+    区间唯一约束和部分唯一索引；只因为 worker_name 不同，两条就都
+    放行了。这不是想要的行为，而是把「worker_name 用同一个常量」
+    这条要求钉在测试里：一旦有人写了别的值，两条保证一起失效。
     """
     _insert(conn, CONVERSATION)
-    assert _insert(conn, CONVERSATION, worker_name="other_worker",
-                   after_message_id=20, through_message_id=30,
-                   last_user_message_id=25)
+    assert _insert(conn, CONVERSATION, worker_name="other_worker")
 
 
 # --- 外键的现状 -------------------------------------------------------------
@@ -307,3 +307,38 @@ def test_foreign_keys_are_declared_but_not_enforced(conn):
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 0
     assert _insert(conn, CONVERSATION, last_run_id="run-does-not-exist",
                    supersedes_batch_id="batch-does-not-exist")
+
+
+# --- 与设计文档的一致性 -----------------------------------------------------
+
+
+def test_schema_matches_the_design_document(db):
+    """建出来的 DDL 与设计文档第 4.3.1 节那段 SQL 逐字一致。
+
+    只忽略三类无关差异：缩进与换行、语句末尾的分号、以及我们为了
+    可重复执行而加的 IF NOT EXISTS。列名、CHECK 的取值列表、默认值
+    和索引的列顺序有任何漂移，这条都会失败。
+    """
+    import pathlib
+    import re
+
+    doc = pathlib.Path("docs/plan/parallel-chat-tool-split.md").read_text()
+    expected = re.search(r"#### 4\.3\.1.*?```sql\n(.*?)```", doc, re.S).group(1)
+
+    conn = db._get_conn()
+    try:
+        actual = "\n".join(
+            row["sql"] for row in conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE tbl_name = 'tool_batches' AND sql IS NOT NULL")
+        )
+    finally:
+        conn.close()
+
+    def normalise(sql: str) -> str:
+        sql = re.sub(r"--[^\n]*", " ", sql)
+        sql = sql.replace("IF NOT EXISTS ", "").replace(";", " ")
+        sql = re.sub(r"\s+", " ", sql)
+        return re.sub(r"\s*([(),])\s*", r"\1", sql).strip()
+
+    assert normalise(actual) == normalise(expected)
