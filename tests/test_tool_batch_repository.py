@@ -373,11 +373,18 @@ def test_a_worker_only_claims_its_own_batches(db, repository):
 
 
 def test_two_concurrent_claims_do_not_both_win(db, repository):
-    """两个调用同时领同一批，只有一个能拿到。"""
+    """两个调用同时领同一批，只有一个能拿到。
+
+    两个线程在栅栏上会合之后才发起领取，否则线程启动本身就比一次
+    SQLite 事务慢得多，两次调用会前后错开，这条测试也就退化成
+    「已经在跑的批次不会被再领一次」，证明不了并发下的互斥。
+    """
     _conversation(repository)
     results = []
+    barrier = threading.Barrier(2)
 
     def claim():
+        barrier.wait()
         results.append(ToolBatchRepository(db).claim_next(now=NOW))
 
     threads = [threading.Thread(target=claim) for _ in range(2)]
@@ -554,3 +561,14 @@ def test_non_terminal_queries_track_what_is_still_open(db, repository):
 
     other = ToolBatchRepository(db, worker_name="other_worker")
     assert other.non_terminal_count() == 0
+
+
+def test_advancing_to_not_needed_is_rejected(repository):
+    """not_needed 只能在结束时一次写定，推进到它会与 delivery_kind 矛盾。"""
+    batch = _claimed(repository)
+    repository.mark_completed(batch["id"], batch["lease_token"],
+                              delivery_kind="message", now=_later(5))
+    with pytest.raises(ValueError):
+        repository.advance_delivery(batch["id"], from_status="pending",
+                                    to_status="not_needed")
+    assert repository.get(batch["id"])["delivery_status"] == "pending"

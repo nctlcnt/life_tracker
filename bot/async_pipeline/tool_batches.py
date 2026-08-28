@@ -30,6 +30,9 @@ LEASE_SECONDS = 300.0
 DELIVERY_KINDS = frozenset({"none", "reaction", "message"})
 DELIVERY_STATUSES = frozenset({"not_needed", "pending", "queued", "sent",
                                "superseded", "failed"})
+# 投递开始之后能推进到的状态。not_needed 不在其中：它表示这一批根本没有
+# 要交付的东西，只能在结束的时候一次写定。
+REACHABLE_DELIVERY_STATUSES = DELIVERY_STATUSES - {"not_needed", "pending"}
 
 
 class BatchSourceConflict(ValueError):
@@ -436,11 +439,17 @@ class ToolBatchRepository:
         投递本身可能被重复触发（心跳每两分钟跑一次），靠这个条件保证
         同一条结果不会被送出去两次。
         """
-        for value in (from_status, to_status):
-            if value not in DELIVERY_STATUSES:
-                raise ValueError(
-                    f"delivery_status must be one of "
-                    f"{sorted(DELIVERY_STATUSES)}")
+        if from_status not in DELIVERY_STATUSES:
+            raise ValueError(
+                f"from_status must be one of {sorted(DELIVERY_STATUSES)}")
+        if to_status not in REACHABLE_DELIVERY_STATUSES:
+            # not_needed 只能由 mark_completed 在「确实没有产出」时写下。
+            # 推进到它会让 delivery_kind 与 delivery_status 互相矛盾，被表上
+            # 那条 CHECK 拒绝；那样抛的是 IntegrityError，与这个类其他地方
+            # 的报错方式不一致，所以在这里先挡住。
+            raise ValueError(
+                f"to_status must be one of "
+                f"{sorted(REACHABLE_DELIVERY_STATUSES)}")
         now_text = _utc_text(now)
         conn = self.db._get_conn()
         try:
