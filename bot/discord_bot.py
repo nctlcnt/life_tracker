@@ -327,6 +327,8 @@ class LifeTrackerBot(commands.Bot):
             on_typing_rate_limited=lambda: self._mark_typing_cooldown(
                 target.id, "Discord typing 发送限流"
             ),
+            source_type=source_type,
+            source_id=source_id,
         )
 
     async def _send_or_enqueue_reaction(self, message, reaction: str, *,
@@ -371,6 +373,8 @@ class LifeTrackerBot(commands.Bot):
                 on_typing_rate_limited=lambda: self._mark_typing_cooldown(
                     channel.id, "Discord typing OutboundQueue 限流"
                 ),
+                source_type=delivery.get("source_type"),
+                source_id=delivery.get("source_id"),
             )
         if delivery["kind"] == "reaction":
             target_id = int(delivery["target_discord_message_id"])
@@ -383,7 +387,9 @@ class LifeTrackerBot(commands.Bot):
         raise ValueError(f"未知 outbound kind: {delivery['kind']}")
 
     async def _record_sent_message(self, sent: discord.Message,
-                                   role: str = "assistant") -> None:
+                                   role: str = "assistant",
+                                   source_type: str | None = None,
+                                   source_id: str | None = None) -> None:
         """Record a Discord message sent by Hiyori into the raw conversation log."""
         try:
             await self.memory.ingest_message(
@@ -400,7 +406,7 @@ class LifeTrackerBot(commands.Bot):
                     if sent.reference and sent.reference.message_id
                     else None
                 ),
-                metadata={"message_type": str(sent.type)},
+                metadata=_outbound_metadata(sent, source_type, source_id),
             )
         except Exception as e:
             logger.warning(f"⚠️ 写入 outbound conversation log 失败: {e}")
@@ -889,7 +895,9 @@ async def _send_chat_chunks(target, text: str, *,
                             memory_service: MemoryService | None = None,
                             role: str = "assistant",
                             use_typing: bool = True,
-                            on_typing_rate_limited=None) -> list[str]:
+                            on_typing_rate_limited=None,
+                            source_type: str | None = None,
+                            source_id: str | None = None) -> list[str]:
     """
     一次性发送整段 AI 回复，仅在超过 Discord 2000 字符上限时按长度兜底切分。
     发送期间保留 typing indicator。
@@ -917,7 +925,8 @@ async def _send_chat_chunks(target, text: str, *,
             try:
                 for chunk in chunks:
                     sent = await target.send(chunk)
-                    await _record_sent_chunk(db, sent, role, memory_service)
+                    await _record_sent_chunk(db, sent, role, memory_service,
+                                             source_type, source_id)
                     sent_ids.append(str(sent.id))
             finally:
                 await typing_cm.__aexit__(None, None, None)
@@ -926,15 +935,37 @@ async def _send_chat_chunks(target, text: str, *,
 
     for chunk in chunks:
         sent = await target.send(chunk)
-        await _record_sent_chunk(db, sent, role, memory_service)
+        await _record_sent_chunk(db, sent, role, memory_service,
+                                 source_type, source_id)
         sent_ids.append(str(sent.id))
     logger.info("✅ 消息发送完成")
     return sent_ids
 
 
+def _outbound_metadata(sent: discord.Message, source_type: str | None,
+                       source_id: str | None) -> dict:
+    """LT-174：把发送来源随消息一起落库，作为无回应门禁的唯一数据来源。
+
+    没有来源的调用（历史路径、手工补录）只写 message_type，读取侧会把这类
+    消息当作"来源未知"而不计入主动消息，避免误判导致门禁一上线就锁死。
+    """
+    metadata = {"message_type": str(sent.type)}
+    if source_type:
+        metadata["source_type"] = source_type
+    if source_id:
+        metadata["source_id"] = source_id
+    return metadata
+
+
 async def _record_sent_chunk(db: Database | None, sent: discord.Message, role: str,
-                             memory_service: MemoryService | None = None) -> None:
-    """Persist a sent Discord message when a DB is available."""
+                             memory_service: MemoryService | None = None,
+                             source_type: str | None = None,
+                             source_id: str | None = None) -> None:
+    """Persist a sent Discord message when a DB is available.
+
+    LT-174：source_type / source_id 一路带到这里写进 metadata，让日和自己
+    发出去的消息能区分是聊天回复还是哪一种主动联系。无回应门禁只读这份标记。
+    """
     if db is None and memory_service is None:
         return
     try:
@@ -953,7 +984,7 @@ async def _record_sent_chunk(db: Database | None, sent: discord.Message, role: s
                 if sent.reference and sent.reference.message_id
                 else None
             ),
-            metadata={"message_type": str(sent.type)},
+            metadata=_outbound_metadata(sent, source_type, source_id),
         )
     except Exception as e:
         logger.warning(f"⚠️ 写入 outbound conversation log 失败: {e}")

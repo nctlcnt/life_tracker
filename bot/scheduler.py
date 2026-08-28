@@ -24,6 +24,7 @@ from bot.ai_engine import scheduled_action
 from bot.database import Database
 from bot.memory import MemoryService
 from bot.memory.curator import CURATOR_NAME
+from bot.memory import scene_state
 from bot.prompts import get_prompt_template
 from bot.logger import get_logger
 import config
@@ -422,6 +423,27 @@ class Scheduler:
         if check_in:
             await self._do_check_in(check_in, timestamp)
 
+    def _unanswered_skip_reason(self, check_in: dict) -> str | None:
+        """LT-174：上一条主动消息还没人回应时，闲聊型 check-in 直接跳过。
+
+        判断只读 conversation_messages 里的来源标记，因此重启之后仍然成立，
+        也不需要额外的计数器与它保持同步。返回 None 表示可以照常触发。
+
+        `[SILENT]` 仍然保留为内容层的选择，但不再是唯一的流量控制手段——
+        它由模型自己决定，拦不住"每次都觉得有话说"这种情况。
+        """
+        if not check_in.get("skip_when_unanswered"):
+            return None
+        try:
+            backlog = self.db.proactive_backlog(str(config.CHANNEL_ID))
+        except Exception as e:
+            # 查询失败不能让主动联系整个停摆，放行并记录
+            logger.warning(f"⚠️ 无回应门禁查询失败，本次放行: {e}")
+            return None
+        if backlog["unanswered"] <= 0:
+            return None
+        return f"unanswered_since:{backlog['last_user_message_id']}"
+
     async def _do_check_in(self, check_in: dict, timestamp: str,
                            force: bool = False) -> dict:
         """Execute a configurable system check-in.
@@ -441,6 +463,26 @@ class Scheduler:
             logger.info("⏭️ 用户正在输入，跳过本次随机 check-in")
             result["skipped"] = "user_typing"
             return result
+        if not force:
+            skip_reason = self._unanswered_skip_reason(check_in)
+            if skip_reason:
+                logger.info(
+                    f"⏭️ 上一条主动消息还没有人回应，跳过 check-in: {name} "
+                    f"({skip_reason})")
+                # 场景仍然要清掉。LT-171 定的是"每一次 check-in 触发都是旧场景
+                # 唯一的终止条件"，被门禁拦下来也算触发过；否则用户几天后回来时
+                # 读到的还是几天前那句场景描述。
+                try:
+                    scene_state.clear(self.db, str(config.CHANNEL_ID))
+                except Exception as e:
+                    logger.warning(f"⚠️ 跳过 check-in 时清除场景失败: {e}")
+                # 仍然记为已触发：window 类型靠 last_fired_at 判断当天是否已经
+                # 触发过，不写的话每个 timer tick 都会重新进来再跳过一次。
+                self.db.mark_check_in_fired(check_in["id"])
+                # 同样要推进 after_ai_call 的基准，否则它会立刻再次到期。
+                self.notify_ai_call_done()
+                result["skipped"] = skip_reason
+                return result
         should_mark_fired = False
         scheduled_for = check_in.get("last_scheduled_for") or timestamp
         if force:

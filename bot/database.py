@@ -178,6 +178,7 @@ class Database:
                 tool_profile TEXT NOT NULL DEFAULT 'poll',
                 allow_silent INTEGER DEFAULT 1,
                 track_scene INTEGER DEFAULT 0,
+                skip_when_unanswered INTEGER DEFAULT 0,
                 last_scheduled_for TEXT,
                 last_fired_at TEXT,
                 built_in INTEGER DEFAULT 0,
@@ -509,6 +510,10 @@ class Database:
             # 默认关闭：睡前提醒说完就结束、morning 也不需要延续，
             # 只有采访这类会聊几个来回的才打开。关着就零成本。
             "ALTER TABLE check_ins ADD COLUMN track_scene INTEGER DEFAULT 0",
+            # LT-174：这次 check-in 在"上一条主动消息还没人回"时是否直接跳过。
+            # 默认 0（照旧触发），因为 morning / bedtime 这类固定问候即使无人
+            # 回应也应该照常发；random_poll 和采访由下面的一次性迁移置 1。
+            "ALTER TABLE check_ins ADD COLUMN skip_when_unanswered INTEGER DEFAULT 0",
             "ALTER TABLE check_ins ADD COLUMN last_scheduled_for TEXT",
             "ALTER TABLE check_ins ADD COLUMN last_fired_at TEXT",
             "ALTER TABLE check_ins ADD COLUMN built_in INTEGER DEFAULT 0",
@@ -518,6 +523,20 @@ class Database:
                 conn.execute(stmt)
             except sqlite3.OperationalError:
                 pass
+
+        # LT-174 一次性迁移：闲聊型主动联系（随机轮询与采访）纳入无回应门禁。
+        # 只在列刚加出来、全表还是默认值时执行一次，之后用户在管理界面里的
+        # 调整不会被覆盖。
+        try:
+            if conn.execute(
+                "SELECT COUNT(*) FROM check_ins WHERE skip_when_unanswered = 1"
+            ).fetchone()[0] == 0:
+                conn.execute(
+                    "UPDATE check_ins SET skip_when_unanswered = 1 "
+                    "WHERE name = 'random_poll' OR name LIKE 'interview%'"
+                )
+        except sqlite3.OperationalError:
+            pass
 
         # 一次性兼容迁移：项目曾经只存在于 events.project_name。
         # 新版本改为用户手动项目表后，需要把已有历史项目注册进去，避免升级后 Project Overview 变空。
@@ -597,6 +616,8 @@ class Database:
                 "name": "ttl_followup",
                 "label": "TTL follow-up",
                 "enabled": 0,
+                # LT-174：同样是闲聊型，纳入无回应门禁
+                "skip_when_unanswered": 1,
                 "schedule_type": "after_ai_call",
                 "interval_min_minutes": 45,
                 "interval_max_minutes": 55,
@@ -611,6 +632,8 @@ class Database:
                 "name": "random_poll",
                 "label": "Random poll",
                 "enabled": 1 if random_poll_enabled != "0" else 0,
+                # LT-174：闲聊型主动联系，上一条还没人回就不再发下一条
+                "skip_when_unanswered": 1,
                 "schedule_type": "after_ai_call",
                 "interval_min_minutes": 45,
                 "interval_max_minutes": 55,
@@ -690,9 +713,9 @@ class Database:
                     name, label, enabled, schedule_type, time_start, time_end,
                     days_of_week, interval_min_minutes, interval_max_minutes,
                     prompt_template, instructions, context_config_json,
-                    tool_profile, allow_silent, built_in
+                    tool_profile, allow_silent, skip_when_unanswered, built_in
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item["name"],
@@ -709,6 +732,7 @@ class Database:
                     default_context,
                     item["tool_profile"],
                     item["allow_silent"],
+                    item.get("skip_when_unanswered", 0),
                     1 if permanent else 0,
                 ),
             )
@@ -881,9 +905,10 @@ class Database:
                 name, label, enabled, schedule_type, time_start, time_end,
                 days_of_week, interval_min_minutes, interval_max_minutes,
                 prompt_template, instructions, context_config_json,
-                tool_profile, allow_silent, track_scene, built_in
+                tool_profile, allow_silent, track_scene, skip_when_unanswered,
+                built_in
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """,
             (
                 name,
@@ -901,6 +926,7 @@ class Database:
                 tool_profile,
                 1 if fields.get("allow_silent", True) else 0,
                 1 if fields.get("track_scene", False) else 0,
+                1 if fields.get("skip_when_unanswered", False) else 0,
             ),
         )
         conn.commit()
@@ -913,8 +939,8 @@ class Database:
             "label", "enabled", "schedule_type", "time_start", "time_end",
             "days_of_week", "interval_min_minutes", "interval_max_minutes",
             "prompt_template", "instructions", "context_config",
-            "tool_profile", "allow_silent", "last_scheduled_for",
-            "last_fired_at",
+            "tool_profile", "allow_silent", "skip_when_unanswered",
+            "last_scheduled_for", "last_fired_at",
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
@@ -933,7 +959,7 @@ class Database:
             updates["context_config_json"] = self._encode_json(updates.pop("context_config"), {})
         if "days_of_week" in updates:
             updates["days_of_week"] = self._encode_json(updates["days_of_week"], None)
-        for key in ("enabled", "allow_silent"):
+        for key in ("enabled", "allow_silent", "skip_when_unanswered"):
             if key in updates:
                 updates[key] = 1 if updates[key] else 0
         updates["updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -1307,6 +1333,44 @@ class Database:
         row_id = cursor.lastrowid if cursor.rowcount > 0 else None
         conn.close()
         return row_id
+
+    # LT-174：主动联系的无回应门禁只从这张 append-only 日志推导，不另存计数器。
+    # 好处是重启、回滚、手工删消息之后状态都自动正确，不存在两份真相要同步。
+    PROACTIVE_SOURCE_TYPES = ("check_in", "scheduled")
+
+    def proactive_backlog(self, channel_id: str) -> dict:
+        """统计最后一条用户消息之后，已经发出去多少条主动消息。
+
+        只统计带来源标记的消息。LT-174 之前发出的历史消息没有这个标记，
+        一律不计入——这样门禁上线后第一次 check-in 照常触发、写上标记，
+        之后门禁才开始生效，不需要回填历史。
+        """
+        placeholders = ", ".join("?" for _ in self.PROACTIVE_SOURCE_TYPES)
+        conn = self._get_conn()
+        row = conn.execute(
+            """
+            SELECT id, created_at FROM conversation_messages
+            WHERE channel_id = ? AND role = 'user'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (str(channel_id),),
+        ).fetchone()
+        last_user_id = row["id"] if row else 0
+        last_user_at = row["created_at"] if row else None
+        unanswered = conn.execute(
+            f"""
+            SELECT COUNT(*) FROM conversation_messages
+            WHERE channel_id = ? AND role = 'assistant' AND id > ?
+              AND json_extract(metadata_json, '$.source_type') IN ({placeholders})
+            """,
+            (str(channel_id), last_user_id, *self.PROACTIVE_SOURCE_TYPES),
+        ).fetchone()[0]
+        conn.close()
+        return {
+            "unanswered": int(unanswered),
+            "last_user_message_id": last_user_id,
+            "last_user_at": last_user_at,
+        }
 
     def get_recent_conversation_messages(self, channel_id: str, limit: int = 20) -> list[dict]:
         """按频道获取最近的 Discord 会话消息，返回时间正序。"""
