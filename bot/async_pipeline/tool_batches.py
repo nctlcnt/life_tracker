@@ -93,6 +93,54 @@ class ToolBatchRepository:
         finally:
             conn.close()
 
+    # --- 游标 ---------------------------------------------------------------
+
+    def get_cursor(self, channel_id: str) -> int:
+        """这个频道已经处理到哪一条消息了，没有记录时是 0。"""
+        conn = self.db._get_conn()
+        try:
+            row = conn.execute(
+                """
+                SELECT last_processed_message_id FROM tool_batch_cursors
+                WHERE worker_name = ? AND channel_id = ?
+                """,
+                (self.worker_name, str(channel_id)),
+            ).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+
+    def advance_cursor(self, channel_id: str, message_id: int) -> bool:
+        """把游标往前推。只能前进，不能后退。
+
+        单调是这里唯一重要的性质：推进发生在两个地方（批次结束时，以及
+        跳过一段只有自己发言的尾巴时），重复推进和乱序推进都必须无害，
+        否则一段消息会被重新执行一遍。
+        """
+        conn = self.db._get_conn()
+        try:
+            return self._advance_cursor(conn, channel_id, message_id)
+        finally:
+            conn.commit()
+            conn.close()
+
+    def _advance_cursor(self, conn, channel_id: str, message_id: int) -> bool:
+        """在调用方的事务里推进游标，供终态事务复用。"""
+        cursor = conn.execute(
+            """
+            INSERT INTO tool_batch_cursors
+                (worker_name, channel_id, last_processed_message_id, updated_at)
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(worker_name, channel_id) DO UPDATE SET
+                last_processed_message_id = excluded.last_processed_message_id,
+                updated_at = datetime('now')
+            WHERE excluded.last_processed_message_id
+                  > tool_batch_cursors.last_processed_message_id
+            """,
+            (self.worker_name, str(channel_id), int(message_id)),
+        )
+        return cursor.rowcount == 1
+
     # --- 建批 ---------------------------------------------------------------
 
     def create_conversation_batch(
@@ -389,7 +437,19 @@ class ToolBatchRepository:
         now_text = _utc_text(now)
         conn = self.db._get_conn()
         try:
-            cursor = conn.execute(
+            conn.execute("BEGIN IMMEDIATE")
+            batch = conn.execute(
+                """
+                SELECT source_kind, channel_id, through_message_id
+                FROM tool_batches
+                WHERE id = ? AND status = 'running' AND lease_token = ?
+                """,
+                (str(batch_id), str(lease_token)),
+            ).fetchone()
+            if batch is None:
+                conn.rollback()
+                return False
+            conn.execute(
                 """
                 UPDATE tool_batches
                 SET status = ?, result_json = ?,
@@ -405,8 +465,19 @@ class ToolBatchRepository:
                  delivery_kind, delivery_status, last_run_id, error,
                  now_text, now_text, str(batch_id), str(lease_token)),
             )
+            # 游标和终态必须在同一个事务里推进。分两次写的话，中间崩溃会
+            # 留下「批次已经结束、但游标还停在它前面」的状态，下一轮规划
+            # 会把同一段消息重新排一遍。判定为不需要动手的空批次同样要推
+            # 进——这跟 curator 那条「空批 apply 也推进 cursor」是一回事。
+            if (batch["source_kind"] == "conversation"
+                    and batch["through_message_id"] is not None):
+                self._advance_cursor(conn, batch["channel_id"],
+                                     batch["through_message_id"])
             conn.commit()
-            return cursor.rowcount == 1
+            return True
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 

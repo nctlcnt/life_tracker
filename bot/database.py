@@ -334,6 +334,19 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_tool_batches_channel_through
                 ON tool_batches(worker_name, channel_id, through_message_id);
 
+            -- LT-176：工具 worker 处理到哪一条消息了。只管 conversation：
+            -- check_in 批次靠 source_ref 定位，没有消息区间。
+            --
+            -- 结构照 curator_cursors，因为解决的是同一个问题；两者各记各的，
+            -- 一个是记忆巩固的进度，一个是工具执行的进度。
+            CREATE TABLE IF NOT EXISTS tool_batch_cursors (
+                worker_name TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                last_processed_message_id INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY(worker_name, channel_id)
+            );
+
             -- 记忆系统 v4：异步 curator 维护的长期记忆。旧 memories 表在
             -- LT-132 前仍是 memory.md shadow，不能复用或覆盖。
             CREATE TABLE IF NOT EXISTS personal_memories (
