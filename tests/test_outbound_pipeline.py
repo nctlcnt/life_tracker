@@ -188,6 +188,39 @@ def test_terminal_failure_releases_the_next_delivery(repository):
     asyncio.run(scenario())
 
 
+def test_terminal_callback_observes_sent_delivery(repository):
+    async def scenario():
+        terminal = []
+
+        async def transport(item):
+            return [f"discord-{item['id']}"]
+
+        async def on_terminal(item, status):
+            terminal.append((item["source_type"], item["source_id"], status))
+
+        queue = OutboundQueue(
+            repository,
+            transport,
+            idle_poll_seconds=0.01,
+            on_terminal=on_terminal,
+        )
+        runner = asyncio.create_task(queue.run())
+        receipt = await queue.enqueue_message(
+            channel_id="a",
+            content="tool result",
+            source_type="tool_batch",
+            source_id="batch-1",
+            dedupe_key="tool-batch-terminal-callback",
+        )
+        await queue.stop()
+        await runner
+
+        assert receipt.status == "sent"
+        assert terminal == [("tool_batch", "batch-1", "sent")]
+
+    asyncio.run(scenario())
+
+
 def test_one_delivery_finishes_all_chunks_before_the_next(repository):
     async def scenario():
         from bot.discord_bot import _send_chat_chunks

@@ -1,12 +1,13 @@
 # 项目大脑缓存
 
-> 最后整理: 2026-08-26
+> 最后整理: 2026-08-28
 > 规则: 此文件是 plan 总览入口。specs/todos/archive 已迁 Linear (LT team)，本文件保留指针；ideas 仍为本地 markdown
 > 技术难题沉淀见 [development_log.md](../../development_log.md)
 
 ## 近期计划更新
 
 > 关键更新（新到旧）：
+> - **2026-08-28 LT-175～LT-178**：批次表/lease、游标/调用账本、两分钟心跳已依次合并进 `main`；LT-178 双层本体已在实现分支完成，包括 30 秒静默/60 秒上限、`[SILENT]` 强制建批、persona-free 工具 worker、shadow/apply、结果表达、check-in 接线与回退门禁。开关仍默认关闭，尚未部署。
 > - **2026-08-27 并行分层进度核查**：见 [并行分层进度核查（2026-08-27）](parallel-status-2026-08-27.md)。隔离 staging 自 08-26 11:00 起单独打开了 `outbound_queue_enabled`，17 小时内 `outbound_deliveries` 累计 33 条投递，覆盖全部五种来源且无重试无失败。代码已于 08-27 通过 PR #14 合并进 main，但仓库默认值仍为关闭，生产尚未启用。核查同时记录了三处缺口，其中最主要的一处是 batch / cursor / 幂等 executor / heartbeat 这一段基础设施尚未建立 issue。
 > - **2026-08-26 LT-171**：收窄 `set_scene` 到明确启用 `track_scene` 的 check-in，并将场景终止条件对齐为“下一次 check-in”；已于 08-27 通过 PR #15 合并。
 > - **2026-08-26 LT-170**：统一 `GenerationGate` 与 SQLite outbound queue 实现完成并通过 285 项后端测试及前端构建（已于 08-27 合并，见上方 08-27 那条）。
@@ -20,7 +21,7 @@
 
 当前正在投入精力的,详细介绍改动的过程和最新进展，以追踪最近的更新。
 
-- [聊天与工具并行分层](parallel-chat-tool-split.md) — 设计已定案；异步基础设施完成约一半：LT-169 的实现规格、LT-170 的统一发送队列与共享生成 gate、LT-171 的场景边界修正均已合并，其中 LT-170 已在隔离 staging 打开开关实测通过；batch / cursor / 幂等 executor / heartbeat 这一段尚未建立 issue。进度与缺口逐条见 [并行分层进度核查（2026-08-27）](parallel-status-2026-08-27.md)。LT-174（无人回应门禁与话题消费）作为后续独立质量任务；LT-172（天气快照）、LT-173（清理 Dispatch 死代码）互不依赖。
+- [聊天与工具并行分层](parallel-chat-tool-split.md) — 第 0 步异步基础设施已由 LT-170、LT-175、LT-176、LT-177 全部落地并合并；LT-178 双层本体已完成实现、待 review。仓库默认开关仍关闭，生产未启用；下一阶段应先在隔离 staging 依次验证 shadow 与 apply，再决定生产切换。LT-174（无人回应门禁与话题消费）仍是独立的内容质量任务。
 
 ## 🟢 进行中 (active)
 

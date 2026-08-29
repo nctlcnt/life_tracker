@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+import inspect
+from typing import Any, Awaitable, Callable
 
 from bot.async_pipeline.repository import (
     TERMINAL_STATUSES,
@@ -15,6 +16,7 @@ from bot.logger import get_logger
 
 logger = get_logger(__name__)
 DeliveryTransport = Callable[[dict], Awaitable[list[str] | None]]
+TerminalCallback = Callable[[dict, str], Any]
 
 
 class GenerationGate:
@@ -91,13 +93,15 @@ class OutboundQueue:
                  lease_seconds: float = 300.0,
                  max_attempts: int = 3,
                  retry_base_seconds: float = 1.0,
-                 idle_poll_seconds: float = 1.0) -> None:
+                 idle_poll_seconds: float = 1.0,
+                 on_terminal: TerminalCallback | None = None) -> None:
         self.repository = repository
         self.transport = transport
         self.lease_seconds = max(float(lease_seconds), 0.0)
         self.max_attempts = max(int(max_attempts), 1)
         self.retry_base_seconds = max(float(retry_base_seconds), 0.0)
         self.idle_poll_seconds = max(float(idle_poll_seconds), 0.01)
+        self.on_terminal = on_terminal
         self._running = False
         self._wake = asyncio.Event()
         self._waiters: dict[int, asyncio.Event] = {}
@@ -165,6 +169,25 @@ class OutboundQueue:
         if waiter:
             waiter.set()
 
+    def set_terminal_callback(
+        self, callback: TerminalCallback | None
+    ) -> None:
+        self.on_terminal = callback
+
+    async def _notify_terminal(self, delivery: dict, status: str) -> None:
+        if self.on_terminal is None:
+            return
+        try:
+            result = self.on_terminal(delivery, status)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.exception(
+                "outbound terminal callback failed: delivery=%s status=%s",
+                delivery.get("id"),
+                status,
+            )
+
     async def run(self) -> None:
         if self._running:
             raise RuntimeError("OutboundQueue is already running")
@@ -217,6 +240,7 @@ class OutboundQueue:
                 if updated:
                     logger.error(
                         f"❌ outbound delivery {delivery_id} 最终失败: {error}")
+                    await self._notify_terminal(delivery, "failed")
             else:
                 delay = min(
                     self.retry_base_seconds
@@ -242,5 +266,7 @@ class OutboundQueue:
         if not updated:
             logger.warning(
                 f"⚠️ outbound delivery {delivery_id} lease 已失效，未写入 sent")
+        else:
+            await self._notify_terminal(delivery, "sent")
         self._signal_delivery(delivery_id)
         self._wake.set()

@@ -340,7 +340,8 @@ def _format_projects(projects: list[dict] | None) -> str:
 
 def _format_deadlines(deadlines: list[dict] | None) -> str:
     if not deadlines:
-        return ""
+        # 段落整个消失，模型就分不清「确实没有」和「没告诉我」，只好自己去查。
+        return f"{LABEL_DEADLINES}\n- 当前没有待完成的 deadline"
     lines = []
     for d in deadlines:
         countdown = format_countdown(d["due_time"])
@@ -351,7 +352,8 @@ def _format_deadlines(deadlines: list[dict] | None) -> str:
 
 def _format_pending_reminders(pending: list[dict] | None) -> str:
     if not pending:
-        return ""
+        # 同上：工具策略要模型「看这个列表，那才是真相」，列表却不在 prompt 里。
+        return f"{LABEL_PENDING_REMINDERS}\n- 当前没有待触发的 reminder"
     lines = []
     for r in pending:
         countdown = format_countdown(r["trigger_time"])
@@ -420,7 +422,12 @@ def build_prompt(
 # 设计：SYSTEM_MECHANICS 已经讲清楚了"每一轮文字都会发给她"这条规则，
 # 所以这里只做极短指针、不重复规则本身。
 
-TOOL_ROUND_REMINDER = "[系统提示] 上一轮你说的话已经发出去了，不要重复。调工具时可以顺口说一句你在做什么。"
+TOOL_ROUND_REMINDER = (
+    "[系统提示] 上一轮你说的话已经发出去了，不要重复。工具调用及其结果是"
+    "你自己的脑内活动和行动结果，不是另一个人在向你汇报。继续以同一个“我”"
+    "直接对当前聊天对象说话，称对方为“你”；不要把当前聊天对象称为“她”、"
+    "“他”或“用户”，也不要说“等她/他回复”。调工具时可以顺口说一句你在做什么。"
+)
 
 # 每个工具在 tool_result 之后的"定向后置提示"。命中了才追加，没命中就只发
 # TOOL_ROUND_REMINDER。作用：把"使用 X 工具后应该怎样判断"这类规则精准投递，
@@ -476,5 +483,4 @@ def get_prompt_template(key: str, sections: dict[str, str] | None = None) -> str
     if key not in sections:
         raise KeyError(key)
     return (sections[key] or "").strip()
-
 

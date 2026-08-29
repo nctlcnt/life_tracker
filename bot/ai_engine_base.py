@@ -8,6 +8,7 @@ AI 引擎公共模块
 """
 import asyncio
 from datetime import datetime
+import re
 
 from bot.tools import POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, TOOLS
 from bot.memory.personal_repository import PersonalMemoryRepository
@@ -23,6 +24,45 @@ from config import Preset
 import config
 
 logger = get_logger(__name__)
+
+CHAT_WITHOUT_BUSINESS_TOOLS = (
+    "Your private execution track runs separately inside the same assistant. "
+    "Its structured return is private internal state, not user-facing text and "
+    "not another speaker. You have no business tools in this call. Never claim "
+    "that something was recorded, created, changed, deleted, queried, or "
+    "scheduled until that internal result confirms it. Never write or simulate "
+    "tool calls, tool markup such as <tool_call>, function-call JSON, tool names, "
+    "or arguments as visible prose. If there is no genuine conversational reply "
+    "to give yet, return exactly [SILENT]."
+)
+
+_PSEUDO_TOOL_CALL = re.compile(r"(?im)^\s*<\s*tool_call(?:\s[^>]*)?>")
+
+
+def sanitize_toolless_chat_output(text: str) -> str:
+    """Keep private execution protocol out of the user-visible chat track."""
+    value = str(text or "").strip()
+    if _PSEUDO_TOOL_CALL.search(value):
+        logger.warning("聊天轨生成了伪工具调用，已转为 [SILENT]")
+        return "[SILENT]"
+    return value
+
+# These tools touch only this process's SQLite database.  The execution track
+# can therefore run the business operation and its tool_batch_calls ledger row
+# in one transaction.  External reads stay on the async executor below.
+SQLITE_TRANSACTIONAL_TOOL_NAMES = {
+    "set_scene",
+    "log_timeline_event",
+    "set_reminder",
+    "cancel_reminders",
+    "delete_reminder",
+    "list_reminders",
+    "update_timeline_event",
+    "delete_timeline_event",
+    "add_deadline",
+    "complete_deadline",
+    "delete_deadline",
+}
 
 
 def _memory_service(db: Database,
@@ -122,9 +162,13 @@ def _build_prompt(db: Database, mode: str,
     if not include("include_relevant_history"):
         relevant_history = None
 
+    sections = db.get_prompt_sections()
+    if not include("include_tools"):
+        sections = dict(sections, tools="")
+
     return build_prompt(
         mode,
-        sections=db.get_prompt_sections(),
+        sections=sections,
         memories=memories or None,
         # 分档渲染好的整块直接当 markdown 传：_format_memories 的第一条分支就是
         # "有现成文本就原样用"，两条来源共用同一个占位符，互斥。
@@ -208,7 +252,8 @@ async def _search_history(db: Database, args: dict,
 
 
 def _execute_tool(db: Database, tool_name: str, args: dict,
-                  memory_service: MemoryService | None = None) -> dict:
+                  memory_service: MemoryService | None = None, *,
+                  conn=None) -> dict:
     """执行具体的工具调用，返回结果"""
     if tool_name == "set_scene":
         # 场景摘要写进会话状态，持续到下一个 check-in 触发。
@@ -220,6 +265,7 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
             check_in_name=str(args.get("_check_in_name") or "unknown"),
             description=description,
             now=datetime.now(),
+            conn=conn,
         )
         return {"success": True, "message": "场景已记录"}
 
@@ -232,7 +278,7 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
                     "success": False,
                     "message": "Focus 事件必须填写 project_name，且只能使用【现有项目列表】里的项目。",
                 }
-            if not db.project_exists(project_name):
+            if not db.project_exists(project_name, conn=conn):
                 return {
                     "success": False,
                     "message": f"未知项目: {project_name}。只能使用用户手动建立的项目；不能自行新建项目名。",
@@ -248,10 +294,11 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
             session_id=args.get("session_id"),
             is_parallel=False,
             project_name=project_name,
+            conn=conn,
         )
         old_id = args.get("session_id")
         if old_id:
-            db.update_event(old_id, session_id=old_id)
+            db.update_event(old_id, session_id=old_id, conn=conn)
         return {"success": True, "event_id": event_id, "message": "事件已记录"}
 
     elif tool_name == "set_reminder":
@@ -260,26 +307,27 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
                 trigger_time=args["trigger_time"],
                 action=args["action"],
                 group_id=args.get("group_id"),
-                priority=args.get("priority", "normal")
+                priority=args.get("priority", "normal"),
+                conn=conn,
             )
         except ValueError as e:
             return {"success": False, "message": str(e)}
         return {"success": True, "reminder_id": reminder_id, "message": "提醒已设置"}
 
     elif tool_name == "cancel_reminders":
-        count = db.cancel_reminders_by_group(args.get("group_id"))
+        count = db.cancel_reminders_by_group(args.get("group_id"), conn=conn)
         return {"success": True, "cancelled_count": count, "message": "相关提醒已取消"}
 
     elif tool_name == "delete_reminder":
         rid = args.get("reminder_id")
-        ok = db.cancel_reminder_by_id(rid)
+        ok = db.cancel_reminder_by_id(rid, conn=conn)
         if ok:
             return {"success": True, "reminder_id": rid, "message": "该条 reminder 已删除"}
         return {"success": False, "reminder_id": rid,
                 "message": f"未找到 status=pending 的 reminder id={rid}（可能已触发或已取消）"}
 
     elif tool_name == "list_reminders":
-        rems = db.list_active_reminders()
+        rems = db.list_active_reminders(conn=conn)
         return {"success": True, "reminders": rems, "count": len(rems)}
 
     elif tool_name == "query_calendar":
@@ -305,34 +353,34 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
         fields = {k: args[k] for k in ("end_time", "content", "category") if k in args}
         if "project_name" in args:
             project_name = (args.get("project_name") or "").strip() or None
-            if not project_name or not db.project_exists(project_name):
+            if not project_name or not db.project_exists(project_name, conn=conn):
                 return {
                     "success": False,
                     "message": f"未知项目: {project_name}。只能使用用户手动建立的项目；不能自行新建项目名。",
                 }
             fields["project_name"] = project_name
         if fields.get("category") == "Focus" and "project_name" not in fields:
-            existing = db.get_event_by_id(args["event_id"])
+            existing = db.get_event_by_id(args["event_id"], conn=conn)
             project_name = (existing or {}).get("project_name")
-            if not project_name or not db.project_exists(project_name):
+            if not project_name or not db.project_exists(project_name, conn=conn):
                 return {
                     "success": False,
                     "message": "更新为 Focus 事件时必须提供有效 project_name，且只能使用【现有项目列表】里的项目。",
                 }
         # notes 追加模式：新 notes 拼接到已有内容后面
         if "notes" in args and args["notes"]:
-            existing = db.get_event_by_id(args["event_id"])
+            existing = db.get_event_by_id(args["event_id"], conn=conn)
             if existing and existing.get("notes"):
                 fields["notes"] = existing["notes"] + "\n" + args["notes"]
             else:
                 fields["notes"] = args["notes"]
-        ok = db.update_event(args["event_id"], **fields)
+        ok = db.update_event(args["event_id"], conn=conn, **fields)
         if ok:
             return {"success": True, "message": "事件已更新"}
         return {"success": False, "message": f"未找到 event_id={args['event_id']}"}
 
     elif tool_name == "delete_timeline_event":
-        ok = db.delete_event(args["event_id"])
+        ok = db.delete_event(args["event_id"], conn=conn)
         if ok:
             return {"success": True, "message": "事件已删除"}
         return {"success": False, "message": f"未找到 event_id={args['event_id']}"}
@@ -365,17 +413,18 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
         deadline_id = db.add_deadline(
             title=args["title"],
             due_time=args["due_time"],
+            conn=conn,
         )
         return {"success": True, "deadline_id": deadline_id, "message": "Deadline 已记录"}
 
     elif tool_name == "complete_deadline":
-        ok = db.complete_deadline(args["deadline_id"])
+        ok = db.complete_deadline(args["deadline_id"], conn=conn)
         if ok:
             return {"success": True, "message": "Deadline 已标记完成"}
         return {"success": False, "message": f"未找到 active 的 deadline_id={args['deadline_id']}"}
 
     elif tool_name == "delete_deadline":
-        ok = db.delete_deadline(args["deadline_id"])
+        ok = db.delete_deadline(args["deadline_id"], conn=conn)
         if ok:
             return {"success": True, "message": "Deadline 已删除"}
         return {"success": False, "message": f"未找到 deadline_id={args['deadline_id']}"}
@@ -429,7 +478,7 @@ async def chat(db: Database, messages: list[dict],
                call_with_tools_fn, preset: Preset,
                send_callback=None, tool_callback=None,
                memory_service: MemoryService | None = None,
-               window=None) -> str:
+               window=None, tool_names: set[str] | None = None) -> str:
     """
     处理用户消息的完整流程。
     messages: 调用方（discord_bot）已经装配好的 token 窗口消息列表，
@@ -467,9 +516,17 @@ async def chat(db: Database, messages: list[dict],
     relevant_history = memory_context.relevant_history
 
     # 构建 PromptParts（静态 + 动态上下文一步到位）
-    prompt = _build_prompt(db, "chat", weather=weather,
-                           calendar=calendar, relevant_history=relevant_history,
-                           memory_service=memory)
+    prompt = _build_prompt(
+        db,
+        "chat",
+        weather=weather,
+        calendar=calendar,
+        relevant_history=relevant_history,
+        context_config={"include_tools": tool_names is None or bool(tool_names)},
+        memory_service=memory,
+    )
+    if tool_names is not None and not tool_names:
+        prompt = prompt.with_suffix(CHAT_WITHOUT_BUSINESS_TOOLS)
 
     # 场景状态：让"我们正在做什么"在用户回复之后仍然存在。
     #
@@ -486,13 +543,23 @@ async def chat(db: Database, messages: list[dict],
                 window=window.trace_info() if window else None)
     try:
         # 调用大模型（可能需要多轮 tool calling）
+        effective_send_callback = send_callback
+        if tool_names is not None and not tool_names and send_callback is not None:
+            async def _send_toolless_reply(text: str) -> None:
+                await send_callback(sanitize_toolless_chat_output(text))
+
+            effective_send_callback = _send_toolless_reply
+
         reply = await call_with_tools_fn(
             db, prompt, messages,
-            send_callback=send_callback,
+            send_callback=effective_send_callback,
             tool_callback=tool_callback,
             preset=preset,
+            tool_names=tool_names,
             memory_service=memory,
         )
+        if tool_names is not None and not tool_names:
+            reply = sanitize_toolless_chat_output(reply)
 
         # 备份 AI 回复到 DB
         db.add_message("assistant", reply)
@@ -515,7 +582,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            context_config: dict | None = None,
                            memory_service: MemoryService | None = None,
                            window=None,
-                           track_scene: bool = False) -> str | None:
+                           track_scene: bool = False,
+                           clear_scene: bool = True) -> str | None:
     """
     统一的调度入口：处理主动聊天、提醒触发、睡前提醒等所有非用户消息的 AI 调用。
 
@@ -536,7 +604,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
 
     # 任何新的 check-in 都是旧场景唯一的终止条件。启用 track_scene 的
     # check-in 可在随后的工具轮重新写入；reminder 不属于 check-in。
-    if trigger in {"poll", "bedtime", "check_in"}:
+    if clear_scene and trigger in {"poll", "bedtime", "check_in"}:
         scene_state.clear(db, str(config.CHANNEL_ID))
 
     # 注：历史为空不代表"没聊过"——也可能是 bot 刚重启或 Discord 历史拉取失败。
@@ -544,26 +612,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     # 动态上下文自主决定要不要说话。真觉得没得说，它可以返回 [SILENT]。
 
     # 早上时段查天气
-    context_config = context_config or {}
-    include_weather = context_config.get("include_weather", True)
-    include_calendar = context_config.get("include_calendar", True)
-    weather = await get_weather_brief() if include_weather and is_morning() else None
-    calendar = await get_calendar_context() if include_calendar else None
-
-    prompt_parts = _build_prompt(
-        db, "poll", weather=weather,
-        calendar=calendar, context_config=context_config,
-        memory_service=memory_service,
-    )
-
-    if check_in_name:
-        prompt = f"[check_in:{check_in_name}]\n{prompt}"
-    messages = [
-        *history,
-        {"role": "user", "content": prompt}
-    ]
-    messages = _ensure_valid_messages(messages)
-
+    context_config = dict(context_config or {})
     tool_names = None
     profile = tool_profile
     if profile is None:
@@ -580,10 +629,31 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
         tool_names = set()
 
     # set_scene 只在本次 check-in 明确打开 track_scene 时才可用。
-    # 不放进 POLL_TOOL_NAMES 之类的固定集合：那样每次主动消息都会带上它，
-    # 而多数 check-in（睡前、morning）说完就结束，不需要延续场景。
     if track_scene and tool_names is not None:
         tool_names = set(tool_names) | {"set_scene"}
+    if tool_names is not None and not tool_names:
+        context_config["include_tools"] = False
+
+    include_weather = context_config.get("include_weather", True)
+    include_calendar = context_config.get("include_calendar", True)
+    weather = await get_weather_brief() if include_weather and is_morning() else None
+    calendar = await get_calendar_context() if include_calendar else None
+
+    prompt_parts = _build_prompt(
+        db, "poll", weather=weather,
+        calendar=calendar, context_config=context_config,
+        memory_service=memory_service,
+    )
+    if tool_names is not None and not tool_names:
+        prompt_parts = prompt_parts.with_suffix(CHAT_WITHOUT_BUSINESS_TOOLS)
+
+    if check_in_name:
+        prompt = f"[check_in:{check_in_name}]\n{prompt}"
+    messages = [
+        *history,
+        {"role": "user", "content": prompt}
+    ]
+    messages = _ensure_valid_messages(messages)
 
     trace.start(trigger=trigger or "scheduled", model=preset.model, provider=preset.provider,
                 prompt_parts=prompt_parts, messages=messages,

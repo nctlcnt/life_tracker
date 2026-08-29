@@ -1,9 +1,9 @@
 """LT-177：每两分钟跑一次的心跳。
 
-它做四件事：补漏、投递、收尾、报警。**它不执行批次**——那需要工具模型，
-属于 LT-178。第 4.3 节那套失败降级阶梯里，「重试一次」「返回做不到」这
-几级也在执行的那一侧；心跳只管最后一级，把重试次数用完的批次终结掉并
-发出告警。
+它做四件事：补漏、投递、收尾、报警。**它不执行批次**——LT-178 的
+`ToolWorker` 负责工具模型和执行重试。第 4.3 节那套失败降级阶梯里，
+「重试一次」「返回做不到」这几级也在执行侧；心跳只管最后一级，把历史上
+已经留在 retry_wait 且耗尽预算的批次终结掉并发出告警。
 
 过期批次的回收同样不在这里：按 LT-175 的决定，`claim_next` 自己会取回
 占用过期的 `running`，心跳不自行转换状态。
@@ -25,6 +25,7 @@ from .outbound import OutboundQueue
 from .tool_batches import ToolBatchRepository
 
 logger = get_logger(__name__)
+PlanCallback = Callable[[str], dict[str, Any]]
 
 
 HEARTBEAT_SECONDS = 120.0
@@ -49,6 +50,7 @@ class BatchHeartbeat:
         backlog_threshold: int = BACKLOG_THRESHOLD,
         reaction: str = DONE_REACTION,
         on_alert: Callable[[str, dict[str, Any]], None] | None = None,
+        plan_callback: PlanCallback | None = None,
     ) -> None:
         self.db = db
         self.repository = repository
@@ -60,6 +62,7 @@ class BatchHeartbeat:
         self.backlog_threshold = max(int(backlog_threshold), 1)
         self.reaction = reaction
         self.on_alert = on_alert
+        self.plan_callback = plan_callback
         self._running = False
         self._wake = asyncio.Event()
 
@@ -109,20 +112,29 @@ class BatchHeartbeat:
 
     async def tick(self) -> dict[str, Any]:
         """跑一轮，返回这一轮做了什么，便于观察与测试。"""
+        reconciled = self.repository.reconcile_queued_deliveries()
         planned = self._plan()
         reaped = self._reap()
         delivered = await self._deliver()
         backlog = self._check_backlog()
-        return {"planned": planned, "reaped": reaped,
+        return {"reconciled": reconciled,
+                "planned": planned, "reaped": reaped,
                 "delivered": delivered, "backlog": backlog}
 
     def _plan(self) -> list[dict[str, Any]]:
         """补漏：确认每个频道的新消息都有批次在排队。"""
         results = []
         for channel_id in self.channel_ids:
-            outcome = plan_next_batch(
-                self.db, self.repository, channel_id=channel_id,
-                execution_mode=self.execution_mode)
+            if self.plan_callback is not None:
+                outcome = self.plan_callback(channel_id)
+            else:
+                # Compatibility for the standalone LT-177 component.  The
+                # runtime injects BatchCoordinator.plan_channel so heartbeat
+                # recovery obeys the same 30s/60s timing rule as the normal
+                # low-latency path.
+                outcome = plan_next_batch(
+                    self.db, self.repository, channel_id=channel_id,
+                    execution_mode=self.execution_mode)
             results.append({"channel_id": channel_id, **outcome})
         return results
 

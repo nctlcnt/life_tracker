@@ -5,6 +5,7 @@
 import sqlite3
 import os
 import json
+from contextlib import contextmanager
 from datetime import datetime, time, timezone
 from typing import Optional
 
@@ -47,6 +48,23 @@ class Database:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    @contextmanager
+    def _use_conn(self, conn: sqlite3.Connection | None = None, *, write=False):
+        """Use a caller-owned transaction or manage a short local connection."""
+        owns_conn = conn is None
+        active = conn or self._get_conn()
+        try:
+            yield active
+            if owns_conn and write:
+                active.commit()
+        except BaseException:
+            if owns_conn and write:
+                active.rollback()
+            raise
+        finally:
+            if owns_conn:
+                active.close()
 
     def _init_tables(self):
         conn = self._get_conn()
@@ -1122,27 +1140,23 @@ class Database:
                   content: str, category: str = "uncategorized",
                   notes: Optional[str] = None, session_id: Optional[int] = None,
                   is_parallel: bool = False,
-                  project_name: Optional[str] = None) -> int:
+                  project_name: Optional[str] = None, *, conn=None) -> int:
         """添加一条时间轴事件，返回 event id。"""
-        conn = self._get_conn()
-        cursor = conn.execute(
-            "INSERT INTO events (start_time, end_time, content, category, notes, session_id, is_parallel, project_name) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (start_time, end_time, content, category, notes, session_id, 1 if is_parallel else 0, project_name)
-        )
-        conn.commit()
-        event_id = cursor.lastrowid
-        conn.close()
-        return event_id
+        with self._use_conn(conn, write=True) as active:
+            cursor = active.execute(
+                "INSERT INTO events (start_time, end_time, content, category, notes, session_id, is_parallel, project_name) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (start_time, end_time, content, category, notes, session_id,
+                 1 if is_parallel else 0, project_name)
+            )
+            return cursor.lastrowid
 
-    def delete_event(self, event_id: int) -> bool:
+    def delete_event(self, event_id: int, *, conn=None) -> bool:
         """删除一条时间轴事件。返回是否成功。"""
-        conn = self._get_conn()
-        cursor = conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
-        conn.commit()
-        affected = cursor.rowcount
-        conn.close()
-        return affected > 0
+        with self._use_conn(conn, write=True) as active:
+            cursor = active.execute(
+                "DELETE FROM events WHERE id = ?", (event_id,))
+            return cursor.rowcount > 0
 
     def find_similar_events(self, content: str, category: Optional[str],
                             start: str, end: str) -> list[dict]:
@@ -1166,7 +1180,7 @@ class Database:
         conn.close()
         return [dict(r) for r in rows]
 
-    def update_event(self, event_id: int, **fields) -> bool:
+    def update_event(self, event_id: int, *, conn=None, **fields) -> bool:
         """更新指定事件的字段，只更新传入的字段。返回是否成功（event_id 存在）。"""
         allowed = {"end_time", "content", "category", "notes", "session_id", "is_parallel", "project_name"}
         updates = {k: v for k, v in fields.items() if k in allowed}
@@ -1174,14 +1188,10 @@ class Database:
             return False
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [event_id]
-        conn = self._get_conn()
-        cursor = conn.execute(
-            f"UPDATE events SET {set_clause} WHERE id = ?", values
-        )
-        conn.commit()
-        affected = cursor.rowcount
-        conn.close()
-        return affected > 0
+        with self._use_conn(conn, write=True) as active:
+            cursor = active.execute(
+                f"UPDATE events SET {set_clause} WHERE id = ?", values)
+            return cursor.rowcount > 0
 
     def get_events(self, start: str, end: str) -> list[dict]:
         """查询时间范围内的事件（包括跨日事件：start_time 在范围之前但 end_time 在范围内的）"""
@@ -1213,12 +1223,12 @@ class Database:
         conn.close()
         return [dict(row) for row in rows]
 
-    def get_event_by_id(self, event_id: int) -> Optional[dict]:
+    def get_event_by_id(self, event_id: int, *, conn=None) -> Optional[dict]:
         """根据 ID 获取单条事件"""
-        conn = self._get_conn()
-        row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
-        conn.close()
-        return dict(row) if row else None
+        with self._use_conn(conn) as active:
+            row = active.execute(
+                "SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+            return dict(row) if row else None
 
     def get_all_categories(self) -> list[str]:
         """获取所有已有的分类"""
@@ -1256,15 +1266,15 @@ class Database:
         conn.close()
         return [dict(row) for row in rows]
 
-    def project_exists(self, project_name: str) -> bool:
+    def project_exists(self, project_name: str, *, conn=None) -> bool:
         """检查项目是否在手动项目清单中。"""
         name = (project_name or "").strip()
         if not name:
             return False
-        conn = self._get_conn()
-        row = conn.execute("SELECT 1 FROM projects WHERE name = ?", (name,)).fetchone()
-        conn.close()
-        return row is not None
+        with self._use_conn(conn) as active:
+            row = active.execute(
+                "SELECT 1 FROM projects WHERE name = ?", (name,)).fetchone()
+            return row is not None
 
     def add_project(self, project_name: str) -> bool:
         """创建一个项目，返回是否新增（已存在则 False）。"""
@@ -1736,7 +1746,7 @@ class Database:
         return dt
 
     def add_reminder(self, trigger_time: str, action: str, group_id: str = None,
-                     priority: str = "normal") -> int:
+                     priority: str = "normal", *, conn=None) -> int:
         """添加一个提醒"""
         trigger_dt = self.normalize_local_time(trigger_time)
         now = datetime.now()
@@ -1752,20 +1762,20 @@ class Database:
             trigger_dt=trigger_dt,
             action=action,
             group_id=group_id,
+            conn=conn,
         )
         if existing_id is not None:
             return existing_id
 
-        conn = self._get_conn()
-        cursor = conn.execute(
-            "INSERT INTO reminders (trigger_time, action, group_id, priority) VALUES (?, ?, ?, ?)",
-            (normalized_trigger_time, action, group_id, priority)
-        )
-        conn.commit()
-        reminder_id = cursor.lastrowid
-        conn.close()
+        owns_conn = conn is None
+        with self._use_conn(conn, write=True) as active:
+            cursor = active.execute(
+                "INSERT INTO reminders (trigger_time, action, group_id, priority) VALUES (?, ?, ?, ?)",
+                (normalized_trigger_time, action, group_id, priority)
+            )
+            reminder_id = cursor.lastrowid
         # 通知 scheduler 重新计算倒计时
-        if self._on_reminder_added:
+        if owns_conn and self._on_reminder_added:
             self._on_reminder_added()
         return reminder_id
 
@@ -1775,23 +1785,23 @@ class Database:
         trigger_dt: datetime,
         action: str,
         group_id: str = None,
+        conn=None,
     ) -> Optional[int]:
         """查找等价 pending reminder，防止 AI/重试重复插入。"""
         normalized_action = (action or "").strip()
         normalized_group = (group_id or "").strip()
-        conn = self._get_conn()
-        if normalized_group:
-            rows = conn.execute(
-                "SELECT * FROM reminders WHERE status = 'pending' AND action = ? AND group_id = ?",
-                (normalized_action, normalized_group),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM reminders WHERE status = 'pending' AND action = ? "
-                "AND (group_id IS NULL OR group_id = '')",
-                (normalized_action,),
-            ).fetchall()
-        conn.close()
+        with self._use_conn(conn) as active:
+            if normalized_group:
+                rows = active.execute(
+                    "SELECT * FROM reminders WHERE status = 'pending' AND action = ? AND group_id = ?",
+                    (normalized_action, normalized_group),
+                ).fetchall()
+            else:
+                rows = active.execute(
+                    "SELECT * FROM reminders WHERE status = 'pending' AND action = ? "
+                    "AND (group_id IS NULL OR group_id = '')",
+                    (normalized_action,),
+                ).fetchall()
 
         for row in rows:
             item = dict(row)
@@ -1857,33 +1867,27 @@ class Database:
         conn.commit()
         conn.close()
 
-    def cancel_reminder_by_id(self, reminder_id: int) -> bool:
+    def cancel_reminder_by_id(self, reminder_id: int, *, conn=None) -> bool:
         """按 id 精准取消单条 pending reminder（用于 AI 去重）。
         只对 status='pending' 的条目生效；已触发/已取消的不会被重复动。
         返回是否命中。"""
-        conn = self._get_conn()
-        cursor = conn.execute(
-            "UPDATE reminders SET status = 'cancelled', done = 1 WHERE id = ? AND status = 'pending'",
-            (reminder_id,)
-        )
-        conn.commit()
-        affected = cursor.rowcount
-        conn.close()
-        return affected > 0
+        with self._use_conn(conn, write=True) as active:
+            cursor = active.execute(
+                "UPDATE reminders SET status = 'cancelled', done = 1 WHERE id = ? AND status = 'pending'",
+                (reminder_id,)
+            )
+            return cursor.rowcount > 0
 
-    def cancel_reminders_by_group(self, group_id: str) -> int:
+    def cancel_reminders_by_group(self, group_id: str, *, conn=None) -> int:
         """取消某个 group 下所有 pending 的 reminder，返回取消条数"""
         if not group_id:
             return 0
-        conn = self._get_conn()
-        cursor = conn.execute(
-            "UPDATE reminders SET status = 'cancelled', done = 1 WHERE group_id = ? AND status = 'pending'",
-            (group_id,)
-        )
-        conn.commit()
-        affected = cursor.rowcount
-        conn.close()
-        return affected
+        with self._use_conn(conn, write=True) as active:
+            cursor = active.execute(
+                "UPDATE reminders SET status = 'cancelled', done = 1 WHERE group_id = ? AND status = 'pending'",
+                (group_id,)
+            )
+            return cursor.rowcount
 
     def get_pending_reminders_by_group(self, group_id: str) -> list[dict]:
         """查询某个 group 下还剩多少 pending 的 reminder"""
@@ -1909,14 +1913,13 @@ class Database:
         conn.close()
         return row[0] if row else 0
 
-    def list_active_reminders(self) -> list[dict]:
+    def list_active_reminders(self, *, conn=None) -> list[dict]:
         """列出所有 pending 的 reminder（给 AI 看/给用户查）"""
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM reminders WHERE status = 'pending' ORDER BY trigger_time ASC"
-        ).fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
+        with self._use_conn(conn) as active:
+            rows = active.execute(
+                "SELECT * FROM reminders WHERE status = 'pending' ORDER BY trigger_time ASC"
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def get_next_reminder_time(self) -> Optional[str]:
         """获取下一条待触发 reminder 的 trigger_time（含 hidden），用于 scheduler 倒计时"""
@@ -2118,16 +2121,14 @@ class Database:
 
     # ============ 应用状态 KV ============
 
-    def set_state(self, key: str, value: str):
+    def set_state(self, key: str, value: str, *, conn=None):
         """写入/更新一条应用状态"""
-        conn = self._get_conn()
-        conn.execute(
-            "INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, datetime('now')) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
-            (key, value)
-        )
-        conn.commit()
-        conn.close()
+        with self._use_conn(conn, write=True) as active:
+            active.execute(
+                "INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, datetime('now')) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+                (key, value)
+            )
 
     def get_state(self, key: str) -> Optional[str]:
         """读取一条应用状态，不存在返回 None"""
@@ -2140,38 +2141,30 @@ class Database:
 
     # ============ Deadline 管理 ============
 
-    def add_deadline(self, title: str, due_time: str) -> int:
+    def add_deadline(self, title: str, due_time: str, *, conn=None) -> int:
         """添加一条 deadline，返回 id"""
-        conn = self._get_conn()
-        cursor = conn.execute(
-            "INSERT INTO deadlines (title, due_time) VALUES (?, ?)",
-            (title, due_time)
-        )
-        conn.commit()
-        deadline_id = cursor.lastrowid
-        conn.close()
-        return deadline_id
+        with self._use_conn(conn, write=True) as active:
+            cursor = active.execute(
+                "INSERT INTO deadlines (title, due_time) VALUES (?, ?)",
+                (title, due_time)
+            )
+            return cursor.lastrowid
 
-    def complete_deadline(self, deadline_id: int) -> bool:
+    def complete_deadline(self, deadline_id: int, *, conn=None) -> bool:
         """标记 deadline 为已完成"""
-        conn = self._get_conn()
-        cursor = conn.execute(
-            "UPDATE deadlines SET status = 'completed' WHERE id = ? AND status = 'active'",
-            (deadline_id,)
-        )
-        conn.commit()
-        affected = cursor.rowcount
-        conn.close()
-        return affected > 0
+        with self._use_conn(conn, write=True) as active:
+            cursor = active.execute(
+                "UPDATE deadlines SET status = 'completed' WHERE id = ? AND status = 'active'",
+                (deadline_id,)
+            )
+            return cursor.rowcount > 0
 
-    def delete_deadline(self, deadline_id: int) -> bool:
+    def delete_deadline(self, deadline_id: int, *, conn=None) -> bool:
         """删除一条 deadline"""
-        conn = self._get_conn()
-        cursor = conn.execute("DELETE FROM deadlines WHERE id = ?", (deadline_id,))
-        conn.commit()
-        affected = cursor.rowcount
-        conn.close()
-        return affected > 0
+        with self._use_conn(conn, write=True) as active:
+            cursor = active.execute(
+                "DELETE FROM deadlines WHERE id = ?", (deadline_id,))
+            return cursor.rowcount > 0
 
     def get_active_deadlines(self) -> list[dict]:
         """获取所有 active 的 deadline，按 due_time 正序"""

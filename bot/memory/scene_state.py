@@ -54,7 +54,7 @@ def _key(channel_id: str) -> str:
 
 
 def start(db, channel_id: str, *, check_in_name: str, description: str,
-          now: datetime) -> Scene:
+          now: datetime, conn=None) -> Scene:
     """开始一个新场景，覆盖旧的。
 
     覆盖是有意的：现有 check-in 互相就是彼此的终止条件（采访 15:59 触发，
@@ -67,7 +67,10 @@ def start(db, channel_id: str, *, check_in_name: str, description: str,
         description=" ".join(str(description).split()),
         started_at=stamp,
     )
-    db.set_state(_key(channel_id), json.dumps(scene.__dict__, ensure_ascii=False))
+    db.set_state(
+        _key(channel_id), json.dumps(scene.__dict__, ensure_ascii=False),
+        conn=conn,
+    )
     return scene
 
 

@@ -168,3 +168,48 @@ def test_recording_into_a_finished_batch_is_rejected(repository, batch):
     repository.mark_completed(batch["id"], batch["lease_token"])
     record, written = _record(repository, batch, 0)
     assert (record, written) == (None, False)
+
+
+def test_atomic_call_rolls_back_business_write_before_ledger_commit(
+        db, repository, batch):
+    def crash_after_business_write(conn):
+        conn.execute(
+            "INSERT INTO events (start_time, content, category) VALUES (?, ?, ?)",
+            ("2026-08-29T12:00:00", "午饭", "Routine"),
+        )
+        raise RuntimeError("simulated crash before ledger write")
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        repository.execute_atomic_call(
+            batch["id"], 0, batch["lease_token"],
+            tool_name="log_timeline_event",
+            arguments={"content": "午饭"},
+            executor=crash_after_business_write,
+        )
+
+    conn = db._get_conn()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    finally:
+        conn.close()
+    assert repository.calls(batch["id"]) == []
+
+    def succeed(conn):
+        cursor = conn.execute(
+            "INSERT INTO events (start_time, content, category) VALUES (?, ?, ?)",
+            ("2026-08-29T12:00:00", "午饭", "Routine"),
+        )
+        return {"success": True, "event_id": cursor.lastrowid}
+
+    record, written = repository.execute_atomic_call(
+        batch["id"], 0, batch["lease_token"],
+        tool_name="log_timeline_event",
+        arguments={"content": "午饭"}, executor=succeed,
+    )
+    assert written is True
+    assert record["result"]["success"] is True
+    conn = db._get_conn()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+    finally:
+        conn.close()
