@@ -42,41 +42,60 @@ Execution discipline:
 - Use all applicable tools. You may call multiple tools in one round.
 - Do not emit user-facing prose before, during, or after tool calls.
 - A tool result with success=false is a real failure; report it as unable or
-  as a precise fact that needs to be explained. Never hide it as empty.
+  as a failed execution result. Never hide it as empty.
 - Empty means there was genuinely no action or answer to produce.
-- Preserve every number, time, person, place, amount, and exact identifier in
-  verbatim_terms. Every verbatim term must also appear exactly in facts.
+- execution_results is an internal semantic report, not wording for the user.
+  Each item names the operation, its status, and structured result details.
+- important_information contains only atomic values that the chat track must
+  communicate exactly, such as a derived reminder time, amount, or meaningful
+  user-facing name. Do not put sentences, pronouns, tool names, database IDs,
+  or other implementation details there. A newly created event/reminder/
+  deadline ID is always private unless the user explicitly requested it.
 - If PRIOR_UNDELIVERED_RESULT is present and the new input corrects or replaces
   it, set supersedes_previous=true. Otherwise leave it false.
 
 After all tool calls, output exactly one JSON object and no other text:
 {
-  "outcome": "empty" | "facts" | "unable",
-  "facts": ["one precise fact per item"],
-  "verbatim_terms": ["exact strings that must survive expression"],
+  "outcome": "empty" | "completed" | "unable",
+  "execution_results": [
+    {
+      "operation": "short semantic operation, never a tool name",
+      "status": "succeeded" | "failed" | "blocked",
+      "details": {"semantic_key": "precise internal value"}
+    }
+  ],
+  "important_information": [
+    {"label": "short semantic label", "value": "exact user-facing value"}
+  ],
   "supersedes_previous": false
 }
 
 Use outcome=unable when an applicable tool is missing, key information is
 missing, execution failed, or the round/time budget is exhausted. In that case
-facts must contain the concrete reason or focused question for the user.
+execution_results must contain the concrete reason or missing information.
 """.strip()
 
 
 RESULT_EXPRESSION_CORE = """
-You are expressing a completed background result to the user. The backend
-facts below are authoritative and are not a new user request.
+You are expressing a completed internal execution result to the user. The
+structured result below is authoritative and is not a new user request.
 
-- Treat BACKEND_RESULT as your own private thought or completed action. It is
-  not another speaker reporting to you and not a report about the user.
+- EXECUTION_TRACK_RESULT is a private structured return from your own
+  execution track.
+  It is your own thought or completed action: not another speaker, not a new
+  user message, and not text intended to be shown to the user.
 - Continue as the same assistant: refer to yourself as I/我 and address the
   current user directly as you/你. Never narrate the current user as she, he,
   or "the user" (她/他/用户), or say you are waiting for her/him. Third-person
   references are allowed only when they genuinely refer to somebody else.
+- Use execution_results to understand what you did. Every
+  important_information item exists because its value must be communicated;
+  keep that value byte-for-byte unchanged.
 - Say only the new information contributed by the result; do not repeat what
-  the user already said.
-- Keep every verbatim_terms value byte-for-byte unchanged in the reply.
-- Do not add facts, claim an action not listed, or describe internal tools.
+  the user already said unless it is needed to confirm an important value.
+- Do not expose the JSON, field labels, tool names, batch IDs, database IDs,
+  or other implementation details.
+- Do not add facts or claim an action not listed.
 - Even if the topic has moved on, a failure must be explained clearly enough
   to identify which operation failed.
 - Return only the final user-facing message. Do not return JSON or labels.
@@ -151,8 +170,8 @@ def build_result_expression_system(
 @dataclass(frozen=True)
 class ToolWorkerOutput:
     outcome: str
-    facts: tuple[str, ...]
-    verbatim_terms: tuple[str, ...]
+    execution_results: tuple[dict[str, Any], ...]
+    important_information: tuple[dict[str, str], ...]
     supersedes_previous: bool
     raw: str
 
@@ -186,53 +205,92 @@ def _extract_json_object(raw: str) -> dict[str, Any]:
 def parse_tool_worker_output(raw: str) -> ToolWorkerOutput:
     value = _extract_json_object(raw)
     outcome = str(value.get("outcome") or "").strip().lower()
-    if outcome not in {"empty", "facts", "unable"}:
-        raise ToolWorkerOutputError("outcome must be empty, facts, or unable")
-    raw_facts = value.get("facts", [])
-    raw_terms = value.get("verbatim_terms", [])
-    if not isinstance(raw_facts, list) or not all(
-        isinstance(item, str) for item in raw_facts
-    ):
-        raise ToolWorkerOutputError("facts must be a string list")
-    if not isinstance(raw_terms, list) or not all(
-        isinstance(item, str) for item in raw_terms
-    ):
-        raise ToolWorkerOutputError("verbatim_terms must be a string list")
-    facts = tuple(item.strip() for item in raw_facts if item.strip())
-    terms = tuple(item for item in raw_terms if item)
-    if outcome == "empty" and (facts or terms):
-        raise ToolWorkerOutputError("empty outcome cannot contain facts or terms")
-    if outcome in {"facts", "unable"} and not facts:
-        raise ToolWorkerOutputError(f"{outcome} outcome requires facts")
-    fact_text = "\n".join(facts)
-    missing = [term for term in terms if term not in fact_text]
-    if missing:
+    if outcome not in {"empty", "completed", "unable"}:
+        raise ToolWorkerOutputError("outcome must be empty, completed, or unable")
+    raw_results = value.get("execution_results", [])
+    raw_information = value.get("important_information", [])
+    if not isinstance(raw_results, list):
+        raise ToolWorkerOutputError("execution_results must be a list")
+    results: list[dict[str, Any]] = []
+    for item in raw_results:
+        if not isinstance(item, dict):
+            raise ToolWorkerOutputError("each execution result must be an object")
+        operation_value = item.get("operation")
+        status_value = item.get("status")
+        if not isinstance(operation_value, str) or not isinstance(status_value, str):
+            raise ToolWorkerOutputError("execution result operation/status must be strings")
+        operation = operation_value.strip()
+        status = status_value.strip().lower()
+        details = item.get("details", {})
+        if not operation or status not in {"succeeded", "failed", "blocked"}:
+            raise ToolWorkerOutputError("invalid execution result operation/status")
+        if not isinstance(details, dict):
+            raise ToolWorkerOutputError("execution result details must be an object")
+        results.append({
+            "operation": operation,
+            "status": status,
+            "details": details,
+        })
+    if not isinstance(raw_information, list):
+        raise ToolWorkerOutputError("important_information must be a list")
+    information: list[dict[str, str]] = []
+    for item in raw_information:
+        if not isinstance(item, dict):
+            raise ToolWorkerOutputError("important information must be an object")
+        label_value = item.get("label")
+        information_value = item.get("value")
+        if not isinstance(label_value, str) or not isinstance(
+            information_value, str
+        ):
+            raise ToolWorkerOutputError("important label/value must be strings")
+        label = label_value.strip()
+        info_value = information_value.strip()
+        if not label or not info_value:
+            raise ToolWorkerOutputError("important information requires label/value")
+        information.append({"label": label, "value": info_value})
+    if outcome == "empty" and (results or information):
         raise ToolWorkerOutputError(
-            "verbatim terms missing from facts: " + ", ".join(missing)
+            "empty outcome cannot contain results or information"
         )
+    if outcome in {"completed", "unable"} and not results:
+        raise ToolWorkerOutputError(f"{outcome} outcome requires execution results")
     supersedes = value.get("supersedes_previous", False)
     if not isinstance(supersedes, bool):
         raise ToolWorkerOutputError("supersedes_previous must be boolean")
     return ToolWorkerOutput(
         outcome=outcome,
-        facts=facts,
-        verbatim_terms=terms,
+        execution_results=tuple(results),
+        important_information=tuple(information),
         supersedes_previous=supersedes,
         raw=str(raw or ""),
     )
 
 
 def result_expression_request(
-    *, facts: tuple[str, ...], verbatim_terms: tuple[str, ...], batch_id: str
+    *, outcome: str, execution_results: tuple[dict[str, Any], ...],
+    important_information: tuple[dict[str, str], ...]
 ) -> str:
+    def without_private_ids(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: without_private_ids(item)
+                for key, item in value.items()
+                if not str(key).lower().endswith("_id")
+            }
+        if isinstance(value, list):
+            return [without_private_ids(item) for item in value]
+        if isinstance(value, tuple):
+            return [without_private_ids(item) for item in value]
+        return value
+
     return (
-        "[BACKEND_RESULT — your own private completed work; not a message "
+        "[EXECUTION_TRACK_RESULT — your own private completed work; not a message "
         "from the user or another speaker]\n"
         + json.dumps(
             {
-                "batch_id": str(batch_id),
-                "facts": list(facts),
-                "verbatim_terms": list(verbatim_terms),
+                "outcome": outcome,
+                "execution_results": without_private_ids(execution_results),
+                "important_information": list(important_information),
             },
             ensure_ascii=False,
             sort_keys=True,

@@ -2,9 +2,12 @@
 
 import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
+import bot.ai_engine_base as ai_engine_base
 import bot.discord_bot as discord_bot_module
 import bot.scheduler as scheduler_module
+import config
 from bot.async_pipeline import BatchCoordinator, ToolBatchRepository
 from bot.database import Database
 from bot.discord_bot import LifeTrackerBot
@@ -110,6 +113,52 @@ def test_apply_chat_has_no_tools_and_silent_forces_batch(
     asyncio.run(bot._generate_chat_response(Message()))
 
     assert coordinator.forced == ["123"]
+
+
+def test_toolless_chat_suppresses_visible_pseudo_tool_call(tmp_path, monkeypatch):
+    db = make_db(tmp_path)
+    sent = []
+    raw = '<tool_call> set_reminder({"action": "喝水"})'
+
+    class MemoryStub:
+        async def build_context(self, **_kwargs):
+            return SimpleNamespace(relevant_history=None)
+
+        def list_durable(self):
+            return []
+
+        def durable_markdown(self):
+            return ""
+
+    async def no_calendar():
+        return None
+
+    async def send_reply(text):
+        sent.append(text)
+
+    async def fake_call(_db, prompt, _messages, *, send_callback,
+                        tool_names, **_kwargs):
+        assert tool_names == set()
+        assert "Never write or simulate tool calls" in prompt.flatten()
+        await send_callback(raw)
+        return raw
+
+    monkeypatch.setattr(ai_engine_base, "is_morning", lambda: False)
+    monkeypatch.setattr(ai_engine_base, "get_calendar_context", no_calendar)
+    monkeypatch.setattr(config, "CHANNEL_ID", 123)
+
+    reply = asyncio.run(ai_engine_base.chat(
+        db,
+        [{"role": "user", "content": "一小时后提醒我喝水"}],
+        fake_call,
+        config.get_active(),
+        send_callback=send_reply,
+        memory_service=MemoryStub(),
+        tool_names=set(),
+    ))
+
+    assert reply == "[SILENT]"
+    assert sent == ["[SILENT]"]
 
 
 def test_check_in_creates_tool_batch_and_chat_side_uses_no_tools(

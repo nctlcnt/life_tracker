@@ -56,7 +56,9 @@ def claim_conversation(db, repository, *, mode="apply"):
 
 async def echo_expression(_db, _system, messages):
     payload = json.loads(messages[-1]["content"].split("\n", 1)[1])
-    return "；".join(payload["facts"]), "expression-run"
+    parts = [item["operation"] for item in payload["execution_results"]]
+    parts.extend(item["value"] for item in payload["important_information"])
+    return "；".join(parts), "expression-run"
 
 
 def make_worker(
@@ -82,12 +84,20 @@ def make_worker(
     )
 
 
-def output(outcome, facts=(), terms=(), *, supersedes=False):
+def execution(operation, status="succeeded", **details):
+    return {"operation": operation, "status": status, "details": details}
+
+
+def important(label, value):
+    return {"label": label, "value": value}
+
+
+def output(outcome, results=(), information=(), *, supersedes=False):
     return json.dumps(
         {
             "outcome": outcome,
-            "facts": list(facts),
-            "verbatim_terms": list(terms),
+            "execution_results": list(results),
+            "important_information": list(information),
             "supersedes_previous": supersedes,
         },
         ensure_ascii=False,
@@ -111,12 +121,12 @@ def test_tool_results_are_the_same_assistants_internal_activity(db):
     prompt = build_result_expression_system(db)
     flat_prompt = " ".join(prompt.split())
     request = result_expression_request(
-        facts=("已记录 11:57 开始写代码",),
-        verbatim_terms=("11:57",),
-        batch_id="batch-1",
+        outcome="completed",
+        execution_results=(execution("记录写代码", time="11:57"),),
+        important_information=(important("开始时间", "11:57"),),
     )
 
-    assert "your own private thought or completed action" in flat_prompt
+    assert "your own thought or completed action" in flat_prompt
     assert "address the current user directly as you/你" in flat_prompt
     assert "not a message from the user or another speaker" in request
     assert "你自己的脑内活动和行动结果" in TOOL_ROUND_REMINDER
@@ -156,7 +166,11 @@ def test_apply_executes_routine_write_and_requests_one_reaction(db, repository):
             0,
         )
         assert result["success"] is True
-        return output("facts", ["已记录 12:00 的午饭"], ["12:00"]), "run-1"
+        return output(
+            "completed",
+            [execution("记录午饭", time="12:00")],
+            [important("时间", "12:00")],
+        ), "run-1"
 
     asyncio.run(make_worker(db, repository, model).process(batch))
 
@@ -164,6 +178,35 @@ def test_apply_executes_routine_write_and_requests_one_reaction(db, repository):
     assert done["delivery_kind"] == "reaction"
     assert done["delivery_status"] == "pending"
     assert len(repository.calls(batch["id"])) == 1
+    assert len(db.get_today_events()) == 1
+
+
+def test_created_database_id_cannot_be_marked_as_important(db, repository):
+    add_message(db, "user", "记录午饭")
+    batch = claim_conversation(db, repository)
+    event_start = datetime.now().replace(
+        hour=12, minute=0, second=0, microsecond=0
+    ).isoformat()
+
+    async def model(_db, _system, _messages, *, tool_executor, **_kwargs):
+        result = await tool_executor(
+            "log_timeline_event",
+            {
+                "start_time": event_start,
+                "content": "吃午饭",
+                "category": "Routine",
+            },
+            0,
+        )
+        return output(
+            "completed",
+            [execution("记录午饭", event_id=result["event_id"])],
+            [important("事件编号", str(result["event_id"]))],
+        ), "tool-run"
+
+    asyncio.run(make_worker(db, repository, model).process(batch))
+
+    assert repository.get(batch["id"])["status"] == "retry_wait"
     assert len(db.get_today_events()) == 1
 
 
@@ -177,16 +220,16 @@ def test_failed_routine_write_is_explained_instead_of_reacted_to(
             "delete_timeline_event", {"event_id": 999999}, 0)
         assert result["success"] is False
         return output(
-            "facts",
-            ["未找到 event_id=999999"],
-            ["event_id=999999"],
+            "unable",
+            [execution("删除事件", "failed", event_id=999999,
+                       reason="没有找到对应事件")],
         ), "run-failed-write"
 
     asyncio.run(make_worker(db, repository, model).process(batch))
 
     done = repository.get(batch["id"])
     assert done["delivery_kind"] == "message"
-    assert done["result"]["say"] == "未找到 event_id=999999"
+    assert done["result"]["say"] == "删除事件"
 
 
 def test_shadow_records_proposal_without_mutating_business_tables(db, repository):
@@ -207,7 +250,7 @@ def test_shadow_records_proposal_without_mutating_business_tables(db, repository
             0,
         )
         assert result["shadow"] is True
-        return output("facts", ["拟记录午饭"]), "shadow-run"
+        return output("completed", [execution("记录午饭")]), "shadow-run"
 
     asyncio.run(make_worker(db, repository, model).process(batch))
 
@@ -258,7 +301,7 @@ def test_successful_call_is_replayed_after_model_output_retry(db, repository):
         )
         if model_attempts == 1:
             return "not json", "bad-run"
-        return output("facts", ["午饭已记录"]), "good-run"
+        return output("completed", [execution("记录午饭")]), "good-run"
 
     worker = make_worker(db, repository, model)
     asyncio.run(worker.process(first))
@@ -316,7 +359,7 @@ def test_retry_continues_with_a_new_call_after_durable_success(db, repository):
             {"event_id": event_id, "notes": "自己做的炒饭"},
             1,
         )
-        return output("facts", ["午饭记录已补充"]), "good-run"
+        return output("completed", [execution("补充午饭记录")]), "good-run"
 
     asyncio.run(make_worker(db, repository, model).process(first))
     reclaimed = repository.claim_next(
@@ -403,9 +446,9 @@ def test_reminder_result_is_expressed_with_latest_context_and_exact_terms(
             0,
         )
         return output(
-            "facts",
-            [f"已设置 {trigger_time} 的交作业提醒"],
-            [trigger_time, "交作业"],
+            "completed",
+            [execution("设置交作业提醒", trigger_time=trigger_time)],
+            [important("提醒时间", trigger_time), important("事项", "交作业")],
         ), "tool-run"
 
     worker = make_worker(db, repository, model, expression=expression)
@@ -414,29 +457,47 @@ def test_reminder_result_is_expressed_with_latest_context_and_exact_terms(
     done = repository.get(batch["id"])
     assert done["delivery_kind"] == "message"
     assert done["result"]["say"] == f"好，{trigger_time} 提醒你交作业"
-    assert "Business tools are handled by a separate background worker" in captured[
-        "system"
-    ]
-    assert "BACKEND_RESULT" in captured["messages"][-1]["content"]
+    assert "private execution track runs separately inside" in captured["system"]
+    assert "EXECUTION_TRACK_RESULT" in captured["messages"][-1]["content"]
     assert scheduler_wakeups == [1]
 
 
-def test_expression_falls_back_to_facts_if_model_drops_verbatim_term(
+def test_expression_rejects_reply_that_drops_important_information(
     db, repository
 ):
     async def lossy(_db, _system, _messages):
         return "好，明早提醒你", "lossy-run"
 
     expresser = ToolResultExpresser(db, lossy, memory_service=MemoryService(db))
-    text = asyncio.run(
-        expresser.express(
+    with pytest.raises(ValueError, match="missing important values"):
+        asyncio.run(expresser.express(
             channel_id=CHANNEL,
-            batch_id="batch-1",
-            facts=("已设置 2026-08-29T08:00:00 的提醒",),
-            verbatim_terms=("2026-08-29T08:00:00",),
-        )
-    )
-    assert text == "已设置 2026-08-29T08:00:00 的提醒"
+            outcome="completed",
+            execution_results=(execution("设置提醒"),),
+            important_information=(
+                important("提醒时间", "2026-08-29T08:00:00"),
+            ),
+        ))
+
+
+def test_expression_rejects_private_database_identifier(db):
+    async def leaky(_db, _system, messages):
+        assert "event_id" not in messages[-1]["content"]
+        assert "reminder_id" not in messages[-1]["content"]
+        return "记好了，event_id=715，16:20 提醒你喝水", "leaky-run"
+
+    expresser = ToolResultExpresser(db, leaky, memory_service=MemoryService(db))
+    with pytest.raises(ValueError, match="private identifiers"):
+        asyncio.run(expresser.express(
+            channel_id=CHANNEL,
+            outcome="completed",
+            execution_results=(execution(
+                "记录咖啡并设置喝水提醒",
+                event_id=715,
+                reminder_id=452,
+            ),),
+            important_information=(important("提醒时间", "16:20"),),
+        ))
 
 
 def test_assistant_rows_are_context_not_authorized_input(db, repository):
@@ -464,7 +525,10 @@ def test_new_correction_holds_then_supersedes_old_pending_result(db, repository)
     first = claim_conversation(db, repository)
 
     async def first_model(*_args, **_kwargs):
-        return output("unable", ["还缺少日期，无法处理三点"], ["三点"]), "r1"
+        return output(
+            "unable",
+            [execution("解析提醒时间", "blocked", missing="日期")],
+        ), "r1"
 
     worker = make_worker(db, repository, first_model)
     asyncio.run(worker.process(first))
@@ -480,8 +544,8 @@ def test_new_correction_holds_then_supersedes_old_pending_result(db, repository)
         assert envelope["PRIOR_UNDELIVERED_RESULT"]["batch_id"] == first["id"]
         return output(
             "unable",
-            ["已改按明天下午四点理解，但仍缺少要做的事"],
-            ["明天下午四点"],
+            [execution("设置提醒", "blocked", missing="提醒事项")],
+            [important("提醒时间", "明天下午四点")],
             supersedes=True,
         ), "r2"
 

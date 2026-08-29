@@ -216,9 +216,15 @@ def test_background_worker_uses_injected_executor_and_returns_only_final_json(
 
     final_json = json.dumps(
         {
-            "outcome": "facts",
-            "facts": ["提醒已设置"],
-            "verbatim_terms": [],
+            "outcome": "completed",
+            "execution_results": [
+                {
+                    "operation": "设置提醒",
+                    "status": "succeeded",
+                    "details": {},
+                }
+            ],
+            "important_information": [],
             "supersedes_previous": False,
         },
         ensure_ascii=False,

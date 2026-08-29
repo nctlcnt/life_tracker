@@ -12,6 +12,7 @@ from bot.ai_engine_base import (
     _ensure_valid_messages,
     _execute_tool,
     _execute_tool_async,
+    sanitize_toolless_chat_output,
 )
 from bot.database import Database
 from bot.logger import get_logger
@@ -47,6 +48,11 @@ ROUTINE_WRITE_TOOLS = {
     "delete_deadline",
 }
 INTERNAL_TOOLS = {"set_scene"}
+CREATED_ID_FIELDS = {
+    "log_timeline_event": "event_id",
+    "set_reminder": "reminder_id",
+    "add_deadline": "deadline_id",
+}
 SAY_KEY = "say"
 
 
@@ -63,7 +69,7 @@ class ToolInvocationFailed(RuntimeError):
 
 
 class ToolResultExpresser:
-    """Re-read the latest conversation and give backend facts the chat voice."""
+    """Let the chat track express its own private execution-track result."""
 
     def __init__(
         self,
@@ -84,18 +90,18 @@ class ToolResultExpresser:
         self,
         *,
         channel_id: str,
-        batch_id: str,
-        facts: tuple[str, ...],
-        verbatim_terms: tuple[str, ...],
+        outcome: str,
+        execution_results: tuple[dict[str, Any], ...],
+        important_information: tuple[dict[str, str], ...],
     ) -> str:
         async with self.generation_gate:
             history = self.db.get_recent_ai_messages(
                 str(channel_id), limit=self.history_limit
             )
             request = result_expression_request(
-                facts=facts,
-                verbatim_terms=verbatim_terms,
-                batch_id=batch_id,
+                outcome=outcome,
+                execution_results=execution_results,
+                important_information=important_information,
             )
             # Normalize the historical window first, then append the backend
             # envelope.  Normalizing the combined list would merge it into a
@@ -110,20 +116,49 @@ class ToolResultExpresser:
             raw = await self.runner(self.db, system_prompt, messages)
             reply = raw[0] if isinstance(raw, tuple) else raw
 
-        text = str(reply or "").strip()
-        missing = [term for term in verbatim_terms if term not in text]
+        text = sanitize_toolless_chat_output(str(reply or ""))
+        required_values = tuple(item["value"] for item in important_information)
+        missing = [value for value in required_values if value not in text]
         if not text or "[SILENT]" in text or missing:
-            # Facts are already the durable, exact fallback.  A style-model
-            # failure must not turn into a silent delivery failure or mutate a
-            # number while trying to sound natural.
-            if missing:
-                logger.warning(
-                    "工具结果表达遗漏 verbatim terms，退回事实清单: %s", missing
-                )
-            text = "\n".join(facts).strip()
-        if not text:
-            raise ValueError("tool result expression produced no text")
+            raise ValueError(
+                "chat track did not safely express the internal result"
+                + (f"; missing important values: {missing}" if missing else "")
+            )
+
+        private_ids = self._private_identifiers(execution_results)
+        lowered_text = text.lower()
+        leaked = [
+            value
+            for key, value in private_ids
+            if value not in required_values and (
+                key in lowered_text
+                or f"id={value}" in lowered_text
+                or f"id: {value}" in lowered_text
+                or f"编号{value}" in text
+            )
+        ]
+        if leaked:
+            raise ValueError("chat track exposed private identifiers")
         return text
+
+    @staticmethod
+    def _private_identifiers(
+        execution_results: tuple[dict[str, Any], ...]
+    ) -> tuple[tuple[str, str], ...]:
+        found: list[tuple[str, str]] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if str(key).lower().endswith("_id") and item is not None:
+                        found.append((str(key).lower(), str(item)))
+                    collect(item)
+            elif isinstance(value, list):
+                for item in value:
+                    collect(item)
+
+        collect(list(execution_results))
+        return tuple(dict.fromkeys(found))
 
 
 class ToolWorker:
@@ -273,8 +308,8 @@ class ToolWorker:
         delivery_kind = self._delivery_kind(batch, output, calls)
         result: dict[str, Any] = {
             "outcome": output.outcome,
-            "facts": list(output.facts),
-            "verbatim_terms": list(output.verbatim_terms),
+            "execution_results": list(output.execution_results),
+            "important_information": list(output.important_information),
             "actions": [
                 {
                     "call_index": item["call_index"],
@@ -292,9 +327,9 @@ class ToolWorker:
         elif delivery_kind == "message":
             result[SAY_KEY] = await self.expresser.express(
                 channel_id=batch["channel_id"],
-                batch_id=batch_id,
-                facts=output.facts,
-                verbatim_terms=output.verbatim_terms,
+                outcome=output.outcome,
+                execution_results=output.execution_results,
+                important_information=output.important_information,
             )
 
         supersedes_batch_id = None
@@ -565,6 +600,19 @@ class ToolWorker:
         ]
         if failures and output.outcome == "empty":
             raise ValueError("tool failures cannot be reported as empty")
+        important_values = {
+            item["value"] for item in output.important_information
+        }
+        for item in calls:
+            field = CREATED_ID_FIELDS.get(item["tool_name"])
+            result = item.get("result")
+            if (
+                field
+                and isinstance(result, dict)
+                and result.get(field) is not None
+                and str(result[field]) in important_values
+            ):
+                raise ValueError("created database IDs cannot be important information")
         names = {item["tool_name"] for item in calls}
         needs_message = bool(names - ROUTINE_WRITE_TOOLS - INTERNAL_TOOLS)
         if needs_message and output.outcome == "empty":
@@ -626,24 +674,28 @@ class ToolWorker:
                 raise BatchLeaseLost(str(batch["id"]))
             return
 
-        facts = (f"后台处理失败：{error}",)
+        failure_results = ({
+            "operation": "处理刚才的请求",
+            "status": "failed",
+            "details": {"reason": error},
+        },)
         try:
             say = await self.expresser.express(
                 channel_id=batch["channel_id"],
-                batch_id=batch["id"],
-                facts=facts,
-                verbatim_terms=(),
+                outcome="unable",
+                execution_results=failure_results,
+                important_information=(),
             )
         except Exception:
-            logger.exception("失败结果表达也失败，退回原始错误")
-            say = facts[0]
+            logger.exception("失败结果表达也失败，使用安全提示")
+            say = "刚才那件事没有处理成功，我需要再试一下。"
         if not self.repository.mark_completed(
             batch["id"],
             batch["lease_token"],
             result={
                 "outcome": "unable",
-                "facts": list(facts),
-                "verbatim_terms": [],
+                "execution_results": list(failure_results),
+                "important_information": [],
                 SAY_KEY: say,
             },
             delivery_kind="message",

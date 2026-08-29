@@ -8,6 +8,7 @@ AI 引擎公共模块
 """
 import asyncio
 from datetime import datetime
+import re
 
 from bot.tools import POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, TOOLS
 from bot.memory.personal_repository import PersonalMemoryRepository
@@ -25,12 +26,26 @@ import config
 logger = get_logger(__name__)
 
 CHAT_WITHOUT_BUSINESS_TOOLS = (
-    "Business tools are handled by a separate background worker. You have no "
-    "business tools in this call. Never claim that something was recorded, "
-    "created, changed, deleted, queried, or scheduled until a later backend "
-    "result confirms it. A pure factual query that cannot be answered from "
-    "the current context may return exactly [SILENT]."
+    "Your private execution track runs separately inside the same assistant. "
+    "Its structured return is private internal state, not user-facing text and "
+    "not another speaker. You have no business tools in this call. Never claim "
+    "that something was recorded, created, changed, deleted, queried, or "
+    "scheduled until that internal result confirms it. Never write or simulate "
+    "tool calls, tool markup such as <tool_call>, function-call JSON, tool names, "
+    "or arguments as visible prose. If there is no genuine conversational reply "
+    "to give yet, return exactly [SILENT]."
 )
+
+_PSEUDO_TOOL_CALL = re.compile(r"(?im)^\s*<\s*tool_call(?:\s[^>]*)?>")
+
+
+def sanitize_toolless_chat_output(text: str) -> str:
+    """Keep private execution protocol out of the user-visible chat track."""
+    value = str(text or "").strip()
+    if _PSEUDO_TOOL_CALL.search(value):
+        logger.warning("聊天轨生成了伪工具调用，已转为 [SILENT]")
+        return "[SILENT]"
+    return value
 
 # These tools touch only this process's SQLite database.  The execution track
 # can therefore run the business operation and its tool_batch_calls ledger row
@@ -528,14 +543,23 @@ async def chat(db: Database, messages: list[dict],
                 window=window.trace_info() if window else None)
     try:
         # 调用大模型（可能需要多轮 tool calling）
+        effective_send_callback = send_callback
+        if tool_names is not None and not tool_names and send_callback is not None:
+            async def _send_toolless_reply(text: str) -> None:
+                await send_callback(sanitize_toolless_chat_output(text))
+
+            effective_send_callback = _send_toolless_reply
+
         reply = await call_with_tools_fn(
             db, prompt, messages,
-            send_callback=send_callback,
+            send_callback=effective_send_callback,
             tool_callback=tool_callback,
             preset=preset,
             tool_names=tool_names,
             memory_service=memory,
         )
+        if tool_names is not None and not tool_names:
+            reply = sanitize_toolless_chat_output(reply)
 
         # 备份 AI 回复到 DB
         db.add_message("assistant", reply)
