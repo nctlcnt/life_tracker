@@ -12,6 +12,7 @@ import pytest
 from bot.async_pipeline import (
     TOOL_WORKER,
     BatchSourceConflict,
+    OutboundDeliveryRepository,
     ToolBatchRepository,
 )
 from bot.async_pipeline.repository import _utc_text
@@ -561,6 +562,91 @@ def test_non_terminal_queries_track_what_is_still_open(db, repository):
 
     other = ToolBatchRepository(db, worker_name="other_worker")
     assert other.non_terminal_count() == 0
+
+
+def test_non_terminal_queries_can_guard_apply_rollback(repository):
+    apply_batch, _ = _conversation(repository, execution_mode="apply")
+    shadow_batch, _ = _check_in(repository, execution_mode="shadow")
+
+    assert repository.non_terminal_count(execution_mode="apply") == 1
+    assert repository.non_terminal_ids(execution_mode="apply") == [
+        apply_batch["id"]
+    ]
+    assert repository.non_terminal_ids(execution_mode="shadow") == [
+        shadow_batch["id"]
+    ]
+
+    with pytest.raises(ValueError, match="execution_mode"):
+        repository.non_terminal_ids(execution_mode="invalid")
+
+
+def test_unsettled_deliveries_also_block_worker_rollback(repository):
+    _conversation(repository, execution_mode="apply")
+    apply_batch = repository.claim_next(now=NOW)
+    repository.mark_completed(
+        apply_batch["id"],
+        apply_batch["lease_token"],
+        delivery_kind="message",
+    )
+    _check_in(
+        repository,
+        source_ref="check_in:1:2026-08-28T10:00",
+        execution_mode="shadow",
+    )
+    shadow_batch = repository.claim_next(now=NOW)
+    repository.mark_completed(
+        shadow_batch["id"],
+        shadow_batch["lease_token"],
+        delivery_kind="reaction",
+    )
+
+    assert repository.non_terminal_ids() == []
+    assert repository.unsettled_delivery_ids(execution_mode="apply") == [
+        apply_batch["id"]
+    ]
+    assert set(repository.unsettled_delivery_ids()) == {
+        apply_batch["id"],
+        shadow_batch["id"],
+    }
+
+    assert repository.advance_delivery(
+        apply_batch["id"], from_status="pending", to_status="queued"
+    )
+    assert repository.unsettled_delivery_ids(execution_mode="apply") == [
+        apply_batch["id"]
+    ]
+    assert repository.advance_delivery(
+        apply_batch["id"], from_status="queued", to_status="sent"
+    )
+    assert repository.unsettled_delivery_ids(execution_mode="apply") == []
+
+
+def test_queued_delivery_reconciles_from_the_persistent_outbox(db, repository):
+    batch = _claimed(repository)
+    repository.mark_completed(
+        batch["id"], batch["lease_token"], delivery_kind="message"
+    )
+    assert repository.advance_delivery(
+        batch["id"], from_status="pending", to_status="queued"
+    )
+
+    outbound = OutboundDeliveryRepository(db)
+    delivery, _ = outbound.enqueue_message(
+        channel_id="chan-1",
+        content="done",
+        source_type="tool_batch",
+        source_id=batch["id"],
+        dedupe_key=f"tool_batch:{batch['id']}:message",
+    )
+    claimed = outbound.claim_next(now=_later(10))
+    assert claimed["id"] == delivery["id"]
+    assert outbound.mark_sent(
+        claimed["id"], claimed["lease_token"], ["discord-1"]
+    )
+
+    assert repository.reconcile_queued_deliveries() == {batch["id"]: "sent"}
+    assert repository.get(batch["id"])["delivery_status"] == "sent"
+    assert repository.reconcile_queued_deliveries() == {}
 
 
 def test_advancing_to_not_needed_is_rejected(repository):

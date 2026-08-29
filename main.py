@@ -87,20 +87,62 @@ async def main(test: bool = False, api_only: bool = False):
         # 这些 import 放在这里，以便 --api-only 时无需安装 discord.py 等重依赖也能起来
         import discord
         from bot.async_pipeline import (
+            BatchCoordinator,
+            BatchHeartbeat,
             GenerationGate,
             OutboundDeliveryRepository,
             OutboundQueue,
+            ToolBatchRepository,
+            ToolResultExpresser,
+            ToolWorker,
         )
+        from bot.ai_engine import express_tool_result, run_tool_worker
         from bot.discord_bot import LifeTrackerBot
         from bot.scheduler import Scheduler
 
         outbound_repository = OutboundDeliveryRepository(db)
+        tool_repository = ToolBatchRepository(db)
+        reconciled_deliveries = tool_repository.reconcile_queued_deliveries()
+        if reconciled_deliveries:
+            logger.info(
+                "♻️ 启动时修复工具结果投递状态: %s",
+                reconciled_deliveries,
+            )
+        execution_mode = "apply" if config.ASYNC_TOOL_APPLY else "shadow"
         if not config.ASYNC_OUTBOUND_ENABLED:
             stranded_delivery_ids = outbound_repository.non_terminal_ids()
             if stranded_delivery_ids:
                 raise RuntimeError(
                     "cannot disable outbound queue with non-terminal deliveries: "
                     + ", ".join(str(item) for item in stranded_delivery_ids)
+                )
+        if not config.ASYNC_TOOL_WORKER_ENABLED:
+            stranded_batch_ids = [
+                *tool_repository.non_terminal_ids(),
+                *tool_repository.unsettled_delivery_ids(),
+            ]
+            if stranded_batch_ids:
+                raise RuntimeError(
+                    "cannot disable tool worker with unfinished batches/deliveries: "
+                    + ", ".join(stranded_batch_ids)
+                )
+        else:
+            previous_mode = (
+                "shadow" if execution_mode == "apply" else "apply"
+            )
+            stranded_previous_mode_ids = [
+                *tool_repository.non_terminal_ids(
+                    execution_mode=previous_mode
+                ),
+                *tool_repository.unsettled_delivery_ids(
+                    execution_mode=previous_mode
+                ),
+            ]
+            if stranded_previous_mode_ids:
+                raise RuntimeError(
+                    f"cannot switch tool worker to {execution_mode} with "
+                    f"unfinished {previous_mode} batches/deliveries: "
+                    + ", ".join(stranded_previous_mode_ids)
                 )
 
         # 3. 初始化 Discord Bot
@@ -116,6 +158,58 @@ async def main(test: bool = False, api_only: bool = False):
             )
             bot.set_outbound_queue(outbound_queue)
 
+        batch_coordinator = None
+        tool_worker = None
+        heartbeat = None
+        if config.ASYNC_TOOL_WORKER_ENABLED:
+            # Flag validation guarantees outbound_queue exists here.
+            batch_coordinator = BatchCoordinator(
+                db,
+                tool_repository,
+                channel_ids=[str(config.CHANNEL_ID)],
+                execution_mode=execution_mode,
+            )
+            expresser = ToolResultExpresser(
+                db,
+                express_tool_result,
+                generation_gate=generation_gate,
+                memory_service=memory,
+            )
+            tool_worker = ToolWorker(
+                db,
+                tool_repository,
+                run_tool_worker,
+                expresser,
+                memory_service=memory,
+            )
+            heartbeat = BatchHeartbeat(
+                db,
+                tool_repository,
+                outbound_queue,
+                channel_ids=[str(config.CHANNEL_ID)],
+                execution_mode=execution_mode,
+                plan_callback=batch_coordinator.plan_channel,
+            )
+            batch_coordinator.set_batch_ready_callback(tool_worker.wake)
+
+            def _batch_finished(batch):
+                batch_coordinator.notify_batch_finished(batch)
+                heartbeat.wake()
+
+            tool_worker.set_finished_callback(_batch_finished)
+
+            def _delivery_terminal(delivery, status):
+                if delivery.get("source_type") != "tool_batch":
+                    return
+                tool_repository.advance_delivery(
+                    delivery["source_id"],
+                    from_status="queued",
+                    to_status=status,
+                )
+
+            outbound_queue.set_terminal_callback(_delivery_terminal)
+            bot.set_batch_coordinator(batch_coordinator)
+
         # 4. 初始化定时调度器
         scheduler = Scheduler(
             db,
@@ -123,6 +217,8 @@ async def main(test: bool = False, api_only: bool = False):
             is_user_typing_callback=bot.is_user_typing,
             memory_service=memory,
             generation_gate=generation_gate,
+            batch_coordinator=batch_coordinator,
+            tool_worker_apply=config.ASYNC_TOOL_APPLY,
         )
         db._on_reminder_added = scheduler.notify_new_reminder
         set_check_in_changed_callback(scheduler.notify_schedule_changed)
@@ -136,6 +232,9 @@ async def main(test: bool = False, api_only: bool = False):
         logger.info(
             f"   - 统一发送队列: "
             f"{'enabled' if outbound_queue else 'disabled (direct send)'}")
+        logger.info(
+            f"   - 工具 worker: "
+            f"{'apply' if config.ASYNC_TOOL_APPLY else 'shadow' if tool_worker else 'disabled'}")
         logger.info(f"   - FastAPI 接口 (端口: {config.API_PORT})")
 
         # Bot token 失效时不要让 Docker 反复重启整个容器刷 Discord 登录接口。
@@ -146,9 +245,23 @@ async def main(test: bool = False, api_only: bool = False):
             asyncio.create_task(outbound_queue.run())
             if outbound_queue else None
         )
+        batcher_task = (
+            asyncio.create_task(batch_coordinator.run())
+            if batch_coordinator else None
+        )
+        worker_task = (
+            asyncio.create_task(tool_worker.run()) if tool_worker else None
+        )
+        heartbeat_task = (
+            asyncio.create_task(heartbeat.run()) if heartbeat else None
+        )
         tasks = {bot_task, scheduler_task, api_task}
-        if outbound_task:
-            tasks.add(outbound_task)
+        tasks.update(
+            task for task in (
+                outbound_task, batcher_task, worker_task, heartbeat_task
+            )
+            if task is not None
+        )
         done, pending = await asyncio.wait(
             tasks,
             return_when=asyncio.FIRST_EXCEPTION,
@@ -170,6 +283,16 @@ async def main(test: bool = False, api_only: bool = False):
                 outbound_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await outbound_task
+            for component, task in (
+                (batch_coordinator, batcher_task),
+                (tool_worker, worker_task),
+                (heartbeat, heartbeat_task),
+            ):
+                if component and task:
+                    await component.stop()
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
             await bot.close()
             await api_task
         else:

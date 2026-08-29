@@ -1,6 +1,6 @@
 # 聊天与工具并行分层
 
-- 状态：已定案（2026-08-26）；LT-169 实现规格已合并，LT-170 的共享 `GenerationGate` 与持久 outbound queue、LT-171 的场景边界修正均已于 2026-08-27 合并进 main；开关默认关闭，生产尚未启用。第 9 节原来的四个未决问题已于 2026-08-24 全部定案，第 9.5 节异步带来的六个问题已于 2026-08-26 定案。第 5.3 节场景状态已经写成代码（见 `bot/memory/scene_state.py` 与 `track_scene` 工具）
+- 状态：已定案（2026-08-26）；第 0 步异步基础设施 LT-170、LT-175、LT-176、LT-177 已合并进 `main`，LT-171 场景边界也已合并；LT-178 双层本体于 2026-08-28 完成实现、待 review。开关默认关闭，生产尚未启用。第 9 节原来的四个未决问题已于 2026-08-24 全部定案，第 9.5 节异步带来的六个问题已于 2026-08-26 定案。第 5.3 节场景状态已经写成代码（见 `bot/memory/scene_state.py` 与 `track_scene` 工具）
 - **2026-08-25 重大修订**：同步两拍改为**异步心跳与排队模型**，见第 0 节。凡正文旧结论与第 0 节冲突，一律按第 0 节算。受影响的章节已就地改写，改写点在第 0 节末尾列出。
 - **2026-08-26 review 定案**：静默窗口先采用 30 秒，批次最长等待 60 秒；结果表达读取最近 20 条对话；成功设置提醒时发送确认消息；记忆检索归属留待 spike；并补充分批状态、测试层次与人设修改。
 - 建立日期：2026-08-24
@@ -40,6 +40,9 @@
 当前所有事情由一个模型在一次调用里完成：维持人设、判断要不要调工具、调工具、组织回复。结果是人设被挤掉。实测数字：进入聊天 system prompt 的内容里，**真正描写日和是谁的只有27 个字，占 1.5%**；工具 schema 3200 token、工具使用策略散文 3491 字、语气禁令约 200 字。模型按体量分配注意力，所以输出是规则的样子，不是人的样子。单纯删规则不行——那些规则大多是必要的，而且用户后续还要加功能。**出路是让规则和人设不在同一个模型的上下文里**，各自可以独立生长。
 
 ## 2. 数据流
+
+
+> **LT-178 实现状态（2026-08-28）**：本节四部件已经接入运行时。普通聊天在 apply 模式显式排除业务工具；conversation/check-in 进入同一个持久批次 worker；结果表达在共享 `GenerationGate` 内重读最近 20 条，并交给统一 outbox。shadow/apply 与启动回退门禁已经实现，所有开关仍默认关闭，尚未部署。
 
 
 **这一节按第 0 节的异步决定重写。** 四个部件，各自的节奏不同：
@@ -398,7 +401,8 @@ CREATE INDEX idx_tool_batch_calls_status
 
 | 模块 | 唯一职责 |
 | --- | --- |
-| `bot/async_pipeline/repository.py` | 上述四张表的 SQL、claim/lease CAS、幂等调用事务、cursor 与 batch 终态原子提交 |
+| `bot/async_pipeline/repository.py` | 统一 outbound 的持久表、claim/lease CAS 与投递状态 |
+| `bot/async_pipeline/tool_batches.py` | 工具批次、cursor、调用账本、claim/lease CAS 与 batch/cursor 终态事务 |
 | `bot/async_pipeline/batcher.py` | 30 秒静默、60 秒最长等待、`[SILENT]` 强制触发；只决定何时建批，不执行模型 |
 | `bot/async_pipeline/tool_worker.py` | 装配区分 `new_messages/context` 的输入、调用工具模型、经幂等 executor 执行、产出事实清单 |
 | `bot/async_pipeline/outbound.py` | `GenerationGate` 与 `OutboundQueue`；表达结果时在 gate 内重读最近 20 条，再交给 outbox |
@@ -408,6 +412,8 @@ CREATE INDEX idx_tool_batch_calls_status
 `discord_bot.py` 只负责“消息成功入库后通知 batcher”和把回复交给统一 outbound；`scheduler.py` 只负责产生 check-in/reminder 工作，不再自己拥有生成锁或 Discord 出口。心跳各步骤必须可独立重入：重复运行只会命中 unique/CAS，不会再建批、再调工具或再入同一条 delivery。
 
 ### 4.5 开关、分阶段启用与回退
+
+> **实现状态（2026-08-28）**：三段式开关已经控制聊天、check-in、reminder 与 worker 两端；启动时除校验 `apply ⇒ worker ⇒ outbound`，还会拒绝在非终态批次、未投递工具结果或未排空 outbox 存在时关闭 worker，也会拒绝带着上一 execution mode 的半途工作直接切换 shadow/apply，避免重启后静默遗忘或错用执行语义。
 
 配置沿用 curator 的 `enabled / apply` 两段式先例，全部默认关闭：
 
@@ -735,7 +741,7 @@ User: 今天看资料看了一下午，头都晕了。
 
 前面几步都**不需要双层结构就能单独交付**，而且每一步都让现在的单模型路径变好。这是有意的：架构是个真正的项目，不该拿它当所有改进的前置条件。
 
-0. **异步基础设施**（第 0、2.1、2.2、4.3～4.5 节）：待处理队列与游标、统一发送队列、批次状态与幂等键、两分钟心跳。内部顺序是：**[LT-169](https://linear.app/chachas/issue/LT-169) 实现规格与 [LT-170](https://linear.app/chachas/issue/LT-170) 统一发送队列均已合并进 `main` → 剩下的三样已于 2026-08-28 拆成实现 issue：[LT-175](https://linear.app/chachas/issue/LT-175) 批次状态表与 lease 领取、[LT-176](https://linear.app/chachas/issue/LT-176) 待处理队列游标与幂等写入、[LT-177](https://linear.app/chachas/issue/LT-177) 两分钟心跳与失败恢复**。统一发送队列排在代码改动最前面，因为它单独就能修掉第 13 节第二条那个乱序缺陷，而且完全不依赖双层结构——现在的单模型路径也可以先用上。
+0. **异步基础设施**（第 0、2.1、2.2、4.3～4.5 节）：**已完成并合并。** [LT-169](https://linear.app/chachas/issue/LT-169) 实现规格、[LT-170](https://linear.app/chachas/issue/LT-170) 统一发送队列、[LT-175](https://linear.app/chachas/issue/LT-175) 批次状态表与 lease、[LT-176](https://linear.app/chachas/issue/LT-176) 游标与调用账本、[LT-177](https://linear.app/chachas/issue/LT-177) 两分钟心跳与失败恢复均已进入 `main`。统一发送队列排在代码改动最前面，因为它单独就能修掉第 13 节第二条那个乱序缺陷，而且完全不依赖双层结构——现在的单模型路径也可以先用上。
 
    过期批次的回收位置已于 2026-08-28 定案：由领取语句自己一并取回，**没有第二条路径**。心跳只调用同一个领取方法，不自行把 `running` 转回 `pending`。这样回收只有一个代码路径，进程崩溃重启之后也不必等到下一次心跳。
 1. **人设写入数据库**（[LT-168](https://linear.app/chachas/issue/LT-168)）。第 11 节的初稿按 11.3 落位，处理那里的三个问题。这一步同时是第 5.3 节场景状态的前置——场景描述里刻意不带语气，人设必须先接住。
@@ -753,7 +759,7 @@ User: 今天看资料看了一下午，头都晕了。
 2. **天气改成常驻快照**（第 5.5 节）。跟架构无关，改动小，做完人设那个"感官外挂"才有数据可用。
 3. **重写工具策略散文**（第 5 节）。3491 字压到三分之一，删掉所有跟语气、时机、分寸有关的内容。这一步是为拆分做准备，但在现在的单模型下也是净收益。
 4. **建立验证基础**（第 7 节）。重新标注模型样本并建立离线 replay，同时为批次状态、发送顺序、心跳恢复和幂等写入建立单元测试与集成测试。
-5. **双层结构本身**（第 2–4 节，[LT-178](https://linear.app/chachas/issue/LT-178)）。两份 prompt、批次执行、结果表达。**依赖第 0 步。**
+5. **双层结构本身**（第 2–4 节，[LT-178](https://linear.app/chachas/issue/LT-178)）：**2026-08-28 已完成实现、待 review。** 两份 prompt、静默/上限建批、批次执行、结果表达、check-in 与生命周期接线均已落地；依赖的第 0 步已满足。开关默认关闭，未部署。
 6. **润色**（第 5.4 节）。依赖第 11.2 节那份 prompt，**不依赖双层结构**，可以跟 5 并行推进。它的补漏扫描可以直接挂在第 0 步那个心跳上。
 
 [LT-171](https://linear.app/chachas/issue/LT-171)（场景工具边界）、[LT-172](https://linear.app/chachas/issue/LT-172)（天气常驻快照）、[LT-173](https://linear.app/chachas/issue/LT-173)（Dispatch 死代码）互相独立，也不等待 LT-169 / LT-170，可以随时并行。它们完成后分别回写第 5.3、5.5、8、13 节的实现状态。

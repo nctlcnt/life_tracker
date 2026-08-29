@@ -24,6 +24,14 @@ import config
 
 logger = get_logger(__name__)
 
+CHAT_WITHOUT_BUSINESS_TOOLS = (
+    "Business tools are handled by a separate background worker. You have no "
+    "business tools in this call. Never claim that something was recorded, "
+    "created, changed, deleted, queried, or scheduled until a later backend "
+    "result confirms it. A pure factual query that cannot be answered from "
+    "the current context may return exactly [SILENT]."
+)
+
 
 def _memory_service(db: Database,
                     service: MemoryService | None = None) -> MemoryService:
@@ -122,9 +130,13 @@ def _build_prompt(db: Database, mode: str,
     if not include("include_relevant_history"):
         relevant_history = None
 
+    sections = db.get_prompt_sections()
+    if not include("include_tools"):
+        sections = dict(sections, tools="")
+
     return build_prompt(
         mode,
-        sections=db.get_prompt_sections(),
+        sections=sections,
         memories=memories or None,
         # 分档渲染好的整块直接当 markdown 传：_format_memories 的第一条分支就是
         # "有现成文本就原样用"，两条来源共用同一个占位符，互斥。
@@ -429,7 +441,7 @@ async def chat(db: Database, messages: list[dict],
                call_with_tools_fn, preset: Preset,
                send_callback=None, tool_callback=None,
                memory_service: MemoryService | None = None,
-               window=None) -> str:
+               window=None, tool_names: set[str] | None = None) -> str:
     """
     处理用户消息的完整流程。
     messages: 调用方（discord_bot）已经装配好的 token 窗口消息列表，
@@ -467,9 +479,17 @@ async def chat(db: Database, messages: list[dict],
     relevant_history = memory_context.relevant_history
 
     # 构建 PromptParts（静态 + 动态上下文一步到位）
-    prompt = _build_prompt(db, "chat", weather=weather,
-                           calendar=calendar, relevant_history=relevant_history,
-                           memory_service=memory)
+    prompt = _build_prompt(
+        db,
+        "chat",
+        weather=weather,
+        calendar=calendar,
+        relevant_history=relevant_history,
+        context_config={"include_tools": tool_names is None or bool(tool_names)},
+        memory_service=memory,
+    )
+    if tool_names is not None and not tool_names:
+        prompt = prompt.with_suffix(CHAT_WITHOUT_BUSINESS_TOOLS)
 
     # 场景状态：让"我们正在做什么"在用户回复之后仍然存在。
     #
@@ -491,6 +511,7 @@ async def chat(db: Database, messages: list[dict],
             send_callback=send_callback,
             tool_callback=tool_callback,
             preset=preset,
+            tool_names=tool_names,
             memory_service=memory,
         )
 
@@ -515,7 +536,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            context_config: dict | None = None,
                            memory_service: MemoryService | None = None,
                            window=None,
-                           track_scene: bool = False) -> str | None:
+                           track_scene: bool = False,
+                           clear_scene: bool = True) -> str | None:
     """
     统一的调度入口：处理主动聊天、提醒触发、睡前提醒等所有非用户消息的 AI 调用。
 
@@ -536,7 +558,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
 
     # 任何新的 check-in 都是旧场景唯一的终止条件。启用 track_scene 的
     # check-in 可在随后的工具轮重新写入；reminder 不属于 check-in。
-    if trigger in {"poll", "bedtime", "check_in"}:
+    if clear_scene and trigger in {"poll", "bedtime", "check_in"}:
         scene_state.clear(db, str(config.CHANNEL_ID))
 
     # 注：历史为空不代表"没聊过"——也可能是 bot 刚重启或 Discord 历史拉取失败。
@@ -544,26 +566,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     # 动态上下文自主决定要不要说话。真觉得没得说，它可以返回 [SILENT]。
 
     # 早上时段查天气
-    context_config = context_config or {}
-    include_weather = context_config.get("include_weather", True)
-    include_calendar = context_config.get("include_calendar", True)
-    weather = await get_weather_brief() if include_weather and is_morning() else None
-    calendar = await get_calendar_context() if include_calendar else None
-
-    prompt_parts = _build_prompt(
-        db, "poll", weather=weather,
-        calendar=calendar, context_config=context_config,
-        memory_service=memory_service,
-    )
-
-    if check_in_name:
-        prompt = f"[check_in:{check_in_name}]\n{prompt}"
-    messages = [
-        *history,
-        {"role": "user", "content": prompt}
-    ]
-    messages = _ensure_valid_messages(messages)
-
+    context_config = dict(context_config or {})
     tool_names = None
     profile = tool_profile
     if profile is None:
@@ -580,10 +583,31 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
         tool_names = set()
 
     # set_scene 只在本次 check-in 明确打开 track_scene 时才可用。
-    # 不放进 POLL_TOOL_NAMES 之类的固定集合：那样每次主动消息都会带上它，
-    # 而多数 check-in（睡前、morning）说完就结束，不需要延续场景。
     if track_scene and tool_names is not None:
         tool_names = set(tool_names) | {"set_scene"}
+    if tool_names is not None and not tool_names:
+        context_config["include_tools"] = False
+
+    include_weather = context_config.get("include_weather", True)
+    include_calendar = context_config.get("include_calendar", True)
+    weather = await get_weather_brief() if include_weather and is_morning() else None
+    calendar = await get_calendar_context() if include_calendar else None
+
+    prompt_parts = _build_prompt(
+        db, "poll", weather=weather,
+        calendar=calendar, context_config=context_config,
+        memory_service=memory_service,
+    )
+    if tool_names is not None and not tool_names:
+        prompt_parts = prompt_parts.with_suffix(CHAT_WITHOUT_BUSINESS_TOOLS)
+
+    if check_in_name:
+        prompt = f"[check_in:{check_in_name}]\n{prompt}"
+    messages = [
+        *history,
+        {"role": "user", "content": prompt}
+    ]
+    messages = _ensure_valid_messages(messages)
 
     trace.start(trigger=trigger or "scheduled", model=preset.model, provider=preset.provider,
                 prompt_parts=prompt_parts, messages=messages,

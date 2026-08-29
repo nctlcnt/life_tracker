@@ -42,10 +42,11 @@ def _endpoint_url(preset: Preset) -> str:
 
 async def chat(db: Database, messages: list[dict], preset: Preset,
                send_callback=None, tool_callback=None, memory_service=None,
-               window=None) -> str:
+               window=None, tool_names: set[str] | None = None) -> str:
     return await _base_chat(db, messages, _call_with_tools, preset,
                             send_callback=send_callback, tool_callback=tool_callback,
-                            memory_service=memory_service, window=window)
+                            memory_service=memory_service, window=window,
+                            tool_names=tool_names)
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
@@ -56,7 +57,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            check_in_name: str | None = None,
                            context_config: dict | None = None,
                            memory_service=None, window=None,
-                           track_scene: bool = False) -> str | None:
+                           track_scene: bool = False,
+                           clear_scene: bool = True) -> str | None:
     return await _base_scheduled_action(db, prompt, timestamp, history, _call_with_tools,
                                         preset,
                                         send_callback=send_callback,
@@ -66,7 +68,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                                         context_config=context_config,
                                         memory_service=memory_service,
                                         window=window,
-                                        track_scene=track_scene)
+                                        track_scene=track_scene,
+                                        clear_scene=clear_scene)
 
 
 async def simple_completion(prompt: str, preset: Preset,
@@ -81,6 +84,62 @@ async def simple_completion(prompt: str, preset: Preset,
         return_run_id=return_run_id, max_output_tokens=max_output_tokens,
         request_timeout=request_timeout, system_text=system_text,
         temperature=temperature)
+
+
+async def tool_worker(db: Database, system_prompt: str, messages: list[dict],
+                      *, tool_names: set[str], tool_executor,
+                      preset: Preset) -> tuple[str, str]:
+    """Run one persona-free tool batch and return ``(final_json, run_id)``."""
+    entry = trace.start(
+        trigger="tool_worker",
+        model=preset.model,
+        provider=preset.provider,
+        prompt_parts=None,
+        messages=[{"role": "system", "content": system_prompt}, *messages],
+    )
+    try:
+        reply = await _call_with_tools(
+            db,
+            system_prompt,
+            messages,
+            preset=preset,
+            tool_names=tool_names,
+            tool_executor=tool_executor,
+            return_final_only=True,
+            request_timeout=60.0,
+        )
+        trace.finalize(final_text=reply, db=db)
+        return reply, entry["id"]
+    except Exception as exc:
+        trace.finalize(error=f"{type(exc).__name__}: {exc}", db=db)
+        raise
+
+
+async def tool_result_expression(db: Database, system_prompt: str,
+                                 messages: list[dict], *,
+                                 preset: Preset) -> tuple[str, str]:
+    """Generate the user-facing expression of a persisted backend result."""
+    entry = trace.start(
+        trigger="tool_result",
+        model=preset.model,
+        provider=preset.provider,
+        prompt_parts=None,
+        messages=[{"role": "system", "content": system_prompt}, *messages],
+    )
+    try:
+        reply = await _call_with_tools(
+            None,
+            system_prompt,
+            messages,
+            preset=preset,
+            tool_names=set(),
+            return_final_only=True,
+        )
+        trace.finalize(final_text=reply, db=db)
+        return reply, entry["id"]
+    except Exception as exc:
+        trace.finalize(error=f"{type(exc).__name__}: {exc}", db=db)
+        raise
 
 
 def _log_usage(usage: dict | None) -> None:
@@ -107,7 +166,10 @@ async def _call_with_tools(db: Database, prompt: PromptParts | str | None,
                            memory_service: MemoryService | None = None,
                            max_output_tokens: int | None = None,
                            request_timeout: float | None = None,
-                           temperature: float | None = None) -> str:
+                           temperature: float | None = None,
+                           tool_executor=None,
+                           return_final_only: bool = False,
+                           max_rounds: int = 5) -> str:
     """httpx 直接调用 OpenAI 兼容端点，处理多轮 tool calling。"""
     model = preset.model
     url = _endpoint_url(preset)
@@ -140,11 +202,12 @@ async def _call_with_tools(db: Database, prompt: PromptParts | str | None,
     sent_display_texts = set()  # 去重集合
     # GPT-5 系官方模型拒绝 max_tokens；被明确拒绝后本次调用内换用新参数
     token_param = "max_tokens"
+    call_index = 0
 
     test_mode.ensure_handler_state()
 
     async with httpx.AsyncClient() as client:
-        for round_idx in range(5):
+        for round_idx in range(max(int(max_rounds), 1)):
             # 无 system prompt 时不发空 system 块：部分端点（如 anthropic 系代理）
             # 会对空 text block 直接 400
             system_text = full_system if round_idx == 0 else concise_system
@@ -245,7 +308,7 @@ async def _call_with_tools(db: Database, prompt: PromptParts | str | None,
                     tool_calls=[], tool_results=[],
                     usage=usage_log, stop_reason=finish_reason,
                 )
-                return "\n".join(all_texts)
+                return display_text if return_final_only else "\n".join(all_texts)
 
             # 中间轮：文字也直接发给用户（每一轮文字 = 给她看的）
             if display_text and display_text not in sent_display_texts:
@@ -276,9 +339,16 @@ async def _call_with_tools(db: Database, prompt: PromptParts | str | None,
                 except json.JSONDecodeError:
                     func_args = {}
 
-                result = await _execute_tool_async(
-                    db, func_name, func_args, memory_service=memory_service
-                )
+                current_call_index = call_index
+                call_index += 1
+                if tool_executor is not None:
+                    result = await tool_executor(
+                        func_name, func_args, current_call_index
+                    )
+                else:
+                    result = await _execute_tool_async(
+                        db, func_name, func_args, memory_service=memory_service
+                    )
                 called_names.append(func_name)
                 tc_id = tc.get("id", "")
                 trace_tool_calls.append({"name": func_name, "input": func_args, "id": tc_id})
@@ -306,4 +376,6 @@ async def _call_with_tools(db: Database, prompt: PromptParts | str | None,
             if tool_callback and called_names:
                 await tool_callback(called_names)
 
+    if return_final_only:
+        raise AIProviderError("工具模型超过最大调用轮数")
     return "\n".join(all_texts) or "（内部错误：工具调用次数过多）"

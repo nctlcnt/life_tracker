@@ -52,11 +52,17 @@ async def _run_with_fallback(method_name: str, *args, **kwargs):
 
 async def chat(db, messages: list[dict],
                send_callback=None, tool_callback=None, memory_service=None,
-               window=None) -> str:
+               window=None, tool_names: set[str] | None = None) -> str:
+    kwargs = {
+        "send_callback": send_callback,
+        "tool_callback": tool_callback,
+        "memory_service": memory_service,
+        "window": window,
+    }
+    if tool_names is not None:
+        kwargs["tool_names"] = tool_names
     return await _run_with_fallback(
-        "chat", db, messages,
-        send_callback=send_callback, tool_callback=tool_callback,
-        memory_service=memory_service, window=window,
+        "chat", db, messages, **kwargs,
     )
 
 
@@ -68,7 +74,8 @@ async def scheduled_action(db, prompt: str, timestamp: str,
                            check_in_name: str | None = None,
                            context_config: dict | None = None,
                            memory_service=None, window=None,
-                           track_scene: bool = False) -> str | None:
+                           track_scene: bool = False,
+                           clear_scene: bool = True) -> str | None:
     return await _run_with_fallback(
         "scheduled_action", db, prompt, timestamp, history,
         send_callback=send_callback, allow_silent=allow_silent, trigger=trigger,
@@ -76,6 +83,7 @@ async def scheduled_action(db, prompt: str, timestamp: str,
         context_config=context_config,
         memory_service=memory_service, window=window,
         track_scene=track_scene,
+        clear_scene=clear_scene,
     )
 
 
@@ -84,3 +92,21 @@ async def simple_completion(prompt: str, *, trigger: str = "oneshot",
     return await _run_with_fallback(
         "simple_completion", prompt, trigger=trigger, db=db,
         return_run_id=return_run_id)
+
+
+async def run_tool_worker(db, system_prompt: str, messages: list[dict], *,
+                          tool_names: set[str], tool_executor):
+    return await _run_with_fallback(
+        "tool_worker",
+        db,
+        system_prompt,
+        messages,
+        tool_names=tool_names,
+        tool_executor=tool_executor,
+    )
+
+
+async def express_tool_result(db, system_prompt: str, messages: list[dict]):
+    return await _run_with_fallback(
+        "tool_result_expression", db, system_prompt, messages
+    )

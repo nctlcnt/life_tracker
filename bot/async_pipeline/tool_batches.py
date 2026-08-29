@@ -101,7 +101,7 @@ class ToolBatchRepository:
         try:
             return _decode(conn.execute(
                 f"""
-                SELECT * FROM tool_batches
+                SELECT batch.* FROM tool_batches AS batch
                 WHERE worker_name = ? AND channel_id = ?
                   AND source_kind = 'conversation'
                   AND status IN ({', '.join('?' for _ in OPEN_STATUSES)})
@@ -412,6 +412,30 @@ class ToolBatchRepository:
         finally:
             conn.close()
 
+    def latest_pending_delivery(
+        self, channel_id: str, *, exclude_batch_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """Return the newest result still waiting for a possible correction.
+
+        A later conversation batch receives this result as context.  It may
+        explicitly supersede it before either result reaches the outbox.
+        """
+        where = "worker_name = ? AND channel_id = ? AND delivery_status = 'pending'"
+        params: list[Any] = [self.worker_name, str(channel_id)]
+        if exclude_batch_id is not None:
+            where += " AND id != ?"
+            params.append(str(exclude_batch_id))
+        conn = self.db._get_conn()
+        try:
+            row = conn.execute(
+                f"SELECT * FROM tool_batches WHERE {where} "
+                "ORDER BY completed_at DESC, rowid DESC LIMIT 1",
+                params,
+            ).fetchone()
+            return _decode(row)
+        finally:
+            conn.close()
+
     def record_call(self, batch_id: str, call_index: int, lease_token: str, *,
                     tool_name: str, arguments: dict[str, Any] | None = None,
                     result: Any = None, succeeded: bool,
@@ -492,6 +516,7 @@ class ToolBatchRepository:
         result: dict[str, Any] | None = None,
         delivery_kind: str = "none",
         last_run_id: str | None = None,
+        supersedes_batch_id: str | None = None,
         now=None,
     ) -> bool:
         """这一批干完了，同时记下结果和该怎么交付。
@@ -511,6 +536,7 @@ class ToolBatchRepository:
             batch_id, lease_token, status="completed",
             result=result, delivery_kind=delivery_kind,
             delivery_status=delivery_status, last_run_id=last_run_id,
+            supersedes_batch_id=supersedes_batch_id,
             error=None, now=now)
 
     def mark_failed(self, batch_id: str, lease_token: str, error: str, *,
@@ -523,7 +549,8 @@ class ToolBatchRepository:
         return self._finish(
             batch_id, lease_token, status="failed", result=None,
             delivery_kind="none", delivery_status="not_needed",
-            last_run_id=last_run_id, error=str(error), now=now)
+            last_run_id=last_run_id, supersedes_batch_id=None,
+            error=str(error), now=now)
 
     def mark_retry(self, batch_id: str, lease_token: str, error: str, *,
                    retry_after_seconds: float = 0.0, now=None) -> bool:
@@ -556,6 +583,7 @@ class ToolBatchRepository:
     def _finish(self, batch_id: str, lease_token: str, *, status: str,
                 result: dict[str, Any] | None, delivery_kind: str,
                 delivery_status: str, last_run_id: str | None,
+                supersedes_batch_id: str | None,
                 error: str | None, now=None) -> bool:
         now_text = _utc_text(now)
         conn = self.db._get_conn()
@@ -578,6 +606,7 @@ class ToolBatchRepository:
                 SET status = ?, result_json = ?,
                     delivery_kind = ?, delivery_status = ?,
                     last_run_id = COALESCE(?, last_run_id),
+                    supersedes_batch_id = ?,
                     last_error = ?, completed_at = ?, updated_at = ?,
                     locked_at = NULL, lease_token = NULL
                 WHERE id = ? AND status = 'running' AND lease_token = ?
@@ -585,9 +614,31 @@ class ToolBatchRepository:
                 (status,
                  json.dumps(result, ensure_ascii=False) if result is not None
                  else None,
-                 delivery_kind, delivery_status, last_run_id, error,
+                 delivery_kind, delivery_status, last_run_id,
+                 str(supersedes_batch_id) if supersedes_batch_id else None,
+                 error,
                  now_text, now_text, str(batch_id), str(lease_token)),
             )
+            if supersedes_batch_id:
+                superseded = conn.execute(
+                    """
+                    UPDATE tool_batches
+                    SET delivery_status = 'superseded', updated_at = ?
+                    WHERE id = ? AND worker_name = ? AND channel_id = ?
+                      AND delivery_status = 'pending'
+                    """,
+                    (
+                        now_text,
+                        str(supersedes_batch_id),
+                        self.worker_name,
+                        batch["channel_id"],
+                    ),
+                )
+                if superseded.rowcount != 1:
+                    raise ValueError(
+                        "supersedes_batch_id must name a pending delivery "
+                        "in the same worker/channel"
+                    )
             # 游标和终态必须在同一个事务里推进。分两次写的话，中间崩溃会
             # 留下「批次已经结束、但游标还停在它前面」的状态，下一轮规划
             # 会把同一段消息重新排一遍。判定为不需要动手的空批次同样要推
@@ -666,8 +717,25 @@ class ToolBatchRepository:
         try:
             return [_decode(row) for row in conn.execute(
                 """
-                SELECT * FROM tool_batches
-                WHERE worker_name = ? AND delivery_status = 'pending'
+                SELECT batch.* FROM tool_batches AS batch
+                WHERE batch.worker_name = ?
+                  AND batch.delivery_status = 'pending'
+                  AND NOT (
+                      batch.source_kind = 'conversation'
+                      AND EXISTS (
+                          SELECT 1
+                          FROM conversation_messages AS message
+                          WHERE message.channel_id = batch.channel_id
+                            AND message.role = 'user'
+                            AND message.id > batch.through_message_id
+                            AND message.id > COALESCE((
+                                SELECT cursor.last_processed_message_id
+                                FROM tool_batch_cursors AS cursor
+                                WHERE cursor.worker_name = batch.worker_name
+                                  AND cursor.channel_id = batch.channel_id
+                            ), 0)
+                      )
+                  )
                 ORDER BY completed_at, rowid
                 LIMIT ?
                 """,
@@ -710,8 +778,15 @@ class ToolBatchRepository:
         finally:
             conn.close()
 
-    def non_terminal_count(self) -> int:
+    def non_terminal_count(self, *, execution_mode: str | None = None) -> int:
         """还没结束的批次有多少。回退之前要等它归零。"""
+        if execution_mode is not None and execution_mode not in EXECUTION_MODES:
+            raise ValueError(
+                f"execution_mode must be one of {sorted(EXECUTION_MODES)}")
+        mode_clause = " AND execution_mode = ?" if execution_mode else ""
+        params = [self.worker_name, *sorted(OPEN_STATUSES)]
+        if execution_mode:
+            params.append(execution_mode)
         conn = self.db._get_conn()
         try:
             return int(conn.execute(
@@ -719,14 +794,25 @@ class ToolBatchRepository:
                 SELECT COUNT(*) FROM tool_batches
                 WHERE worker_name = ?
                   AND status IN ({', '.join('?' for _ in OPEN_STATUSES)})
+                  {mode_clause}
                 """,
-                (self.worker_name, *sorted(OPEN_STATUSES)),
+                params,
             ).fetchone()[0])
         finally:
             conn.close()
 
-    def non_terminal_ids(self, *, limit: int = 100) -> list[str]:
+    def non_terminal_ids(
+        self, *, execution_mode: str | None = None, limit: int = 100
+    ) -> list[str]:
         """还没结束的批次的 id。紧急回退时要把它们显式列出来，不能遗忘。"""
+        if execution_mode is not None and execution_mode not in EXECUTION_MODES:
+            raise ValueError(
+                f"execution_mode must be one of {sorted(EXECUTION_MODES)}")
+        mode_clause = " AND execution_mode = ?" if execution_mode else ""
+        params: list[Any] = [self.worker_name, *sorted(OPEN_STATUSES)]
+        if execution_mode:
+            params.append(execution_mode)
+        params.append(int(limit))
         conn = self.db._get_conn()
         try:
             return [row["id"] for row in conn.execute(
@@ -734,11 +820,100 @@ class ToolBatchRepository:
                 SELECT id FROM tool_batches
                 WHERE worker_name = ?
                   AND status IN ({', '.join('?' for _ in OPEN_STATUSES)})
+                  {mode_clause}
                 ORDER BY created_at, rowid
                 LIMIT ?
                 """,
-                (self.worker_name, *sorted(OPEN_STATUSES), int(limit)),
+                params,
             )]
+        finally:
+            conn.close()
+
+    def unsettled_delivery_ids(
+        self, *, execution_mode: str | None = None, limit: int = 100
+    ) -> list[str]:
+        """已经执行完、但尚未完成投递的批次。
+
+        `completed` 是 worker 的终态，却不一定是用户可见结果的终态。回退时
+        还要等 `pending` 经 heartbeat 入 outbox、`queued` 经 outbox 发完；
+        否则关掉 worker 也会同时关掉这两段接线，把结果留在半路。
+        """
+        if execution_mode is not None and execution_mode not in EXECUTION_MODES:
+            raise ValueError(
+                f"execution_mode must be one of {sorted(EXECUTION_MODES)}")
+        mode_clause = " AND execution_mode = ?" if execution_mode else ""
+        params: list[Any] = [self.worker_name]
+        if execution_mode:
+            params.append(execution_mode)
+        params.append(int(limit))
+        conn = self.db._get_conn()
+        try:
+            return [row["id"] for row in conn.execute(
+                f"""
+                SELECT id FROM tool_batches
+                WHERE worker_name = ?
+                  AND delivery_status IN ('pending', 'queued')
+                  {mode_clause}
+                ORDER BY completed_at, rowid
+                LIMIT ?
+                """,
+                params,
+            )]
+        finally:
+            conn.close()
+
+    def reconcile_queued_deliveries(self) -> dict[str, str]:
+        """从持久 outbox 修复漏掉的 queued → sent/failed 回调。
+
+        OutboundQueue 会在正常发送后立即回调，但进程可能刚好在 outbox 写入
+        终态之后退出。两张表都在同一个 SQLite 文件里，因此启动和心跳可以
+        用 outbox 的终态作为恢复依据，而不必重新发送已经成功的 Discord 消息。
+        """
+        conn = self.db._get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                """
+                SELECT batch.id,
+                       CASE
+                         WHEN EXISTS (
+                           SELECT 1 FROM outbound_deliveries AS sent
+                           WHERE sent.source_type = 'tool_batch'
+                             AND sent.source_id = batch.id
+                             AND sent.status = 'sent'
+                         ) THEN 'sent'
+                         ELSE 'failed'
+                       END AS terminal_status
+                FROM tool_batches AS batch
+                WHERE batch.worker_name = ?
+                  AND batch.delivery_status = 'queued'
+                  AND EXISTS (
+                    SELECT 1 FROM outbound_deliveries AS delivery
+                    WHERE delivery.source_type = 'tool_batch'
+                      AND delivery.source_id = batch.id
+                      AND delivery.status IN ('sent', 'failed')
+                  )
+                ORDER BY batch.completed_at, batch.rowid
+                """,
+                (self.worker_name,),
+            ).fetchall()
+            reconciled: dict[str, str] = {}
+            for row in rows:
+                cursor = conn.execute(
+                    """
+                    UPDATE tool_batches
+                    SET delivery_status = ?, updated_at = datetime('now')
+                    WHERE id = ? AND delivery_status = 'queued'
+                    """,
+                    (row["terminal_status"], row["id"]),
+                )
+                if cursor.rowcount == 1:
+                    reconciled[str(row["id"])] = str(row["terminal_status"])
+            conn.commit()
+            return reconciled
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 

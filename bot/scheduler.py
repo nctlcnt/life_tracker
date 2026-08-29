@@ -19,10 +19,11 @@ import time as time_module
 import uuid
 from datetime import datetime, time, timedelta
 from pathlib import Path
-from bot.async_pipeline import GenerationGate
+from bot.async_pipeline import BatchCoordinator, GenerationGate
 from bot.ai_engine import scheduled_action
 from bot.database import Database
 from bot.memory import MemoryService
+from bot.memory import scene_state
 from bot.memory.curator import CURATOR_NAME
 from bot.prompts import get_prompt_template
 from bot.logger import get_logger
@@ -50,7 +51,9 @@ CURATOR_AUTO_PROPOSAL_DIR = Path("data/curator_proposals/auto")
 class Scheduler:
     def __init__(self, db: Database, send_callback, is_user_typing_callback=None,
                  memory_service: MemoryService | None = None,
-                 generation_gate: GenerationGate | None = None):
+                 generation_gate: GenerationGate | None = None,
+                 batch_coordinator: BatchCoordinator | None = None,
+                 tool_worker_apply: bool | None = None):
         """
         send_callback: 一个 async 函数，用于发送消息到 Discord
             例如 bot.send_proactive_message
@@ -65,6 +68,12 @@ class Scheduler:
         # main.py 在 outbox 开启时把同一个 gate 注入 Bot 与 Scheduler。
         # 未注入时仍在 scheduler 内部串行，保持 feature flag 关闭时的基线。
         self.generation_gate = generation_gate or GenerationGate()
+        self.batch_coordinator = batch_coordinator
+        self.tool_worker_apply = (
+            config.ASYNC_TOOL_APPLY
+            if tool_worker_apply is None
+            else bool(tool_worker_apply)
+        )
         self._reminder_event = asyncio.Event()  # 新增提醒时唤醒 reminder 循环
         # 上次 AI 调用完成的时刻（用于计算下次 poll）；启动时设为 now
         self._last_ai_call_ts: datetime = datetime.now()
@@ -447,9 +456,34 @@ class Scheduler:
             scheduled_for = f"{scheduled_for}:manual:{uuid.uuid4().hex}"
         source_id = f"{name}:{scheduled_for}"
         send_delivery = self._delivery_callback("check_in", source_id)
+        prompt = self._render_check_in_prompt(check_in, timestamp)
+
         async with self.generation_gate:
+            # Clear before the tool batch is made runnable.  Doing both under
+            # the shared generation gate avoids clearing a scene while an
+            # ordinary chat is still snapshotting it.  A fast set_scene may
+            # then run alongside this check-in's chat generation; that side is
+            # told not to clear the newly written scene again.
+            if self.batch_coordinator is not None:
+                try:
+                    scene_state.clear(self.db, str(config.CHANNEL_ID))
+                    self.batch_coordinator.create_check_in(
+                        channel_id=str(config.CHANNEL_ID),
+                        source_ref=f"check_in:{check_in['id']}:{scheduled_for}",
+                        payload={
+                            "prompt": prompt,
+                            "timestamp": timestamp,
+                            "check_in_name": name,
+                            "tool_profile": check_in.get("tool_profile") or "poll",
+                            "track_scene": bool(check_in.get("track_scene")),
+                            "context_config": check_in.get("context_config") or {},
+                        },
+                    )
+                except Exception as exc:
+                    logger.exception("❌ check-in 工具批次创建失败: %s", name)
+                    result["error"] = f"{type(exc).__name__}: {exc}"
+                    return result
             try:
-                prompt = self._render_check_in_prompt(check_in, timestamp)
                 # 主动轮询（after_ai_call）保留小窗口省 token（原 8 条特例的
                 # token 版）；定时窗口类的 check-in 用完整 token 窗口
                 window = self.memory.context_window(
@@ -461,11 +495,23 @@ class Scheduler:
                     send_callback=send_delivery,
                     allow_silent=bool(check_in.get("allow_silent", True)),
                     trigger="check_in",
-                    tool_profile=check_in.get("tool_profile") or "poll",
+                    tool_profile=(
+                        "none"
+                        if self.tool_worker_apply
+                        else check_in.get("tool_profile") or "poll"
+                    ),
                     check_in_name=name,
                     context_config=check_in.get("context_config") or {},
-                    track_scene=bool(check_in.get("track_scene")),
+                    track_scene=(
+                        bool(check_in.get("track_scene"))
+                        and not self.tool_worker_apply
+                    ),
                     window=window,
+                    **(
+                        {"clear_scene": False}
+                        if self.batch_coordinator is not None
+                        else {}
+                    ),
                 )
                 should_mark_fired = True
                 result["ok"] = True
@@ -726,7 +772,9 @@ class Scheduler:
                     self.db, prompt, timestamp, window.messages,
                     send_callback=send_delivery,
                     trigger="reminder",
-                    tool_profile="reminder_safe",
+                    tool_profile=(
+                        "none" if self.tool_worker_apply else "reminder_safe"
+                    ),
                     window=window,
                 )
                 if reply and "[SILENT]" not in reply:

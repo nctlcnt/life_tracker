@@ -86,7 +86,8 @@ def relay_call(monkeypatch, tmp_path):
     db = Database(str(tmp_path / "relay_test.db"))
 
     def run(script, *, preset=None, prompt=None, messages=None,
-            send_callback=None, tool_callback=None, tool_names=None):
+            send_callback=None, tool_callback=None, tool_names=None,
+            tool_executor=None, return_final_only=False, max_rounds=5):
         calls: list[dict] = []
         monkeypatch.setattr(engine.httpx, "AsyncClient",
                             lambda: _FakeAsyncClient(list(script), calls))
@@ -96,6 +97,9 @@ def relay_call(monkeypatch, tmp_path):
             preset or _preset(),
             send_callback=send_callback, tool_callback=tool_callback,
             tool_names=tool_names,
+            tool_executor=tool_executor,
+            return_final_only=return_final_only,
+            max_rounds=max_rounds,
         ))
         return result, calls
 
@@ -188,6 +192,86 @@ def test_tool_round_message_shapes_and_callbacks(relay_call):
                         "content": json.dumps(expected_result, ensure_ascii=False)}
     assert msgs[-1] == {"role": "user",
                         "content": build_tool_round_hint(["list_reminders"])}
+
+
+def test_background_worker_uses_injected_executor_and_returns_only_final_json(
+    relay_call,
+):
+    tool_call = {
+        "id": "call_worker_1",
+        "type": "function",
+        "function": {
+            "name": "set_reminder",
+            "arguments": json.dumps(
+                {"trigger_time": "2026-08-29T08:00:00", "action": "交作业"},
+                ensure_ascii=False,
+            ),
+        },
+    }
+    executed = []
+
+    async def executor(name, arguments, call_index):
+        executed.append((name, arguments, call_index))
+        return {"success": True, "reminder_id": 7}
+
+    final_json = json.dumps(
+        {
+            "outcome": "facts",
+            "facts": ["提醒已设置"],
+            "verbatim_terms": [],
+            "supersedes_previous": False,
+        },
+        ensure_ascii=False,
+    )
+    result, calls = relay_call(
+        [
+            _completion(
+                content="internal progress",
+                tool_calls=[tool_call],
+                finish_reason="tool_calls",
+            ),
+            _completion(content=final_json),
+        ],
+        tool_names={"set_reminder"},
+        tool_executor=executor,
+        return_final_only=True,
+    )
+
+    assert result == final_json
+    assert executed == [
+        (
+            "set_reminder",
+            {"trigger_time": "2026-08-29T08:00:00", "action": "交作业"},
+            0,
+        )
+    ]
+    assert calls[1]["payload"]["messages"][-2] == {
+        "role": "tool",
+        "tool_call_id": "call_worker_1",
+        "content": json.dumps(
+            {"success": True, "reminder_id": 7}, ensure_ascii=False
+        ),
+    }
+
+
+def test_background_worker_round_cap_is_a_hard_failure(relay_call):
+    tool_call = {
+        "id": "call_loop",
+        "type": "function",
+        "function": {"name": "list_reminders", "arguments": "{}"},
+    }
+
+    async def executor(_name, _arguments, _call_index):
+        return {"success": True, "reminders": []}
+
+    with pytest.raises(AIProviderError, match="超过最大调用轮数"):
+        relay_call(
+            [_completion(tool_calls=[tool_call], finish_reason="tool_calls")],
+            tool_names={"list_reminders"},
+            tool_executor=executor,
+            return_final_only=True,
+            max_rounds=1,
+        )
 
 
 _TOOLS_SECTION = "【工具使用策略】log 前自查同时段是否已有相同事件。"

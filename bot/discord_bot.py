@@ -10,6 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timezone, timedelta
 from bot.async_pipeline import (
+    BatchCoordinator,
     DeliveryFailed,
     NullGenerationGate,
     OutboundQueue,
@@ -42,7 +43,9 @@ def _is_rate_limited_error(exc: Exception) -> bool:
 class LifeTrackerBot(commands.Bot):
     def __init__(self, db: Database, memory_service: MemoryService | None = None,
                  *, generation_gate=None,
-                 outbound_queue: OutboundQueue | None = None):
+                 outbound_queue: OutboundQueue | None = None,
+                 batch_coordinator: BatchCoordinator | None = None,
+                 tool_worker_apply: bool | None = None):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
@@ -50,6 +53,12 @@ class LifeTrackerBot(commands.Bot):
         self.memory = memory_service or MemoryService(db)
         self.generation_gate = generation_gate or NullGenerationGate()
         self.outbound_queue = outbound_queue
+        self.batch_coordinator = batch_coordinator
+        self.tool_worker_apply = (
+            config.ASYNC_TOOL_APPLY
+            if tool_worker_apply is None
+            else bool(tool_worker_apply)
+        )
         self.last_typing_at: datetime | None = None  # 目标用户最近 typing 时刻（UTC aware）
         # typing 被 429 限流后的冷却截止时间（按 channel_id），命中时直接跳过 typing 不再撞 API
         self._typing_cooldown_until: dict[int, datetime] = {}
@@ -59,6 +68,11 @@ class LifeTrackerBot(commands.Bot):
 
     def set_outbound_queue(self, outbound_queue: OutboundQueue | None) -> None:
         self.outbound_queue = outbound_queue
+
+    def set_batch_coordinator(
+        self, batch_coordinator: BatchCoordinator | None
+    ) -> None:
+        self.batch_coordinator = batch_coordinator
 
     def _get_typing_cooldown_until(self, channel_id: int) -> datetime | None:
         until = self._typing_cooldown_until.get(channel_id)
@@ -161,7 +175,7 @@ class LifeTrackerBot(commands.Bot):
 
         # 备份到 DB（messages 表只作备份，AI 上下文走 DB conversation log）
         self.db.add_message("user", current_content)
-        await self.memory.ingest_message(
+        row_id = await self.memory.ingest_message(
             discord_message_id=str(message.id),
             channel_id=str(message.channel.id),
             guild_id=str(message.guild.id) if message.guild else None,
@@ -181,6 +195,10 @@ class LifeTrackerBot(commands.Bot):
                 "message_type": str(message.type),
             },
         )
+        if row_id is not None and self.batch_coordinator is not None:
+            self.batch_coordinator.notify_user_message(
+                str(message.channel.id), row_id
+            )
         try:
             # 当前消息先持久化，再进入共享 gate 读取快照并生成。主动消息必须
             # 等这段结束后才能读取自己的上下文，因此不能抢在聊天回复前入队。
@@ -211,6 +229,16 @@ class LifeTrackerBot(commands.Bot):
 
         async def send_reply(text):
             nonlocal delivery_index
+            if "[SILENT]" in text:
+                if self.batch_coordinator is not None:
+                    outcome = self.batch_coordinator.force(
+                        str(message.channel.id)
+                    )
+                    logger.info(
+                        "🔇 chat [SILENT] 强制工具批次: %s",
+                        outcome.get("action"),
+                    )
+                return
             delivery_index += 1
             await self._send_or_enqueue_message(
                 message.channel,
@@ -245,6 +273,7 @@ class LifeTrackerBot(commands.Bot):
                 self.db, ai_messages, send_callback=send_reply,
                 tool_callback=on_tool_call, memory_service=self.memory,
                 window=window,
+                tool_names=set() if self.tool_worker_apply else None,
             )
             return
 
@@ -260,6 +289,7 @@ class LifeTrackerBot(commands.Bot):
                 self.db, ai_messages, send_callback=send_reply,
                 tool_callback=on_tool_call, memory_service=self.memory,
                 window=window,
+                tool_names=set() if self.tool_worker_apply else None,
             )
         else:
             try:
@@ -267,6 +297,7 @@ class LifeTrackerBot(commands.Bot):
                     self.db, ai_messages, send_callback=send_reply,
                     tool_callback=on_tool_call, memory_service=self.memory,
                     window=window,
+                    tool_names=set() if self.tool_worker_apply else None,
                 )
             finally:
                 await typing_cm.__aexit__(None, None, None)
