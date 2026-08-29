@@ -302,13 +302,19 @@ def test_retry_continues_with_a_new_call_after_durable_success(db, repository):
             event_id = result["event_id"]
             return "not json", "bad-run"
 
-        retry_prior_calls.append(
-            json.loads(messages[-1]["content"]).get("PRIOR_TOOL_CALLS")
+        prior_calls = json.loads(messages[-1]["content"]).get(
+            "PRIOR_TOOL_CALLS"
+        )
+        retry_prior_calls.append(prior_calls)
+        await tool_executor(
+            prior_calls[0]["tool_name"],
+            prior_calls[0]["arguments"],
+            0,
         )
         await tool_executor(
             "update_timeline_event",
             {"event_id": event_id, "notes": "自己做的炒饭"},
-            0,
+            1,
         )
         return output("facts", ["午饭记录已补充"]), "good-run"
 
@@ -330,6 +336,40 @@ def test_retry_continues_with_a_new_call_after_durable_success(db, repository):
     assert retry_prior_calls[0][0]["tool_name"] == "log_timeline_event"
     assert retry_prior_calls[0][0]["succeeded"] is True
     assert db.get_event_by_id(event_id)["notes"] == "自己做的炒饭"
+
+
+def test_retry_cannot_change_a_durable_call_in_place(db, repository):
+    add_message(db, "user", "记录午饭")
+    first = claim_conversation(db, repository)
+    model_attempts = 0
+    event_start = datetime.now().replace(
+        hour=12, minute=0, second=0, microsecond=0
+    ).isoformat()
+
+    async def model(_db, _system, _messages, *, tool_executor, **_kwargs):
+        nonlocal model_attempts
+        model_attempts += 1
+        content = "吃午饭" if model_attempts == 1 else "吃炒饭"
+        await tool_executor(
+            "log_timeline_event",
+            {
+                "start_time": event_start,
+                "content": content,
+                "category": "Routine",
+            },
+            0,
+        )
+        return "not json", f"run-{model_attempts}"
+
+    asyncio.run(make_worker(db, repository, model).process(first))
+    reclaimed = repository.claim_next(
+        now=datetime.now(timezone.utc) + timedelta(seconds=2)
+    )
+    asyncio.run(make_worker(db, repository, model).process(reclaimed))
+
+    assert repository.get(first["id"])["status"] == "retry_wait"
+    assert len(repository.calls(first["id"])) == 1
+    assert [item["content"] for item in db.get_today_events()] == ["吃午饭"]
 
 
 def test_reminder_result_is_expressed_with_latest_context_and_exact_terms(

@@ -244,35 +244,16 @@ class ToolWorker:
             if batch["source_kind"] == "check_in"
             else None,
         )
-        next_call_index = max(call_records, default=-1) + 1
-
         async def execute_tool(
-            name: str, arguments: dict, _provider_call_index: int
+            name: str, arguments: dict, provider_call_index: int
         ):
-            nonlocal next_call_index
-            matching = next(
-                (
-                    item for item in call_records.values()
-                    if item["tool_name"] == name
-                    and (item.get("arguments") or {}) == arguments
-                ),
-                None,
-            )
-            if matching is not None:
-                durable_call_index = int(matching["call_index"])
-            else:
-                # Provider-local indexes restart at zero on every model run.
-                # Durable identity belongs to the batch ledger, so genuinely
-                # new work always appends after calls from earlier attempts.
-                durable_call_index = next_call_index
-                next_call_index += 1
             return await self._execute_one(
                 batch,
                 tool_names,
                 call_records,
                 name,
                 arguments,
-                durable_call_index,
+                provider_call_index,
             )
 
         raw = await self.model_runner(
