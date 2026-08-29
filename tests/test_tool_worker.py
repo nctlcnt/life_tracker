@@ -61,6 +61,13 @@ async def echo_expression(_db, _system, messages):
     return "；".join(parts), "expression-run"
 
 
+class ProviderInterrupted(RuntimeError):
+    """工具已经调完、provider 才掉线：这是会让整批重试的中断。
+
+    输出不合契约不再走这条路——那由就地重写 JSON 处理，不推倒整批。
+    """
+
+
 def make_worker(
     db,
     repository,
@@ -303,7 +310,7 @@ def test_repeated_side_effect_is_deduplicated_after_model_output_retry(
             0,
         )
         if model_attempts == 1:
-            return "not json", "bad-run"
+            raise ProviderInterrupted("provider dropped after the tool call")
         return output("completed", [execution("记录午饭")]), "good-run"
 
     worker = make_worker(db, repository, model)
@@ -346,7 +353,7 @@ def test_retry_continues_without_replaying_durable_calls(db, repository):
                 0,
             )
             event_id = result["event_id"]
-            return "not json", "bad-run"
+            raise ProviderInterrupted("provider dropped after the tool call")
 
         prior_calls = json.loads(messages[-1]["content"]).get(
             "PRIOR_TOOL_CALLS"
@@ -397,7 +404,7 @@ def test_retry_may_switch_tools_at_the_resumed_position(db, repository):
         model_attempts += 1
         if model_attempts == 1:
             await tool_executor("list_reminders", {}, 0)
-            return "not json", "bad-run"
+            raise ProviderInterrupted("provider dropped after the tool call")
         await tool_executor(
             "set_reminder",
             {"trigger_time": trigger_time, "action": "喝水", "priority": "low"},
@@ -447,6 +454,153 @@ def test_empty_outcome_after_a_read_only_call_stays_silent(db, repository):
     assert not done["last_error"]
     assert done["delivery_kind"] == "none"
     assert expressed == []
+
+
+def test_chat_track_silence_downgrades_a_write_to_a_reaction(db, repository):
+    """聊天轨说这话刚才已经讲过了，就别逼它再讲一遍。
+
+    线上形状：用户说困，聊天轨已经回过「去眯一会儿吧」，工具轨随后设好跟进
+    提醒。表达层判断不必重复，返回 [SILENT]，旧代码把这当成失败，三次耗尽后
+    发出一条「操作没成功」的道歉——提醒其实好好地设着。
+    """
+    add_message(db, "user", "好困哦")
+    batch = claim_conversation(db, repository)
+    trigger_time = (
+        datetime.now() + timedelta(minutes=30)
+    ).replace(second=0, microsecond=0).isoformat()
+
+    async def expression(_db, _system, _messages):
+        return "[SILENT]", "expression-run"
+
+    async def model(_db, _system, _messages, *, tool_executor, **_kwargs):
+        await tool_executor(
+            "set_reminder",
+            {"trigger_time": trigger_time, "action": "看看缓过来没", "priority": "low"},
+            0,
+        )
+        return output("completed", [execution("设好跟进提醒")]), "run-1"
+
+    worker = make_worker(db, repository, model, expression=expression)
+    asyncio.run(worker.process(batch))
+
+    done = repository.get(batch["id"])
+    assert done["status"] == "completed"
+    assert done["attempt_count"] == 1
+    assert not done["last_error"]
+    # 动过数据，所以留个反应作痕迹，但不说话
+    assert done["delivery_kind"] == "reaction"
+    assert len(db.list_active_reminders()) == 1
+
+
+def test_chat_track_silence_after_a_pure_lookup_says_nothing(db, repository):
+    """什么都没做还打个勾反而让人猜，所以纯查询的静默就是彻底安静。"""
+    add_message(db, "user", "喝了喝了～")
+    batch = claim_conversation(db, repository)
+
+    async def expression(_db, _system, _messages):
+        return "[SILENT]", "expression-run"
+
+    async def model(_db, _system, _messages, *, tool_executor, **_kwargs):
+        await tool_executor("list_reminders", {}, 0)
+        return output("completed", [execution("查了提醒")]), "run-1"
+
+    worker = make_worker(db, repository, model, expression=expression)
+    asyncio.run(worker.process(batch))
+
+    done = repository.get(batch["id"])
+    assert done["status"] == "completed"
+    assert done["delivery_kind"] == "none"
+
+
+def test_malformed_output_is_repaired_in_place(db, repository):
+    """输出不合契约只重写那份 JSON，不推倒整批重来。
+
+    工具已经调完、副作用已经产生，重跑整批既浪费又会让用户收到一条与事实不
+    符的失败反馈。
+    """
+    add_message(db, "user", "记一下午饭")
+    batch = claim_conversation(db, repository)
+    rounds = []
+    event_start = datetime.now().replace(
+        hour=12, minute=0, second=0, microsecond=0
+    ).isoformat()
+
+    async def model(_db, _system, messages, *, tool_executor, **_kwargs):
+        rounds.append(messages)
+        if len(rounds) == 1:
+            await tool_executor(
+                "log_timeline_event",
+                {
+                    "start_time": event_start,
+                    "content": "吃午饭",
+                    "category": "Routine",
+                },
+                0,
+            )
+            return "这不是 JSON", "bad-run"
+        return output("completed", [execution("记录午饭")]), "good-run"
+
+    asyncio.run(make_worker(db, repository, model).process(batch))
+
+    done = repository.get(batch["id"])
+    assert done["status"] == "completed"
+    # 整批没有重来：领取次数仍是 1
+    assert done["attempt_count"] == 1
+    assert len(rounds) == 2
+    assert len(db.get_today_events()) == 1
+    assert len(repository.calls(batch["id"])) == 1
+    # 重写轮能看到自己上次写了什么、被拒的理由是什么
+    replayed = [item["content"] for item in rounds[1]]
+    assert "这不是 JSON" in replayed
+    assert any("OUTPUT_REJECTED" in item for item in replayed)
+
+
+def test_repair_round_cannot_call_tools_again(db, repository):
+    """重写轮不给工具：该调的已经调完，再给一次就会重复写入。"""
+    add_message(db, "user", "记一下午饭")
+    batch = claim_conversation(db, repository)
+    rounds = []
+    event_start = datetime.now().replace(
+        hour=12, minute=0, second=0, microsecond=0
+    ).isoformat()
+
+    async def model(_db, _system, _messages, *, tool_executor, **_kwargs):
+        rounds.append(1)
+        await tool_executor(
+            "log_timeline_event",
+            {
+                "start_time": event_start,
+                "content": "吃午饭",
+                "category": "Routine",
+            },
+            0,
+        )
+        return "这不是 JSON", "bad-run"
+
+    worker = make_worker(db, repository, model, max_attempts=1)
+    asyncio.run(worker.process(batch))
+
+    # 第二轮想再写一次，被挡下来了，时间线上仍然只有第一轮那条
+    assert len(rounds) == 2
+    assert len(db.get_today_events()) == 1
+
+
+def test_repair_gives_up_after_the_limit(db, repository):
+    """重写次数用完才回到整批重试，不会无限重写下去。"""
+    add_message(db, "user", "随便说一句")
+    batch = claim_conversation(db, repository, mode="shadow")
+    rounds = []
+
+    async def model(*_args, **_kwargs):
+        rounds.append(1)
+        return "始终不是 JSON", "bad-run"
+
+    worker = make_worker(db, repository, model, max_attempts=1)
+    asyncio.run(worker.process(batch))
+
+    # 一次正常输出 + 两次重写
+    assert len(rounds) == 3
+    assert repository.get(batch["id"])["status"] == "failed"
 
 
 def test_provider_index_reset_within_one_attempt_does_not_collide(
@@ -507,7 +661,7 @@ def test_read_only_call_is_re_executed_on_retry(db, repository):
         model_attempts += 1
         await tool_executor("list_reminders", {}, 0)
         if model_attempts == 1:
-            return "not json", "bad-run"
+            raise ProviderInterrupted("provider dropped after the tool call")
         return output(
             "completed",
             [execution("查了提醒")],
@@ -555,7 +709,7 @@ def test_retry_with_changed_arguments_writes_a_second_record(db, repository):
             0,
         )
         if model_attempts == 1:
-            return "not json", "bad-run"
+            raise ProviderInterrupted("provider dropped after the tool call")
         return output("completed", [execution("记录午饭")]), "good-run"
 
     asyncio.run(make_worker(db, repository, model).process(first))

@@ -23,8 +23,10 @@ from .outbound import NullGenerationGate
 from .tool_batches import ToolBatchRepository
 from .worker_prompts import (
     ToolWorkerOutput,
+    ToolWorkerOutputError,
     build_result_expression_system,
     build_tool_worker_system,
+    output_repair_request,
     parse_tool_worker_output,
     result_expression_request,
 )
@@ -107,7 +109,8 @@ class ToolResultExpresser:
         outcome: str,
         execution_results: tuple[dict[str, Any], ...],
         important_information: tuple[dict[str, str], ...],
-    ) -> str:
+    ) -> str | None:
+        """把内部结果说成人话；返回 None 表示聊天轨判断这时候不必开口。"""
         async with self.generation_gate:
             history = self.db.get_recent_ai_messages(
                 str(channel_id), limit=self.history_limit
@@ -131,8 +134,12 @@ class ToolResultExpresser:
             reply = raw[0] if isinstance(raw, tuple) else raw
 
         text = sanitize_toolless_chat_output(str(reply or ""))
-        if not text or "[SILENT]" in text:
-            raise ValueError("chat track did not safely express the internal result")
+        # [SILENT] 是这套系统既有的正当信号，聊天轨用它表示「这话刚才已经说过
+        # 了」。逼它在这种时候硬说，它就会去说内部实现细节。
+        if "[SILENT]" in text:
+            return None
+        if not text:
+            raise ValueError("chat track produced no output at all")
 
         private_ids = self._private_identifiers(execution_results)
         public_values = tuple(item["value"] for item in important_information)
@@ -183,6 +190,7 @@ class ToolWorker:
         *,
         memory_service: MemoryService | None = None,
         max_attempts: int = 3,
+        max_output_repairs: int = 2,
         batch_timeout_seconds: float = 60.0,
         idle_poll_seconds: float = 1.0,
         on_batch_finished: FinishedCallback | None = None,
@@ -193,6 +201,7 @@ class ToolWorker:
         self.expresser = expresser
         self.memory_service = memory_service
         self.max_attempts = max(int(max_attempts), 1)
+        self.max_output_repairs = max(int(max_output_repairs), 0)
         self.batch_timeout_seconds = max(float(batch_timeout_seconds), 0.01)
         self.idle_poll_seconds = max(float(idle_poll_seconds), 0.01)
         self.on_batch_finished = on_batch_finished
@@ -316,20 +325,48 @@ class ToolWorker:
                 resumed_side_effects=resumed_side_effects,
             )
 
-        raw = await self.model_runner(
-            self.db,
-            system_prompt,
-            [{"role": "user", "content": model_input}],
-            tool_names=tool_names,
-            tool_executor=execute_tool,
-        )
-        if isinstance(raw, tuple):
-            raw_text, run_id = raw
-        else:
-            raw_text, run_id = raw, None
-        output = parse_tool_worker_output(str(raw_text or ""))
-        calls = self.repository.calls(batch_id)
-        self._validate_outcome(output, calls)
+        # 输出不合契约是排版问题，不是执行问题：工具已经调完、副作用已经产生，
+        # 把整批推倒重来毫无道理。这里只把错误退回给模型，让它重写那份 JSON。
+        async def refuse_tool(name: str, _arguments: dict, _index: int):
+            raise ToolInvocationFailed(
+                f"tool calls are closed for this batch: {name}"
+            )
+
+        messages = [{"role": "user", "content": model_input}]
+        round_tools = tool_names
+        for repair in range(self.max_output_repairs + 1):
+            raw = await self.model_runner(
+                self.db,
+                system_prompt,
+                messages,
+                tool_names=round_tools,
+                tool_executor=execute_tool if round_tools else refuse_tool,
+            )
+            if isinstance(raw, tuple):
+                raw_text, run_id = raw
+            else:
+                raw_text, run_id = raw, None
+            calls = self.repository.calls(batch_id)
+            try:
+                output = parse_tool_worker_output(str(raw_text or ""))
+                self._validate_outcome(output, calls)
+                break
+            except ToolWorkerOutputError as exc:
+                if repair >= self.max_output_repairs:
+                    raise
+                logger.info(
+                    "批次 %s 输出不合契约，要求重写（第 %s 次）：%s",
+                    batch_id,
+                    repair + 1,
+                    exc,
+                )
+                messages = [
+                    *messages,
+                    {"role": "assistant", "content": str(raw_text or "")},
+                    {"role": "user", "content": output_repair_request(str(exc))},
+                ]
+                # 重写轮不再给工具：这一批该调的已经调完，再给一次就会重复写入。
+                round_tools = set()
         delivery_kind = self._delivery_kind(batch, output, calls)
         result: dict[str, Any] = {
             "outcome": output.outcome,
@@ -350,12 +387,23 @@ class ToolWorker:
         if batch["execution_mode"] == "shadow":
             delivery_kind = "none"
         elif delivery_kind == "message":
-            result[SAY_KEY] = await self.expresser.express(
+            said = await self.expresser.express(
                 channel_id=batch["channel_id"],
                 outcome=output.outcome,
                 execution_results=output.execution_results,
                 important_information=output.important_information,
             )
+            if said is None:
+                # 聊天轨不开口时，动过数据的仍然留一个反应作痕迹，纯查询则彻底
+                # 安静——什么都没做还打个勾，反而让人猜。
+                names = {item["tool_name"] for item in calls}
+                delivery_kind = (
+                    "reaction"
+                    if names - READ_ONLY_TOOLS - INTERNAL_TOOLS
+                    else "none"
+                )
+            else:
+                result[SAY_KEY] = said
 
         supersedes_batch_id = None
         if output.supersedes_previous and prior is not None:
@@ -642,7 +690,7 @@ class ToolWorker:
             and item["result"].get("success") is False
         ]
         if failures and output.outcome == "empty":
-            raise ValueError("tool failures cannot be reported as empty")
+            raise ToolWorkerOutputError("tool failures cannot be reported as empty")
         important_values = {
             item["value"] for item in output.important_information
         }
@@ -655,15 +703,9 @@ class ToolWorker:
                 and result.get(field) is not None
                 and str(result[field]) in important_values
             ):
-                raise ValueError("created database IDs cannot be important information")
-        names = {item["tool_name"] for item in calls}
-        # 只读工具查了个空是正常结局，没有事实可报就是没有。硬要求它说点什么，
-        # 模型只能在「编一个事实」和「谎称自己失败」之间挑一个，两条都更糟。
-        needs_message = bool(
-            names - ROUTINE_WRITE_TOOLS - INTERNAL_TOOLS - READ_ONLY_TOOLS
-        )
-        if needs_message and output.outcome == "empty":
-            raise ValueError("query/reminder results require facts or unable")
+                raise ToolWorkerOutputError(
+                    "created database IDs cannot be important information"
+                )
 
     @staticmethod
     def _delivery_kind(
@@ -739,7 +781,9 @@ class ToolWorker:
             )
         except Exception:
             logger.exception("失败结果表达也失败，使用安全提示")
-            say = "刚才那件事没有处理成功，我需要再试一下。"
+            say = None
+        # 真的出了岔子就必须说，这里不接受静默。
+        say = say or "刚才那件事没有处理成功，我需要再试一下。"
         if not self.repository.mark_completed(
             batch["id"],
             batch["lease_token"],

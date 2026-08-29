@@ -248,12 +248,8 @@ def parse_tool_worker_output(raw: str) -> ToolWorkerOutput:
         if not label or not info_value:
             raise ToolWorkerOutputError("important information requires label/value")
         information.append({"label": label, "value": info_value})
-    if outcome == "empty" and (results or information):
-        raise ToolWorkerOutputError(
-            "empty outcome cannot contain results or information"
-        )
-    if outcome in {"completed", "unable"} and not results:
-        raise ToolWorkerOutputError(f"{outcome} outcome requires execution results")
+    # 「没什么可产出」和「顺手记一句做了什么」并不矛盾，反过来做完一件事也不
+    # 一定有话要说。强制两者对齐只会逼模型在编造和谎称失败之间挑一个。
     supersedes = value.get("supersedes_previous", False)
     if not isinstance(supersedes, bool):
         raise ToolWorkerOutputError("supersedes_previous must be boolean")
@@ -263,6 +259,21 @@ def parse_tool_worker_output(raw: str) -> ToolWorkerOutput:
         important_information=tuple(information),
         supersedes_previous=supersedes,
         raw=str(raw or ""),
+    )
+
+
+def output_repair_request(error: str) -> str:
+    """要求工具轨只重写那一份 JSON。
+
+    工具已经调过了，副作用已经产生了，所以这里绝不是让它把整件事重做一遍。
+    """
+    return (
+        "[OUTPUT_REJECTED — your tool calls are already durable and must not be "
+        "repeated; only the final JSON was malformed]\n"
+        f"Reason: {error}\n"
+        "Reply with the corrected JSON object and nothing else. Do not call any "
+        "tool again, and do not redo work that PRIOR_TOOL_CALLS already shows as "
+        "done."
     )
 
 
