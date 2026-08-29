@@ -657,7 +657,11 @@ class ToolWorker:
             ):
                 raise ValueError("created database IDs cannot be important information")
         names = {item["tool_name"] for item in calls}
-        needs_message = bool(names - ROUTINE_WRITE_TOOLS - INTERNAL_TOOLS)
+        # 只读工具查了个空是正常结局，没有事实可报就是没有。硬要求它说点什么，
+        # 模型只能在「编一个事实」和「谎称自己失败」之间挑一个，两条都更糟。
+        needs_message = bool(
+            names - ROUTINE_WRITE_TOOLS - INTERNAL_TOOLS - READ_ONLY_TOOLS
+        )
         if needs_message and output.outcome == "empty":
             raise ValueError("query/reminder results require facts or unable")
 
@@ -685,6 +689,10 @@ class ToolWorker:
             return "none"
         if output.outcome == "unable":
             return "message"
+        # 只查了查、什么都没动过，而模型判断没什么可说：那就真的不说。写入确实
+        # 发生过的时候走不到这里，用户仍然会收到反应或消息。
+        if output.outcome == "empty" and names <= READ_ONLY_TOOLS | INTERNAL_TOOLS:
+            return "none"
         if names and names <= ROUTINE_WRITE_TOOLS:
             return "reaction"
         return "message"

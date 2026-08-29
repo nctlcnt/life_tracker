@@ -9,7 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from bot.prompts import LEGACY_STRUCTURED_KEYS, build_prompt, synthesize_main_template
+from bot.prompts import (
+    LABEL_DEADLINES,
+    LABEL_PENDING_REMINDERS,
+    LABEL_TODAY_TIMELINE,
+    LEGACY_STRUCTURED_KEYS,
+    build_prompt,
+    synthesize_main_template,
+)
 from tests.legacy_reference import legacy_from_formatted
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -85,3 +92,29 @@ def test_migrated_template_parity(sections_name: str, data_name: str):
     stripped = {k: (sections.get(k) or "").strip() for k in sections}
     sections["main_template"] = synthesize_main_template(stripped)
     _assert_parity(sections, DATA_VARIANTS[data_name])
+
+
+@pytest.mark.parametrize(
+    "field, label",
+    [
+        ("pending_reminders", LABEL_PENDING_REMINDERS),
+        ("deadlines", LABEL_DEADLINES),
+        ("today_timeline", LABEL_TODAY_TIMELINE),
+    ],
+)
+def test_empty_context_lists_still_say_so(field, label):
+    """空列表必须留下痕迹，不能让整段从 prompt 里消失。
+
+    工具策略教模型「看【待触发的 Reminder】列表，那才是真相」。段落一旦消失，
+    模型分不清「确实没有」和「没告诉我」，就会按策略去 list_reminders 复查，
+    白白多一次调用。
+    """
+    sections = _default_sections()
+    sections.pop("main_template", None)
+    rendered = build_prompt(
+        "chat", sections=sections, **{**FULL_DATA, field: None}
+    ).flatten()
+
+    assert label in rendered
+    segment = rendered.split(label, 1)[1].splitlines()[1]
+    assert "没有" in segment or "还没有" in segment

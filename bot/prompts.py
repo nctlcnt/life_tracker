@@ -340,7 +340,8 @@ def _format_projects(projects: list[dict] | None) -> str:
 
 def _format_deadlines(deadlines: list[dict] | None) -> str:
     if not deadlines:
-        return ""
+        # 段落整个消失，模型就分不清「确实没有」和「没告诉我」，只好自己去查。
+        return f"{LABEL_DEADLINES}\n- 当前没有待完成的 deadline"
     lines = []
     for d in deadlines:
         countdown = format_countdown(d["due_time"])
@@ -351,7 +352,8 @@ def _format_deadlines(deadlines: list[dict] | None) -> str:
 
 def _format_pending_reminders(pending: list[dict] | None) -> str:
     if not pending:
-        return ""
+        # 同上：工具策略要模型「看这个列表，那才是真相」，列表却不在 prompt 里。
+        return f"{LABEL_PENDING_REMINDERS}\n- 当前没有待触发的 reminder"
     lines = []
     for r in pending:
         countdown = format_countdown(r["trigger_time"])

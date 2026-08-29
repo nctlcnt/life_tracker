@@ -419,6 +419,36 @@ def test_retry_may_switch_tools_at_the_resumed_position(db, repository):
     assert len(db.list_active_reminders()) == 1
 
 
+def test_empty_outcome_after_a_read_only_call_stays_silent(db, repository):
+    """只查了查、什么都没动，「没什么可说的」就是合法终态，而且不出声。
+
+    线上形状：用户随口说了句「喝了喝了～」，worker 查一下有没有待处理的提醒，
+    列表是空的。旧规则不许它把这报成 empty，逼着它要么编个事实、要么谎称失
+    败，三次重试全部撞墙，最后降级发出一条毫无根据的道歉。
+    """
+    add_message(db, "user", "喝了喝了～")
+    batch = claim_conversation(db, repository)
+    expressed = []
+
+    async def expression(_db, _system, _messages):
+        expressed.append(_messages)
+        return "不该发出来的话", "expression-run"
+
+    async def model(_db, _system, _messages, *, tool_executor, **_kwargs):
+        await tool_executor("list_reminders", {}, 0)
+        return output("empty"), "run-1"
+
+    worker = make_worker(db, repository, model, expression=expression)
+    asyncio.run(worker.process(batch))
+
+    done = repository.get(batch["id"])
+    assert done["status"] == "completed"
+    assert done["attempt_count"] == 1
+    assert not done["last_error"]
+    assert done["delivery_kind"] == "none"
+    assert expressed == []
+
+
 def test_provider_index_reset_within_one_attempt_does_not_collide(
     db, repository
 ):
