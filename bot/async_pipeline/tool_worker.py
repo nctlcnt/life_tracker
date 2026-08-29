@@ -155,7 +155,14 @@ class ToolResultExpresser:
             )
         ]
         if leaked:
-            raise ValueError("chat track exposed private identifiers")
+            # 对泄露的正确反应是「这句话不发出去」，不是把整批判死刑再道歉一
+            # 句——那样既拦不住下一次，还平白告诉用户出了故障。拦下来之后走
+            # 和 [SILENT] 同一条降级路径。
+            logger.warning(
+                "聊天轨输出里带了私有标识，已拦下不发：%s",
+                "、".join(sorted(set(leaked))),
+            )
+            return None
         return text
 
     @staticmethod
@@ -396,11 +403,8 @@ class ToolWorker:
             if said is None:
                 # 聊天轨不开口时，动过数据的仍然留一个反应作痕迹，纯查询则彻底
                 # 安静——什么都没做还打个勾，反而让人猜。
-                names = {item["tool_name"] for item in calls}
-                delivery_kind = (
-                    "reaction"
-                    if names - READ_ONLY_TOOLS - INTERNAL_TOOLS
-                    else "none"
+                delivery_kind = self._quiet_delivery_kind(
+                    batch, {item["tool_name"] for item in calls}
                 )
             else:
                 result[SAY_KEY] = said
@@ -680,6 +684,22 @@ class ToolWorker:
         return names
 
     @staticmethod
+    def _quiet_delivery_kind(
+        batch: dict[str, Any], tool_names: set[str]
+    ) -> str:
+        """不开口的时候该留下什么痕迹。
+
+        动过数据就贴个反应，但反应得有地方贴：check_in 这类批次没有用户消息
+        （`last_user_message_id` 为空），贴不上就只能安静收场，否则投递会在
+        找不到目标时失败并报警。
+        """
+        if not (tool_names - READ_ONLY_TOOLS - INTERNAL_TOOLS):
+            return "none"
+        if batch.get("last_user_message_id") is None:
+            return "none"
+        return "reaction"
+
+    @staticmethod
     def _call_failed(item: dict[str, Any]) -> bool:
         """这次调用到底做成没有。
 
@@ -781,7 +801,7 @@ class ToolWorker:
             item["tool_name"]
             for item in calls
             if not self._call_failed(item)
-        } - READ_ONLY_TOOLS - INTERNAL_TOOLS
+        }
 
         if failed_calls:
             failure_results = ({
@@ -815,7 +835,7 @@ class ToolWorker:
                 "execution_results": [],
                 "important_information": [],
             }
-            delivery_kind = "reaction" if wrote else "none"
+            delivery_kind = self._quiet_delivery_kind(batch, wrote)
 
         if not self.repository.mark_completed(
             batch["id"],

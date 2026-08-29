@@ -54,6 +54,22 @@ def claim_conversation(db, repository, *, mode="apply"):
     return claimed
 
 
+def claim_check_in(db, repository, *, mode="apply"):
+    repository.create_check_in_batch(
+        channel_id=CHANNEL,
+        source_ref="check_in:1:2026-08-29T09:00",
+        payload={
+            "check_in_name": "afternoon",
+            "timestamp": "2026-08-29 09:00",
+            "prompt": "看看她在做什么",
+        },
+        execution_mode=mode,
+    )
+    claimed = repository.claim_next()
+    assert claimed is not None
+    return claimed
+
+
 async def echo_expression(_db, _system, messages):
     payload = json.loads(messages[-1]["content"].split("\n", 1)[1])
     parts = [item["operation"] for item in payload["execution_results"]]
@@ -878,24 +894,61 @@ def test_expression_naturally_formats_structured_important_information(
     assert text == "好，明早提醒你"
 
 
-def test_expression_rejects_private_database_identifier(db):
+def test_expression_withholds_a_leaked_private_identifier(db):
+    """带了内部 ID 的那句话不发出去，但也不因此毁掉整批。
+
+    对泄露的正确反应是拦下这句话。旧代码抛错，于是整批重试到耗尽再道歉一
+    句——既没拦住下一次，还平白告诉用户出了故障。
+    """
     async def leaky(_db, _system, messages):
         assert "event_id" not in messages[-1]["content"]
         assert "reminder_id" not in messages[-1]["content"]
         return "记好了，event_id=715，16:20 提醒你喝水", "leaky-run"
 
     expresser = ToolResultExpresser(db, leaky, memory_service=MemoryService(db))
-    with pytest.raises(ValueError, match="private identifiers"):
-        asyncio.run(expresser.express(
-            channel_id=CHANNEL,
-            outcome="completed",
-            execution_results=(execution(
-                "记录咖啡并设置喝水提醒",
-                event_id=715,
-                reminder_id=452,
-            ),),
-            important_information=(important("提醒时间", "16:20"),),
-        ))
+    said = asyncio.run(expresser.express(
+        channel_id=CHANNEL,
+        outcome="completed",
+        execution_results=(execution(
+            "记录咖啡并设置喝水提醒",
+            event_id=715,
+            reminder_id=452,
+        ),),
+        important_information=(important("提醒时间", "16:20"),),
+    ))
+    assert said is None
+
+
+def test_check_in_silence_has_nowhere_to_put_a_reaction(db, repository):
+    """check_in 没有用户消息可贴，静默就只能是彻底安静。
+
+    反应贴在批次覆盖的最后一条用户消息上，check_in 批次的
+    `last_user_message_id` 是空的。若仍然要求贴反应，投递会在找不到目标时
+    失败并报警。
+    """
+    batch = claim_check_in(db, repository)
+    trigger_time = (
+        datetime.now() + timedelta(hours=1)
+    ).replace(second=0, microsecond=0).isoformat()
+
+    async def expression(_db, _system, _messages):
+        return "[SILENT]", "expression-run"
+
+    async def model(_db, _system, _messages, *, tool_executor, **_kwargs):
+        await tool_executor(
+            "set_reminder",
+            {"trigger_time": trigger_time, "action": "跟进", "priority": "low"},
+            0,
+        )
+        return output("completed", [execution("设好提醒")]), "run-1"
+
+    worker = make_worker(db, repository, model, expression=expression)
+    asyncio.run(worker.process(batch))
+
+    done = repository.get(batch["id"])
+    assert done["status"] == "completed"
+    assert done["last_user_message_id"] is None
+    assert done["delivery_kind"] == "none"
 
 
 def test_assistant_rows_are_context_not_authorized_input(db, repository):
