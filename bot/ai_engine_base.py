@@ -32,6 +32,23 @@ CHAT_WITHOUT_BUSINESS_TOOLS = (
     "the current context may return exactly [SILENT]."
 )
 
+# These tools touch only this process's SQLite database.  The execution track
+# can therefore run the business operation and its tool_batch_calls ledger row
+# in one transaction.  External reads stay on the async executor below.
+SQLITE_TRANSACTIONAL_TOOL_NAMES = {
+    "set_scene",
+    "log_timeline_event",
+    "set_reminder",
+    "cancel_reminders",
+    "delete_reminder",
+    "list_reminders",
+    "update_timeline_event",
+    "delete_timeline_event",
+    "add_deadline",
+    "complete_deadline",
+    "delete_deadline",
+}
+
 
 def _memory_service(db: Database,
                     service: MemoryService | None = None) -> MemoryService:
@@ -220,7 +237,8 @@ async def _search_history(db: Database, args: dict,
 
 
 def _execute_tool(db: Database, tool_name: str, args: dict,
-                  memory_service: MemoryService | None = None) -> dict:
+                  memory_service: MemoryService | None = None, *,
+                  conn=None) -> dict:
     """执行具体的工具调用，返回结果"""
     if tool_name == "set_scene":
         # 场景摘要写进会话状态，持续到下一个 check-in 触发。
@@ -232,6 +250,7 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
             check_in_name=str(args.get("_check_in_name") or "unknown"),
             description=description,
             now=datetime.now(),
+            conn=conn,
         )
         return {"success": True, "message": "场景已记录"}
 
@@ -244,7 +263,7 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
                     "success": False,
                     "message": "Focus 事件必须填写 project_name，且只能使用【现有项目列表】里的项目。",
                 }
-            if not db.project_exists(project_name):
+            if not db.project_exists(project_name, conn=conn):
                 return {
                     "success": False,
                     "message": f"未知项目: {project_name}。只能使用用户手动建立的项目；不能自行新建项目名。",
@@ -260,10 +279,11 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
             session_id=args.get("session_id"),
             is_parallel=False,
             project_name=project_name,
+            conn=conn,
         )
         old_id = args.get("session_id")
         if old_id:
-            db.update_event(old_id, session_id=old_id)
+            db.update_event(old_id, session_id=old_id, conn=conn)
         return {"success": True, "event_id": event_id, "message": "事件已记录"}
 
     elif tool_name == "set_reminder":
@@ -272,26 +292,27 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
                 trigger_time=args["trigger_time"],
                 action=args["action"],
                 group_id=args.get("group_id"),
-                priority=args.get("priority", "normal")
+                priority=args.get("priority", "normal"),
+                conn=conn,
             )
         except ValueError as e:
             return {"success": False, "message": str(e)}
         return {"success": True, "reminder_id": reminder_id, "message": "提醒已设置"}
 
     elif tool_name == "cancel_reminders":
-        count = db.cancel_reminders_by_group(args.get("group_id"))
+        count = db.cancel_reminders_by_group(args.get("group_id"), conn=conn)
         return {"success": True, "cancelled_count": count, "message": "相关提醒已取消"}
 
     elif tool_name == "delete_reminder":
         rid = args.get("reminder_id")
-        ok = db.cancel_reminder_by_id(rid)
+        ok = db.cancel_reminder_by_id(rid, conn=conn)
         if ok:
             return {"success": True, "reminder_id": rid, "message": "该条 reminder 已删除"}
         return {"success": False, "reminder_id": rid,
                 "message": f"未找到 status=pending 的 reminder id={rid}（可能已触发或已取消）"}
 
     elif tool_name == "list_reminders":
-        rems = db.list_active_reminders()
+        rems = db.list_active_reminders(conn=conn)
         return {"success": True, "reminders": rems, "count": len(rems)}
 
     elif tool_name == "query_calendar":
@@ -317,34 +338,34 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
         fields = {k: args[k] for k in ("end_time", "content", "category") if k in args}
         if "project_name" in args:
             project_name = (args.get("project_name") or "").strip() or None
-            if not project_name or not db.project_exists(project_name):
+            if not project_name or not db.project_exists(project_name, conn=conn):
                 return {
                     "success": False,
                     "message": f"未知项目: {project_name}。只能使用用户手动建立的项目；不能自行新建项目名。",
                 }
             fields["project_name"] = project_name
         if fields.get("category") == "Focus" and "project_name" not in fields:
-            existing = db.get_event_by_id(args["event_id"])
+            existing = db.get_event_by_id(args["event_id"], conn=conn)
             project_name = (existing or {}).get("project_name")
-            if not project_name or not db.project_exists(project_name):
+            if not project_name or not db.project_exists(project_name, conn=conn):
                 return {
                     "success": False,
                     "message": "更新为 Focus 事件时必须提供有效 project_name，且只能使用【现有项目列表】里的项目。",
                 }
         # notes 追加模式：新 notes 拼接到已有内容后面
         if "notes" in args and args["notes"]:
-            existing = db.get_event_by_id(args["event_id"])
+            existing = db.get_event_by_id(args["event_id"], conn=conn)
             if existing and existing.get("notes"):
                 fields["notes"] = existing["notes"] + "\n" + args["notes"]
             else:
                 fields["notes"] = args["notes"]
-        ok = db.update_event(args["event_id"], **fields)
+        ok = db.update_event(args["event_id"], conn=conn, **fields)
         if ok:
             return {"success": True, "message": "事件已更新"}
         return {"success": False, "message": f"未找到 event_id={args['event_id']}"}
 
     elif tool_name == "delete_timeline_event":
-        ok = db.delete_event(args["event_id"])
+        ok = db.delete_event(args["event_id"], conn=conn)
         if ok:
             return {"success": True, "message": "事件已删除"}
         return {"success": False, "message": f"未找到 event_id={args['event_id']}"}
@@ -377,17 +398,18 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
         deadline_id = db.add_deadline(
             title=args["title"],
             due_time=args["due_time"],
+            conn=conn,
         )
         return {"success": True, "deadline_id": deadline_id, "message": "Deadline 已记录"}
 
     elif tool_name == "complete_deadline":
-        ok = db.complete_deadline(args["deadline_id"])
+        ok = db.complete_deadline(args["deadline_id"], conn=conn)
         if ok:
             return {"success": True, "message": "Deadline 已标记完成"}
         return {"success": False, "message": f"未找到 active 的 deadline_id={args['deadline_id']}"}
 
     elif tool_name == "delete_deadline":
-        ok = db.delete_deadline(args["deadline_id"])
+        ok = db.delete_deadline(args["deadline_id"], conn=conn)
         if ok:
             return {"success": True, "message": "Deadline 已删除"}
         return {"success": False, "message": f"未找到 deadline_id={args['deadline_id']}"}

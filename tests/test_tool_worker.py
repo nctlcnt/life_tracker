@@ -144,6 +144,28 @@ def test_apply_executes_routine_write_and_requests_one_reaction(db, repository):
     assert len(db.get_today_events()) == 1
 
 
+def test_failed_routine_write_is_explained_instead_of_reacted_to(
+        db, repository):
+    add_message(db, "user", "删除不存在的事件")
+    batch = claim_conversation(db, repository)
+
+    async def model(_db, _system, _messages, *, tool_executor, **_kwargs):
+        result = await tool_executor(
+            "delete_timeline_event", {"event_id": 999999}, 0)
+        assert result["success"] is False
+        return output(
+            "facts",
+            ["未找到 event_id=999999"],
+            ["event_id=999999"],
+        ), "run-failed-write"
+
+    asyncio.run(make_worker(db, repository, model).process(batch))
+
+    done = repository.get(batch["id"])
+    assert done["delivery_kind"] == "message"
+    assert done["result"]["say"] == "未找到 event_id=999999"
+
+
 def test_shadow_records_proposal_without_mutating_business_tables(db, repository):
     add_message(db, "user", "刚吃完午饭")
     batch = claim_conversation(db, repository, mode="shadow")
@@ -236,6 +258,12 @@ def test_reminder_result_is_expressed_with_latest_context_and_exact_terms(
     add_message(db, "user", "明天早上提醒我交作业")
     batch = claim_conversation(db, repository)
     captured = {}
+    scheduler_wakeups = []
+
+    def scheduler_wakeup():
+        scheduler_wakeups.append(len(db.list_active_reminders()))
+
+    db._on_reminder_added = scheduler_wakeup
     trigger_time = (
         datetime.now() + timedelta(days=1)
     ).replace(hour=8, minute=0, second=0, microsecond=0).isoformat()
@@ -270,6 +298,7 @@ def test_reminder_result_is_expressed_with_latest_context_and_exact_terms(
         "system"
     ]
     assert "BACKEND_RESULT" in captured["messages"][-1]["content"]
+    assert scheduler_wakeups == [1]
 
 
 def test_expression_falls_back_to_facts_if_model_drops_verbatim_term(

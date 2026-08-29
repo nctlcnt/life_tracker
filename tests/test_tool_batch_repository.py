@@ -61,7 +61,57 @@ def _set_status(db, batch_id, status):
     conn.close()
 
 
+def _message(db, channel_id, role, content):
+    return db.add_conversation_message(
+        discord_message_id=f"{channel_id}:{role}:{content}",
+        channel_id=channel_id,
+        role=role,
+        content=content,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
 # --- 聊天批次 ---------------------------------------------------------------
+
+
+def test_first_enable_cuts_cursor_over_to_the_latest_existing_message(
+        db, repository):
+    old_user = _message(db, "chan-1", "user", "旧机制已经处理过")
+    old_assistant = _message(db, "chan-1", "assistant", "旧回复")
+
+    cutovers = repository.prepare_runtime(
+        enabled=True, channel_ids=["chan-1"])
+
+    assert cutovers == {"chan-1": old_assistant}
+    assert repository.get_cursor("chan-1") == old_assistant
+    assert repository.open_conversation_batch("chan-1") is None
+    assert old_user < old_assistant
+
+
+def test_enabled_restart_preserves_messages_not_yet_processed(db, repository):
+    old_id = _message(db, "chan-1", "user", "cutover 前")
+    repository.prepare_runtime(enabled=True, channel_ids=["chan-1"])
+    new_id = _message(db, "chan-1", "user", "cutover 后待处理")
+
+    cutovers = repository.prepare_runtime(
+        enabled=True, channel_ids=["chan-1"])
+
+    assert cutovers == {}
+    assert repository.get_cursor("chan-1") == old_id
+    assert new_id > repository.get_cursor("chan-1")
+
+
+def test_reenable_skips_messages_handled_while_worker_was_disabled(
+        db, repository):
+    repository.prepare_runtime(enabled=True, channel_ids=["chan-1"])
+    repository.prepare_runtime(enabled=False, channel_ids=["chan-1"])
+    old_path_id = _message(db, "chan-1", "user", "关闭期间由旧路径处理")
+
+    cutovers = repository.prepare_runtime(
+        enabled=True, channel_ids=["chan-1"])
+
+    assert cutovers == {"chan-1": old_path_id}
+    assert repository.get_cursor("chan-1") == old_path_id
 
 
 def test_conversation_batch_is_created_with_the_expected_fields(repository):

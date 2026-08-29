@@ -350,6 +350,7 @@ CREATE TABLE tool_worker_cursors (
 
 消息与批次的完整流程如下：
 
+0. 执行轨第一次启用，或关闭一段时间后重新启用时，在 Bot 连接 Discord 之前把 cursor 原子推进到该频道当前的 `MAX(conversation_messages.id)`；旧机制已经处理过的历史消息不参与新机制。生命周期状态持久化在 `app_state`：仍处于 enabled 的普通重启绝不重新 cutover，避免跳过崩溃前已经入库但尚未处理的消息。
 1. `on_message` 先通过 `MemoryService.ingest_message()` 提交用户消息，拿到 SQLite row id；只有新插入成功（不是重复 Discord event）才调用 `BatchCoordinator.notify_user_message(channel_id, row_id)`。这个通知只重置进程内 30 秒静默 timer，丢了也没关系，DB 行才是队列。
 2. timer 或心跳在 `BEGIN IMMEDIATE` 中读取 cursor，并确认该 channel 没有非终态 conversation batch。它冻结 `id > last_processed_message_id` 的当前最大 id 为 `through_message_id`。最新用户消息已静默 30 秒，或最早未处理用户消息已等待 60 秒，任一成立就插入 `pending` 批次；聊天模型返回 `[SILENT]` 时走同一函数的 `force=True`，立即冻结到当前消息。
 3. worker 输入严格分成两块：`(after_message_id, through_message_id]` 里的 user 行是 `new_messages`，可以触发操作；同区间的 assistant/system 行以及区间外历史只放 `context`，不能触发操作。新消息到达时不会改正在运行批次的边界。

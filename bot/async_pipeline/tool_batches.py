@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from bot.database import Database
 from .repository import _utc_text
@@ -18,6 +18,7 @@ from .repository import _utc_text
 # 区间唯一约束和部分唯一索引都按 worker_name 分组判断，取值不统一会让
 # 两条保证一起失效，所以所有写入方共用这一个常量。
 TOOL_WORKER = "tool_worker"
+RUNTIME_STATE_KEY = "async_pipeline:tool_worker:runtime_state"
 
 OPEN_STATUSES = frozenset({"pending", "running", "retry_wait"})
 TERMINAL_STATUSES = frozenset({"completed", "failed"})
@@ -125,6 +126,59 @@ class ToolBatchRepository:
                 (self.worker_name, str(channel_id)),
             ).fetchone()
             return int(row[0]) if row else 0
+        finally:
+            conn.close()
+
+    def prepare_runtime(
+        self, *, enabled: bool, channel_ids: list[str]
+    ) -> dict[str, int]:
+        """Persist the worker lifecycle and cut over on disabled → enabled.
+
+        Messages received before the execution track is enabled were already
+        handled by the legacy path.  A first enable (or a re-enable after a
+        disabled period) therefore starts at the current durable tail.  An
+        enabled → enabled restart deliberately keeps the existing cursor so a
+        crash cannot silently skip work that was already queued.
+        """
+        channels = list(dict.fromkeys(str(item) for item in channel_ids))
+        if any(not item.strip() for item in channels):
+            raise ValueError("channel_ids cannot contain blanks")
+
+        desired = "enabled" if enabled else "disabled"
+        conn = self.db._get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT value FROM app_state WHERE key = ?",
+                (RUNTIME_STATE_KEY,),
+            ).fetchone()
+            was_enabled = row is not None and row[0] == "enabled"
+            cutovers: dict[str, int] = {}
+            if enabled and not was_enabled:
+                for channel_id in channels:
+                    latest = int(conn.execute(
+                        "SELECT COALESCE(MAX(id), 0) "
+                        "FROM conversation_messages WHERE channel_id = ?",
+                        (channel_id,),
+                    ).fetchone()[0])
+                    self._advance_cursor(conn, channel_id, latest)
+                    cutovers[channel_id] = latest
+
+            conn.execute(
+                """
+                INSERT INTO app_state (key, value, updated_at)
+                VALUES (?, ?, datetime('now'))
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (RUNTIME_STATE_KEY, desired),
+            )
+            conn.commit()
+            return cutovers
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -504,6 +558,89 @@ class ToolBatchRepository:
             conn.commit()
             return _decode_call(row), written
         except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def execute_atomic_call(
+        self, batch_id: str, call_index: int, lease_token: str, *,
+        tool_name: str, arguments: dict[str, Any],
+        executor: Callable[[Any], Any], now=None,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Execute one SQLite tool and persist its ledger row atomically.
+
+        The callback must use the supplied connection for every read and write.
+        A process exit anywhere before commit then rolls back both the business
+        mutation and the idempotency evidence instead of leaving a duplicate
+        window between two commits.
+        """
+        if int(call_index) < 0:
+            raise ValueError("call_index 不能为负")
+        if not str(tool_name).strip():
+            raise ValueError("tool_name is required")
+        now_text = _utc_text(now)
+        arguments_json = json.dumps(arguments, ensure_ascii=False)
+
+        conn = self.db._get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            owned = conn.execute(
+                "SELECT 1 FROM tool_batches "
+                "WHERE id = ? AND status = 'running' AND lease_token = ?",
+                (str(batch_id), str(lease_token)),
+            ).fetchone()
+            if owned is None:
+                conn.rollback()
+                return None, False
+
+            existing = conn.execute(
+                "SELECT * FROM tool_batch_calls "
+                "WHERE batch_id = ? AND call_index = ?",
+                (str(batch_id), int(call_index)),
+            ).fetchone()
+            if existing is not None and bool(existing["succeeded"]):
+                decoded = _decode_call(existing)
+                if (
+                    decoded["tool_name"] != tool_name
+                    or decoded.get("arguments") != arguments
+                ):
+                    raise ValueError(
+                        "atomic call replay changed tool name or arguments"
+                    )
+                conn.commit()
+                return decoded, False
+
+            result = executor(conn)
+            result_json = (
+                json.dumps(result, ensure_ascii=False)
+                if result is not None else None
+            )
+            conn.execute(
+                """
+                INSERT INTO tool_batch_calls
+                    (batch_id, call_index, tool_name, arguments_json,
+                     result_json, succeeded, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT(batch_id, call_index) DO UPDATE SET
+                    tool_name = excluded.tool_name,
+                    arguments_json = excluded.arguments_json,
+                    result_json = excluded.result_json,
+                    succeeded = 1,
+                    updated_at = excluded.updated_at
+                WHERE tool_batch_calls.succeeded = 0
+                """,
+                (str(batch_id), int(call_index), str(tool_name),
+                 arguments_json, result_json, now_text, now_text),
+            )
+            row = conn.execute(
+                "SELECT * FROM tool_batch_calls "
+                "WHERE batch_id = ? AND call_index = ?",
+                (str(batch_id), int(call_index)),
+            ).fetchone()
+            conn.commit()
+            return _decode_call(row), True
+        except BaseException:
             conn.rollback()
             raise
         finally:

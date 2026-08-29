@@ -7,7 +7,12 @@ import inspect
 import json
 from typing import Any, Awaitable, Callable
 
-from bot.ai_engine_base import _ensure_valid_messages, _execute_tool_async
+from bot.ai_engine_base import (
+    SQLITE_TRANSACTIONAL_TOOL_NAMES,
+    _ensure_valid_messages,
+    _execute_tool,
+    _execute_tool_async,
+)
 from bot.database import Database
 from bot.logger import get_logger
 from bot.memory import MemoryService
@@ -342,6 +347,64 @@ class ToolWorker:
                 "shadow": True,
                 "message": "proposal recorded; business tool not applied",
             }
+        elif tool_name in SQLITE_TRANSACTIONAL_TOOL_NAMES:
+            last_error: Exception | None = None
+            for _attempt in range(2):
+                try:
+                    record, written = self.repository.execute_atomic_call(
+                        batch["id"],
+                        call_index,
+                        batch["lease_token"],
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        executor=lambda conn: _execute_tool(
+                            self.db,
+                            tool_name,
+                            execution_args,
+                            memory_service=self.memory_service,
+                            conn=conn,
+                        ),
+                    )
+                    if record is None:
+                        raise BatchLeaseLost(str(batch["id"]))
+                    call_records[int(call_index)] = record
+                    if (
+                        written
+                        and tool_name == "set_reminder"
+                        and isinstance(record.get("result"), dict)
+                        and record["result"].get("success") is True
+                        and self.db._on_reminder_added is not None
+                    ):
+                        try:
+                            self.db._on_reminder_added()
+                        except Exception:
+                            logger.exception(
+                                "提醒已提交，但 scheduler 唤醒回调失败"
+                            )
+                    return record.get("result")
+                except asyncio.CancelledError:
+                    raise
+                except BatchLeaseLost:
+                    raise
+                except Exception as exc:
+                    last_error = exc
+            failure = {
+                "success": False,
+                "error": f"{type(last_error).__name__}: {last_error}",
+            }
+            record, _ = self.repository.record_call(
+                batch["id"],
+                call_index,
+                batch["lease_token"],
+                tool_name=tool_name,
+                arguments=arguments,
+                result=failure,
+                succeeded=False,
+            )
+            if record is None:
+                raise BatchLeaseLost(str(batch["id"]))
+            call_records[int(call_index)] = record
+            raise ToolInvocationFailed(failure["error"])
         else:
             last_error: Exception | None = None
             for _attempt in range(2):
@@ -494,6 +557,13 @@ class ToolWorker:
         calls: list[dict[str, Any]],
     ) -> str:
         names = {item["tool_name"] for item in calls}
+        has_business_failure = any(
+            isinstance(item.get("result"), dict)
+            and item["result"].get("success") is False
+            for item in calls
+        )
+        if has_business_failure:
+            return "message"
         if not names and output.outcome == "empty":
             return "none"
         if names and names <= INTERNAL_TOOLS:

@@ -144,6 +144,15 @@ async def main(test: bool = False, api_only: bool = False):
                     f"unfinished {previous_mode} batches/deliveries: "
                     + ", ".join(stranded_previous_mode_ids)
                 )
+        tool_cutovers = tool_repository.prepare_runtime(
+            enabled=config.ASYNC_TOOL_WORKER_ENABLED,
+            channel_ids=[str(config.CHANNEL_ID)],
+        )
+        if tool_cutovers:
+            logger.info(
+                "✂️ 执行轨从当前消息尾部开始，不回放旧机制消息: %s",
+                tool_cutovers,
+            )
 
         # 3. 初始化 Discord Bot
         generation_gate = (
