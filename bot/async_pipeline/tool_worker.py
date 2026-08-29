@@ -224,7 +224,13 @@ class ToolWorker:
     async def _process_claimed(self, batch: dict[str, Any]) -> None:
         batch_id = str(batch["id"])
         lease_token = str(batch["lease_token"])
-        model_input, new_user_messages, prior = self._model_input(batch)
+        call_records = {
+            int(item["call_index"]): item
+            for item in self.repository.calls(batch_id)
+        }
+        model_input, new_user_messages, prior = self._model_input(
+            batch, prior_calls=list(call_records.values())
+        )
 
         if batch["source_kind"] == "conversation" and not new_user_messages:
             if not self.repository.mark_completed(batch_id, lease_token):
@@ -238,19 +244,35 @@ class ToolWorker:
             if batch["source_kind"] == "check_in"
             else None,
         )
-        call_records = {
-            int(item["call_index"]): item
-            for item in self.repository.calls(batch_id)
-        }
+        next_call_index = max(call_records, default=-1) + 1
 
-        async def execute_tool(name: str, arguments: dict, index: int):
+        async def execute_tool(
+            name: str, arguments: dict, _provider_call_index: int
+        ):
+            nonlocal next_call_index
+            matching = next(
+                (
+                    item for item in call_records.values()
+                    if item["tool_name"] == name
+                    and (item.get("arguments") or {}) == arguments
+                ),
+                None,
+            )
+            if matching is not None:
+                durable_call_index = int(matching["call_index"])
+            else:
+                # Provider-local indexes restart at zero on every model run.
+                # Durable identity belongs to the batch ledger, so genuinely
+                # new work always appends after calls from earlier attempts.
+                durable_call_index = next_call_index
+                next_call_index += 1
             return await self._execute_one(
                 batch,
                 tool_names,
                 call_records,
                 name,
                 arguments,
-                index,
+                durable_call_index,
             )
 
         raw = await self.model_runner(
@@ -454,8 +476,23 @@ class ToolWorker:
         return record.get("result")
 
     def _model_input(
-        self, batch: dict[str, Any]
+        self,
+        batch: dict[str, Any],
+        *,
+        prior_calls: list[dict[str, Any]] | None = None,
     ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None]:
+        prior_call_payload = [
+            {
+                "call_index": item["call_index"],
+                "tool_name": item["tool_name"],
+                "arguments": item.get("arguments"),
+                "result": item.get("result"),
+                "succeeded": item["succeeded"],
+            }
+            for item in sorted(
+                prior_calls or [], key=lambda value: int(value["call_index"])
+            )
+        ]
         if batch["source_kind"] == "check_in":
             payload = batch.get("input") or {}
             envelope = {
@@ -469,6 +506,7 @@ class ToolWorker:
                     }
                 ],
                 "PRIOR_UNDELIVERED_RESULT": None,
+                "PRIOR_TOOL_CALLS": prior_call_payload,
             }
             return json.dumps(envelope, ensure_ascii=False), envelope[
                 "AUTHORIZED_NEW_INPUT"
@@ -496,6 +534,7 @@ class ToolWorker:
             "PRIOR_UNDELIVERED_RESULT": (
                 self._prior_payload(prior) if prior else None
             ),
+            "PRIOR_TOOL_CALLS": prior_call_payload,
         }
         return json.dumps(envelope, ensure_ascii=False), new_users, prior
 

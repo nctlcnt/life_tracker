@@ -272,7 +272,64 @@ def test_successful_call_is_replayed_after_model_output_retry(db, repository):
 
     assert repository.get(first["id"])["status"] == "completed"
     assert len(db.get_today_events()) == 1
+    assert len(repository.calls(first["id"])) == 1
     assert model_attempts == 2
+
+
+def test_retry_continues_with_a_new_call_after_durable_success(db, repository):
+    add_message(db, "user", "午饭记录再补一句")
+    first = claim_conversation(db, repository)
+    model_attempts = 0
+    event_id = None
+    retry_prior_calls = []
+    event_start = datetime.now().replace(
+        hour=12, minute=0, second=0, microsecond=0
+    ).isoformat()
+
+    async def model(_db, _system, messages, *, tool_executor, **_kwargs):
+        nonlocal event_id, model_attempts
+        model_attempts += 1
+        if model_attempts == 1:
+            result = await tool_executor(
+                "log_timeline_event",
+                {
+                    "start_time": event_start,
+                    "content": "吃午饭",
+                    "category": "Routine",
+                },
+                0,
+            )
+            event_id = result["event_id"]
+            return "not json", "bad-run"
+
+        retry_prior_calls.append(
+            json.loads(messages[-1]["content"]).get("PRIOR_TOOL_CALLS")
+        )
+        await tool_executor(
+            "update_timeline_event",
+            {"event_id": event_id, "notes": "自己做的炒饭"},
+            0,
+        )
+        return output("facts", ["午饭记录已补充"]), "good-run"
+
+    asyncio.run(make_worker(db, repository, model).process(first))
+    reclaimed = repository.claim_next(
+        now=datetime.now(timezone.utc) + timedelta(seconds=2)
+    )
+    # A process restart creates a new worker and provider-local call indexes
+    # begin at zero again.  Durable call identity must still continue.
+    asyncio.run(make_worker(db, repository, model).process(reclaimed))
+
+    done = repository.get(first["id"])
+    calls = repository.calls(first["id"])
+    assert done["status"] == "completed"
+    assert [(item["call_index"], item["tool_name"]) for item in calls] == [
+        (0, "log_timeline_event"),
+        (1, "update_timeline_event"),
+    ]
+    assert retry_prior_calls[0][0]["tool_name"] == "log_timeline_event"
+    assert retry_prior_calls[0][0]["succeeded"] is True
+    assert db.get_event_by_id(event_id)["notes"] == "自己做的炒饭"
 
 
 def test_reminder_result_is_expressed_with_latest_context_and_exact_terms(
