@@ -117,20 +117,16 @@ class ToolResultExpresser:
             reply = raw[0] if isinstance(raw, tuple) else raw
 
         text = sanitize_toolless_chat_output(str(reply or ""))
-        required_values = tuple(item["value"] for item in important_information)
-        missing = [value for value in required_values if value not in text]
-        if not text or "[SILENT]" in text or missing:
-            raise ValueError(
-                "chat track did not safely express the internal result"
-                + (f"; missing important values: {missing}" if missing else "")
-            )
+        if not text or "[SILENT]" in text:
+            raise ValueError("chat track did not safely express the internal result")
 
         private_ids = self._private_identifiers(execution_results)
+        public_values = tuple(item["value"] for item in important_information)
         lowered_text = text.lower()
         leaked = [
             value
             for key, value in private_ids
-            if value not in required_values and (
+            if value not in public_values and (
                 key in lowered_text
                 or f"id={value}" in lowered_text
                 or f"id: {value}" in lowered_text

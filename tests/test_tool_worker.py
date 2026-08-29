@@ -462,22 +462,22 @@ def test_reminder_result_is_expressed_with_latest_context_and_exact_terms(
     assert scheduler_wakeups == [1]
 
 
-def test_expression_rejects_reply_that_drops_important_information(
+def test_expression_naturally_formats_structured_important_information(
     db, repository
 ):
     async def lossy(_db, _system, _messages):
         return "好，明早提醒你", "lossy-run"
 
     expresser = ToolResultExpresser(db, lossy, memory_service=MemoryService(db))
-    with pytest.raises(ValueError, match="missing important values"):
-        asyncio.run(expresser.express(
-            channel_id=CHANNEL,
-            outcome="completed",
-            execution_results=(execution("设置提醒"),),
-            important_information=(
-                important("提醒时间", "2026-08-29T08:00:00"),
-            ),
-        ))
+    text = asyncio.run(expresser.express(
+        channel_id=CHANNEL,
+        outcome="completed",
+        execution_results=(execution("设置提醒"),),
+        important_information=(
+            important("提醒时间", "2026-08-29T08:00:00"),
+        ),
+    ))
+    assert text == "好，明早提醒你"
 
 
 def test_expression_rejects_private_database_identifier(db):

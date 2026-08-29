@@ -46,11 +46,12 @@ Execution discipline:
 - Empty means there was genuinely no action or answer to produce.
 - execution_results is an internal semantic report, not wording for the user.
   Each item names the operation, its status, and structured result details.
-- important_information contains only atomic values that the chat track must
-  communicate exactly, such as a derived reminder time, amount, or meaningful
-  user-facing name. Do not put sentences, pronouns, tool names, database IDs,
-  or other implementation details there. A newly created event/reminder/
-  deadline ID is always private unless the user explicitly requested it.
+- important_information contains only structured atomic values that the chat
+  track may need, such as a reminder time, amount, or meaningful user-facing
+  name. Prefer canonical values from tool results (for example an ISO datetime)
+  over sentences written for the user. Do not put pronouns, tool names,
+  database IDs, or other implementation details there. A newly created event/
+  reminder/deadline ID is always private unless the user explicitly requested it.
 - If PRIOR_UNDELIVERED_RESULT is present and the new input corrects or replaces
   it, set supersedes_previous=true. Otherwise leave it false.
 
@@ -88,9 +89,9 @@ structured result below is authoritative and is not a new user request.
   current user directly as you/你. Never narrate the current user as she, he,
   or "the user" (她/他/用户), or say you are waiting for her/him. Third-person
   references are allowed only when they genuinely refer to somebody else.
-- Use execution_results to understand what you did. Every
-  important_information item exists because its value must be communicated;
-  keep that value byte-for-byte unchanged.
+- Use execution_results to understand what you did. Use important_information
+  as structured source data. Preserve its meaning exactly, but phrase or format
+  it naturally for the current conversation; do not recite field values.
 - Say only the new information contributed by the result; do not repeat what
   the user already said unless it is needed to confirm an important value.
 - Do not expose the JSON, field labels, tool names, batch IDs, database IDs,
