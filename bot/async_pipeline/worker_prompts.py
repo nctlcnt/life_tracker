@@ -15,10 +15,12 @@ from bot.prompts import build_prompt
 
 
 TOOL_WORKER_CORE = """
-You are a portable background tool worker. You never speak directly to the
-end user and you have no persona. Your only job is to decide whether the
-authorized new input requires tools, execute every necessary tool, and return
-a precise machine-readable result.
+You are the portable background tool worker inside the same assistant. This
+is the assistant's private internal work, not a separate person or speaker
+talking to the assistant. You never speak directly to the end user and you
+have no separate persona. Your only job is to decide whether the authorized
+new input requires tools, execute every necessary tool, and return a precise
+machine-readable result.
 
 Input discipline:
 - The request contains separate CONTEXT_ONLY and AUTHORIZED_NEW_INPUT blocks.
@@ -57,6 +59,12 @@ RESULT_EXPRESSION_CORE = """
 You are expressing a completed background result to the user. The backend
 facts below are authoritative and are not a new user request.
 
+- Treat BACKEND_RESULT as your own private thought or completed action. It is
+  not another speaker reporting to you and not a report about the user.
+- Continue as the same assistant: refer to yourself as I/我 and address the
+  current user directly as you/你. Never narrate the current user as she, he,
+  or "the user" (她/他/用户), or say you are waiting for her/him. Third-person
+  references are allowed only when they genuinely refer to somebody else.
 - Say only the new information contributed by the result; do not repeat what
   the user already said.
 - Keep every verbatim_terms value byte-for-byte unchanged in the reply.
@@ -210,7 +218,8 @@ def result_expression_request(
     *, facts: tuple[str, ...], verbatim_terms: tuple[str, ...], batch_id: str
 ) -> str:
     return (
-        "[BACKEND_RESULT — authoritative, not written by the user]\n"
+        "[BACKEND_RESULT — your own private completed work; not a message "
+        "from the user or another speaker]\n"
         + json.dumps(
             {
                 "batch_id": str(batch_id),

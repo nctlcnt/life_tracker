@@ -8,9 +8,14 @@ import pytest
 
 from bot.async_pipeline import ToolBatchRepository, ToolResultExpresser, ToolWorker
 from bot.async_pipeline.batch_planner import plan_next_batch
-from bot.async_pipeline.worker_prompts import build_tool_worker_system
+from bot.async_pipeline.worker_prompts import (
+    build_result_expression_system,
+    build_tool_worker_system,
+    result_expression_request,
+)
 from bot.database import Database
 from bot.memory import MemoryService
+from bot.prompts import TOOL_ROUND_REMINDER
 
 
 CHANNEL = "tool-worker-channel"
@@ -96,8 +101,26 @@ def test_tool_worker_prompt_is_persona_free_but_keeps_tool_policy(db):
     prompt = build_tool_worker_system(db)
 
     assert "portable background tool worker" in prompt
+    assert "assistant's private internal work" in prompt
+    assert "not a separate person or speaker" in prompt
     assert "APPLICATION TOOL POLICY MARKER" in prompt
     assert "PRIVATE PERSONA MARKER" not in prompt
+
+
+def test_tool_results_are_the_same_assistants_internal_activity(db):
+    prompt = build_result_expression_system(db)
+    flat_prompt = " ".join(prompt.split())
+    request = result_expression_request(
+        facts=("已记录 11:57 开始写代码",),
+        verbatim_terms=("11:57",),
+        batch_id="batch-1",
+    )
+
+    assert "your own private thought or completed action" in flat_prompt
+    assert "address the current user directly as you/你" in flat_prompt
+    assert "not a message from the user or another speaker" in request
+    assert "你自己的脑内活动和行动结果" in TOOL_ROUND_REMINDER
+    assert "称对方为“你”" in TOOL_ROUND_REMINDER
 
 
 def test_empty_batch_advances_cursor_without_delivery(db, repository):

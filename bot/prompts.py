@@ -420,7 +420,12 @@ def build_prompt(
 # 设计：SYSTEM_MECHANICS 已经讲清楚了"每一轮文字都会发给她"这条规则，
 # 所以这里只做极短指针、不重复规则本身。
 
-TOOL_ROUND_REMINDER = "[系统提示] 上一轮你说的话已经发出去了，不要重复。调工具时可以顺口说一句你在做什么。"
+TOOL_ROUND_REMINDER = (
+    "[系统提示] 上一轮你说的话已经发出去了，不要重复。工具调用及其结果是"
+    "你自己的脑内活动和行动结果，不是另一个人在向你汇报。继续以同一个“我”"
+    "直接对当前聊天对象说话，称对方为“你”；不要把当前聊天对象称为“她”、"
+    "“他”或“用户”，也不要说“等她/他回复”。调工具时可以顺口说一句你在做什么。"
+)
 
 # 每个工具在 tool_result 之后的"定向后置提示"。命中了才追加，没命中就只发
 # TOOL_ROUND_REMINDER。作用：把"使用 X 工具后应该怎样判断"这类规则精准投递，
@@ -476,5 +481,4 @@ def get_prompt_template(key: str, sections: dict[str, str] | None = None) -> str
     if key not in sections:
         raise KeyError(key)
     return (sections[key] or "").strip()
-
 
