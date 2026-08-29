@@ -279,7 +279,10 @@ def test_shadow_failure_is_audited_but_never_delivered(db, repository):
     assert repository.pending_deliveries() == []
 
 
-def test_successful_call_is_replayed_after_model_output_retry(db, repository):
+def test_repeated_side_effect_is_deduplicated_after_model_output_retry(
+    db, repository
+):
+    """重试时模型若又发一遍同样的写入，副作用不可以发生第二次。"""
     add_message(db, "user", "刚吃完午饭")
     first = claim_conversation(db, repository)
     model_attempts = 0
@@ -319,7 +322,7 @@ def test_successful_call_is_replayed_after_model_output_retry(db, repository):
     assert model_attempts == 2
 
 
-def test_retry_continues_with_a_new_call_after_durable_success(db, repository):
+def test_retry_continues_without_replaying_durable_calls(db, repository):
     add_message(db, "user", "午饭记录再补一句")
     first = claim_conversation(db, repository)
     model_attempts = 0
@@ -349,15 +352,11 @@ def test_retry_continues_with_a_new_call_after_durable_success(db, repository):
             "PRIOR_TOOL_CALLS"
         )
         retry_prior_calls.append(prior_calls)
-        await tool_executor(
-            prior_calls[0]["tool_name"],
-            prior_calls[0]["arguments"],
-            0,
-        )
+        # 模型不重放已完成的调用，直接续接；provider 的序号仍从 0 开始。
         await tool_executor(
             "update_timeline_event",
             {"event_id": event_id, "notes": "自己做的炒饭"},
-            1,
+            0,
         )
         return output("completed", [execution("补充午饭记录")]), "good-run"
 
@@ -365,8 +364,7 @@ def test_retry_continues_with_a_new_call_after_durable_success(db, repository):
     reclaimed = repository.claim_next(
         now=datetime.now(timezone.utc) + timedelta(seconds=2)
     )
-    # A process restart creates a new worker and provider-local call indexes
-    # begin at zero again.  Durable call identity must still continue.
+    # 进程重启会让 provider 的序号重新从 0 开始，账本身份必须仍然连续。
     asyncio.run(make_worker(db, repository, model).process(reclaimed))
 
     done = repository.get(first["id"])
@@ -381,7 +379,131 @@ def test_retry_continues_with_a_new_call_after_durable_success(db, repository):
     assert db.get_event_by_id(event_id)["notes"] == "自己做的炒饭"
 
 
-def test_retry_cannot_change_a_durable_call_in_place(db, repository):
+def test_retry_may_switch_tools_at_the_resumed_position(db, repository):
+    """重试时改调另一个工具是正当续接，不再让整批失败。
+
+    线上真实失败的形状：第一次尝试查完提醒就中断，重试时模型接着要设提醒。
+    旧的位置绑定会把这种续接判成冲突，这里确认它现在可以走通。
+    """
+    add_message(db, "user", "等下提醒我喝水")
+    first = claim_conversation(db, repository)
+    model_attempts = 0
+    trigger_time = (
+        datetime.now() + timedelta(hours=1)
+    ).replace(second=0, microsecond=0).isoformat()
+
+    async def model(_db, _system, _messages, *, tool_executor, **_kwargs):
+        nonlocal model_attempts
+        model_attempts += 1
+        if model_attempts == 1:
+            await tool_executor("list_reminders", {}, 0)
+            return "not json", "bad-run"
+        await tool_executor(
+            "set_reminder",
+            {"trigger_time": trigger_time, "action": "喝水", "priority": "low"},
+            0,
+        )
+        return output("completed", [execution("设好提醒")]), "good-run"
+
+    asyncio.run(make_worker(db, repository, model).process(first))
+    reclaimed = repository.claim_next(
+        now=datetime.now(timezone.utc) + timedelta(seconds=2)
+    )
+    asyncio.run(make_worker(db, repository, model).process(reclaimed))
+
+    assert repository.get(first["id"])["status"] == "completed"
+    assert [
+        (item["call_index"], item["tool_name"])
+        for item in repository.calls(first["id"])
+    ] == [(0, "list_reminders"), (1, "set_reminder")]
+    assert len(db.list_active_reminders()) == 1
+
+
+def test_provider_index_reset_within_one_attempt_does_not_collide(
+    db, repository
+):
+    """同一次尝试里 provider 序号归零，账本身份必须继续往后排。
+
+    preset 回退会在工具已经执行之后重跑整个调用壳，provider 的序号因此在同
+    一次尝试内重新从 0 开始。序号若跟着 provider 走，第二个工具就会撞上第一
+    个刚写下的账本行。
+    """
+    add_message(db, "user", "记一下午饭，再提醒我喝水")
+    batch = claim_conversation(db, repository)
+    event_start = datetime.now().replace(
+        hour=12, minute=0, second=0, microsecond=0
+    ).isoformat()
+    trigger_time = (
+        datetime.now() + timedelta(hours=1)
+    ).replace(second=0, microsecond=0).isoformat()
+
+    async def model(_db, _system, _messages, *, tool_executor, **_kwargs):
+        await tool_executor(
+            "log_timeline_event",
+            {
+                "start_time": event_start,
+                "content": "吃午饭",
+                "category": "Routine",
+            },
+            0,
+        )
+        # preset 回退后 provider 重新从 0 计数，这里刻意再传一次 0。
+        await tool_executor(
+            "set_reminder",
+            {"trigger_time": trigger_time, "action": "喝水", "priority": "low"},
+            0,
+        )
+        return output("completed", [execution("都办好了")]), "run-1"
+
+    asyncio.run(make_worker(db, repository, model).process(batch))
+
+    assert repository.get(batch["id"])["status"] == "completed"
+    assert [
+        (item["call_index"], item["tool_name"])
+        for item in repository.calls(batch["id"])
+    ] == [(0, "log_timeline_event"), (1, "set_reminder")]
+    assert len(db.get_today_events()) == 1
+    assert len(db.list_active_reminders()) == 1
+
+
+def test_read_only_call_is_re_executed_on_retry(db, repository):
+    """只读工具不参与去重，重跑一次可以拿到最新数据。"""
+    add_message(db, "user", "我有哪些提醒")
+    first = claim_conversation(db, repository)
+    model_attempts = 0
+
+    async def model(_db, _system, _messages, *, tool_executor, **_kwargs):
+        nonlocal model_attempts
+        model_attempts += 1
+        await tool_executor("list_reminders", {}, 0)
+        if model_attempts == 1:
+            return "not json", "bad-run"
+        return output(
+            "completed",
+            [execution("查了提醒")],
+            [important("提醒数量", "0")],
+        ), "good-run"
+
+    asyncio.run(make_worker(db, repository, model).process(first))
+    reclaimed = repository.claim_next(
+        now=datetime.now(timezone.utc) + timedelta(seconds=2)
+    )
+    asyncio.run(make_worker(db, repository, model).process(reclaimed))
+
+    assert repository.get(first["id"])["status"] == "completed"
+    assert [
+        (item["call_index"], item["tool_name"])
+        for item in repository.calls(first["id"])
+    ] == [(0, "list_reminders"), (1, "list_reminders")]
+
+
+def test_retry_with_changed_arguments_writes_a_second_record(db, repository):
+    """已知取舍：重试时模型改了主意，两次写入都会留在时间线上。
+
+    参数指纹只认完全相同的调用，所以内容不同的第二次写入会照常执行。这是
+    为了不误伤「先记午饭、再记洗澡」这类正当续接而付出的代价：第一次的副
+    作用本来就已经发生，旧的位置绑定同样拦不住它，只是额外毁掉整个批次。
+    """
     add_message(db, "user", "记录午饭")
     first = claim_conversation(db, repository)
     model_attempts = 0
@@ -402,7 +524,9 @@ def test_retry_cannot_change_a_durable_call_in_place(db, repository):
             },
             0,
         )
-        return "not json", f"run-{model_attempts}"
+        if model_attempts == 1:
+            return "not json", "bad-run"
+        return output("completed", [execution("记录午饭")]), "good-run"
 
     asyncio.run(make_worker(db, repository, model).process(first))
     reclaimed = repository.claim_next(
@@ -410,9 +534,10 @@ def test_retry_cannot_change_a_durable_call_in_place(db, repository):
     )
     asyncio.run(make_worker(db, repository, model).process(reclaimed))
 
-    assert repository.get(first["id"])["status"] == "retry_wait"
-    assert len(repository.calls(first["id"])) == 1
-    assert [item["content"] for item in db.get_today_events()] == ["吃午饭"]
+    assert repository.get(first["id"])["status"] == "completed"
+    assert sorted(item["content"] for item in db.get_today_events()) == [
+        "吃午饭", "吃炒饭",
+    ]
 
 
 def test_reminder_result_is_expressed_with_latest_context_and_exact_terms(

@@ -48,6 +48,11 @@ ROUTINE_WRITE_TOOLS = {
     "delete_deadline",
 }
 INTERNAL_TOOLS = {"set_scene"}
+# 只读工具重跑一次没有副作用，而且能拿到最新数据，所以不参与跨尝试去重。
+# 其余工具一律按有副作用处理：将来新增工具默认受保护，漏掉一个的后果是
+# 静默重复写入，比多去重一次严重得多。
+READ_ONLY_TOOLS = {"list_reminders", "query_calendar", "search_history"}
+SIDE_EFFECT_TOOLS = ALL_TOOL_NAMES - READ_ONLY_TOOLS
 CREATED_ID_FIELDS = {
     "log_timeline_event": "event_id",
     "set_reminder": "reminder_id",
@@ -56,12 +61,21 @@ CREATED_ID_FIELDS = {
 SAY_KEY = "say"
 
 
+def _arguments_fingerprint(arguments: Any) -> str:
+    """同一组参数的稳定指纹，用于识别跨尝试的重复调用。"""
+    return json.dumps(arguments or {}, sort_keys=True, ensure_ascii=False)
+
+
 class BatchLeaseLost(RuntimeError):
     pass
 
 
 class ToolReplayMismatch(RuntimeError):
-    pass
+    """账本上同一个序号被两组不同的调用占用。
+
+    续接改成序号偏移之后，新调用总是排在账本之后，所以这里不再表示模型换了
+    主意，而表示偏移量或批次占用出了问题，属于内部不变量被破坏。
+    """
 
 
 class ToolInvocationFailed(RuntimeError):
@@ -259,6 +273,14 @@ class ToolWorker:
             int(item["call_index"]): item
             for item in self.repository.calls(batch_id)
         }
+        # 位置绑定原本顺带挡住了重复写入，改成续接之后这层保证消失，改由参数
+        # 指纹接替：只认上一次尝试留下的成功记录，本轮内的新调用不参与，
+        # 这样同一批次里「先查询、再写入、再查询」不会被误判成重复。
+        resumed_side_effects = {
+            (item["tool_name"], _arguments_fingerprint(item.get("arguments"))): item
+            for item in call_records.values()
+            if item["succeeded"] and item["tool_name"] in SIDE_EFFECT_TOOLS
+        }
         model_input, new_user_messages, prior = self._model_input(
             batch, prior_calls=list(call_records.values())
         )
@@ -278,13 +300,20 @@ class ToolWorker:
         async def execute_tool(
             name: str, arguments: dict, provider_call_index: int
         ):
+            # provider 的序号每轮从 0 重数，而且 preset 回退会让它在同一次尝试
+            # 里再归零一遍，所以它不能充当持久身份。序号一律从活账本推导：
+            # _execute_one 是顺序 await 并就地更新 call_records 的，因此这个
+            # 计数器单调递增，不受 provider 侧任何重置影响。
+            del provider_call_index
+            next_call_index = max(call_records) + 1 if call_records else 0
             return await self._execute_one(
                 batch,
                 tool_names,
                 call_records,
                 name,
                 arguments,
-                provider_call_index,
+                next_call_index,
+                resumed_side_effects=resumed_side_effects,
             )
 
         raw = await self.model_runner(
@@ -349,12 +378,16 @@ class ToolWorker:
         tool_name: str,
         arguments: dict[str, Any],
         call_index: int,
+        *,
+        resumed_side_effects: dict[tuple[str, str], dict[str, Any]] | None = None,
     ) -> Any:
         if tool_name not in allowed_tools:
             raise ToolInvocationFailed(f"tool not allowed in this batch: {tool_name}")
         if not isinstance(arguments, dict):
             raise ToolInvocationFailed("tool arguments must be an object")
 
+        # 续接之后新序号总是排在账本之后，这里命中说明偏移量或批次占用出了
+        # 问题，属于内部不变量被破坏，而不是模型改了主意。
         existing = call_records.get(int(call_index))
         if existing is not None:
             if (
@@ -362,12 +395,26 @@ class ToolWorker:
                 or (existing.get("arguments") or {}) != arguments
             ):
                 raise ToolReplayMismatch(
-                    f"call {call_index} changed from "
-                    f"{existing['tool_name']} {existing.get('arguments')} to "
-                    f"{tool_name} {arguments}"
+                    f"call {call_index} is already recorded as "
+                    f"{existing['tool_name']} {existing.get('arguments')} and "
+                    f"cannot be reused for {tool_name} {arguments}"
                 )
             if existing["succeeded"]:
                 return existing.get("result")
+
+        # 上一次尝试已经做成过同样这件事，副作用不可以再发生一遍。
+        if resumed_side_effects and tool_name in SIDE_EFFECT_TOOLS:
+            duplicate = resumed_side_effects.get(
+                (tool_name, _arguments_fingerprint(arguments))
+            )
+            if duplicate is not None:
+                logger.info(
+                    "批次 %s 跳过重复的 %s，复用第 %s 号调用留下的结果",
+                    batch.get("id"),
+                    tool_name,
+                    duplicate["call_index"],
+                )
+                return duplicate.get("result")
 
         execution_args = dict(arguments)
         if tool_name == "set_scene":
