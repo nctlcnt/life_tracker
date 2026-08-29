@@ -512,6 +512,95 @@ def test_chat_track_silence_after_a_pure_lookup_says_nothing(db, repository):
     assert done["delivery_kind"] == "none"
 
 
+def test_exhausted_retries_do_not_apologise_for_finished_work(db, repository):
+    """重试用尽不等于事情没做成，做成了就不该道歉。
+
+    线上形状：两条 timeline 写入都成功了，卡住的是收尾。旧代码一律报 unable，
+    于是用户收到「后台出了点小故障没操作成功」，而记录其实好好地躺在时间线上。
+    """
+    add_message(db, "user", "记一下午饭")
+    batch = claim_conversation(db, repository)
+    spoken = []
+    event_start = datetime.now().replace(
+        hour=12, minute=0, second=0, microsecond=0
+    ).isoformat()
+
+    async def expression(_db, _system, _messages):
+        spoken.append(1)
+        return "不该说出口的那句道歉", "expression-run"
+
+    async def model(_db, _system, _messages, *, tool_executor, **_kwargs):
+        await tool_executor(
+            "log_timeline_event",
+            {
+                "start_time": event_start,
+                "content": "吃午饭",
+                "category": "Routine",
+            },
+            0,
+        )
+        raise ProviderInterrupted("provider dropped after the tool call")
+
+    worker = make_worker(
+        db, repository, model, expression=expression, max_attempts=1
+    )
+    asyncio.run(worker.process(batch))
+
+    done = repository.get(batch["id"])
+    assert done["status"] == "completed"
+    # 动过数据，留个反应作痕迹，但一个字都不说
+    assert done["delivery_kind"] == "reaction"
+    assert spoken == []
+    assert len(db.get_today_events()) == 1
+    # 收场是降级来的，原因必须留着，否则和顺利完成的批次在 status 上没区别
+    assert "ProviderInterrupted" in (done["last_error"] or "")
+
+
+def test_exhausted_retries_still_speak_when_a_tool_really_failed(db, repository):
+    """确实有东西没做成，那句话必须说出去。"""
+    add_message(db, "user", "删掉那条不存在的记录")
+    batch = claim_conversation(db, repository)
+
+    async def model(_db, _system, _messages, *, tool_executor, **_kwargs):
+        result = await tool_executor(
+            "delete_timeline_event", {"event_id": 999999}, 0
+        )
+        assert result["success"] is False
+        raise ProviderInterrupted("provider dropped after the failed call")
+
+    worker = make_worker(db, repository, model, max_attempts=1)
+    asyncio.run(worker.process(batch))
+
+    done = repository.get(batch["id"])
+    assert done["status"] == "completed"
+    assert done["delivery_kind"] == "message"
+    assert json.loads(done["result_json"])["outcome"] == "unable"
+
+
+def test_exhausted_retries_stay_silent_when_nothing_was_done(db, repository):
+    """一次工具都没调成，就没有什么可道歉的。"""
+    add_message(db, "user", "随便说一句")
+    batch = claim_conversation(db, repository)
+    spoken = []
+
+    async def expression(_db, _system, _messages):
+        spoken.append(1)
+        return "多余的道歉", "expression-run"
+
+    async def model(*_args, **_kwargs):
+        raise ProviderInterrupted("provider dropped before any tool call")
+
+    worker = make_worker(
+        db, repository, model, expression=expression, max_attempts=1
+    )
+    asyncio.run(worker.process(batch))
+
+    done = repository.get(batch["id"])
+    assert done["status"] == "completed"
+    assert done["delivery_kind"] == "none"
+    assert spoken == []
+
+
 def test_malformed_output_is_repaired_in_place(db, repository):
     """输出不合契约只重写那份 JSON，不推倒整批重来。
 

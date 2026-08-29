@@ -654,6 +654,7 @@ class ToolBatchRepository:
         delivery_kind: str = "none",
         last_run_id: str | None = None,
         supersedes_batch_id: str | None = None,
+        degraded_error: str | None = None,
         now=None,
     ) -> bool:
         """这一批干完了，同时记下结果和该怎么交付。
@@ -669,12 +670,15 @@ class ToolBatchRepository:
             raise ValueError(
                 f"delivery_kind must be one of {sorted(DELIVERY_KINDS)}")
         delivery_status = "not_needed" if delivery_kind == "none" else "pending"
+        # 重试用尽后收的尾同样是 completed，但 `last_error` 要留着：不留的话
+        # 「本来就顺利」和「用光重试才勉强收场」在 status 上长得一模一样，
+        # 运维只能靠翻日志分辨。
         return self._finish(
             batch_id, lease_token, status="completed",
             result=result, delivery_kind=delivery_kind,
             delivery_status=delivery_status, last_run_id=last_run_id,
             supersedes_batch_id=supersedes_batch_id,
-            error=None, now=now)
+            error=(str(degraded_error) if degraded_error else None), now=now)
 
     def mark_failed(self, batch_id: str, lease_token: str, error: str, *,
                     last_run_id: str | None = None, now=None) -> bool:

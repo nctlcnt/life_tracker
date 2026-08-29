@@ -680,15 +680,23 @@ class ToolWorker:
         return names
 
     @staticmethod
+    def _call_failed(item: dict[str, Any]) -> bool:
+        """这次调用到底做成没有。
+
+        两种没做成：执行层抛了错（succeeded=False），或者工具跑通了但业务上
+        没成（result.success=False，例如删一个不存在的事件）。只看前者会把
+        后者当成功。
+        """
+        if not item["succeeded"]:
+            return True
+        result = item.get("result")
+        return isinstance(result, dict) and result.get("success") is False
+
+    @staticmethod
     def _validate_outcome(
         output: ToolWorkerOutput, calls: list[dict[str, Any]]
     ) -> None:
-        failures = [
-            item
-            for item in calls
-            if isinstance(item.get("result"), dict)
-            and item["result"].get("success") is False
-        ]
+        failures = [item for item in calls if ToolWorker._call_failed(item)]
         if failures and output.outcome == "empty":
             raise ToolWorkerOutputError("tool failures cannot be reported as empty")
         important_values = {
@@ -715,9 +723,7 @@ class ToolWorker:
     ) -> str:
         names = {item["tool_name"] for item in calls}
         has_business_failure = any(
-            isinstance(item.get("result"), dict)
-            and item["result"].get("success") is False
-            for item in calls
+            ToolWorker._call_failed(item) for item in calls
         )
         if has_business_failure:
             return "message"
@@ -767,33 +773,56 @@ class ToolWorker:
                 raise BatchLeaseLost(str(batch["id"]))
             return
 
-        failure_results = ({
-            "operation": "处理刚才的请求",
-            "status": "failed",
-            "details": {"reason": error},
-        },)
-        try:
-            say = await self.expresser.express(
-                channel_id=batch["channel_id"],
-                outcome="unable",
-                execution_results=failure_results,
-                important_information=(),
-            )
-        except Exception:
-            logger.exception("失败结果表达也失败，使用安全提示")
-            say = None
-        # 真的出了岔子就必须说，这里不接受静默。
-        say = say or "刚才那件事没有处理成功，我需要再试一下。"
-        if not self.repository.mark_completed(
-            batch["id"],
-            batch["lease_token"],
-            result={
+        # 重试预算用完了，但这一批未必什么都没做成。账本才是事实：工具是不是
+        # 真的失败了，只有它说了算，异常本身只说明这一轮没能走到最后。
+        calls = self.repository.calls(batch["id"])
+        failed_calls = [item for item in calls if self._call_failed(item)]
+        wrote = {
+            item["tool_name"]
+            for item in calls
+            if not self._call_failed(item)
+        } - READ_ONLY_TOOLS - INTERNAL_TOOLS
+
+        if failed_calls:
+            failure_results = ({
+                "operation": "处理刚才的请求",
+                "status": "failed",
+                "details": {"reason": error},
+            },)
+            try:
+                say = await self.expresser.express(
+                    channel_id=batch["channel_id"],
+                    outcome="unable",
+                    execution_results=failure_results,
+                    important_information=(),
+                )
+            except Exception:
+                logger.exception("失败结果表达也失败，使用安全提示")
+                say = None
+            # 确实有东西没做成，这一句必须说出去，不接受静默。
+            result = {
                 "outcome": "unable",
                 "execution_results": list(failure_results),
                 "important_information": [],
-                SAY_KEY: say,
-            },
-            delivery_kind="message",
+                SAY_KEY: say or "刚才那件事没有处理成功，我需要再试一下。",
+            }
+            delivery_kind = "message"
+        else:
+            # 该做的都做完了，卡住的是收尾——输出没写对，或者话没组织出来。
+            # 事情做成了就不该道歉：动过数据的留一个反应，其余安静收场。
+            result = {
+                "outcome": "completed" if calls else "empty",
+                "execution_results": [],
+                "important_information": [],
+            }
+            delivery_kind = "reaction" if wrote else "none"
+
+        if not self.repository.mark_completed(
+            batch["id"],
+            batch["lease_token"],
+            result=result,
+            delivery_kind=delivery_kind,
+            degraded_error=error,
         ):
             raise BatchLeaseLost(str(batch["id"]))
 
