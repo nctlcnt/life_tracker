@@ -25,6 +25,7 @@ from bot.database import Database
 from bot.memory import MemoryService
 from bot.memory import scene_state
 from bot.memory.curator import CURATOR_NAME
+from bot.memory import scene_state
 from bot.prompts import get_prompt_template
 from bot.logger import get_logger
 import config
@@ -46,6 +47,22 @@ CURATOR_AUTO_STATE_KEY = "curator_auto_state"
 CURATOR_AUTO_PROPOSAL_DIR = Path("data/curator_proposals/auto")
 
 # Prompt 模板统一在 bot/prompts.py 里定义，避免多处重复维护同一条规则
+
+
+def _drop_unanswered_tail(messages: list[dict]) -> tuple[list[dict], int]:
+    """摘掉窗口末尾那串没人回应的自己发言，返回 (新列表, 摘掉的条数)。
+
+    LT-174 需求五：日和自己的旧发言不能成为新话题的来源。08-25 到 08-28
+    那 19 条里，API gateway 被提了 7 次、Yochi 3 次，就是因为窗口末尾全是
+    她自己说的话，下一轮又从里面挑话题，形成正反馈。
+
+    只摘末尾连续的 assistant 消息，等价于"最后一条用户消息之后的部分"。
+    用户说过的话一条都不动——素材来源仍然是用户，这正是需求想要的。
+    """
+    end = len(messages)
+    while end > 0 and messages[end - 1].get("role") == "assistant":
+        end -= 1
+    return messages[:end], len(messages) - end
 
 
 class Scheduler:
@@ -431,6 +448,27 @@ class Scheduler:
         if check_in:
             await self._do_check_in(check_in, timestamp)
 
+    def _unanswered_skip_reason(self, check_in: dict) -> str | None:
+        """LT-174：上一条主动消息还没人回应时，闲聊型 check-in 直接跳过。
+
+        判断只读 conversation_messages 里的来源标记，因此重启之后仍然成立，
+        也不需要额外的计数器与它保持同步。返回 None 表示可以照常触发。
+
+        `[SILENT]` 仍然保留为内容层的选择，但不再是唯一的流量控制手段——
+        它由模型自己决定，拦不住"每次都觉得有话说"这种情况。
+        """
+        if not check_in.get("skip_when_unanswered"):
+            return None
+        try:
+            backlog = self.db.proactive_backlog(str(config.CHANNEL_ID))
+        except Exception as e:
+            # 查询失败不能让主动联系整个停摆，放行并记录
+            logger.warning(f"⚠️ 无回应门禁查询失败，本次放行: {e}")
+            return None
+        if backlog["unanswered"] <= 0:
+            return None
+        return f"unanswered_since:{backlog['last_user_message_id']}"
+
     async def _do_check_in(self, check_in: dict, timestamp: str,
                            force: bool = False) -> dict:
         """Execute a configurable system check-in.
@@ -450,6 +488,26 @@ class Scheduler:
             logger.info("⏭️ 用户正在输入，跳过本次随机 check-in")
             result["skipped"] = "user_typing"
             return result
+        if not force:
+            skip_reason = self._unanswered_skip_reason(check_in)
+            if skip_reason:
+                logger.info(
+                    f"⏭️ 上一条主动消息还没有人回应，跳过 check-in: {name} "
+                    f"({skip_reason})")
+                # 场景仍然要清掉。LT-171 定的是"每一次 check-in 触发都是旧场景
+                # 唯一的终止条件"，被门禁拦下来也算触发过；否则用户几天后回来时
+                # 读到的还是几天前那句场景描述。
+                try:
+                    scene_state.clear(self.db, str(config.CHANNEL_ID))
+                except Exception as e:
+                    logger.warning(f"⚠️ 跳过 check-in 时清除场景失败: {e}")
+                # 仍然记为已触发：window 类型靠 last_fired_at 判断当天是否已经
+                # 触发过，不写的话每个 timer tick 都会重新进来再跳过一次。
+                self.db.mark_check_in_fired(check_in["id"])
+                # 同样要推进 after_ai_call 的基准，否则它会立刻再次到期。
+                self.notify_ai_call_done()
+                result["skipped"] = skip_reason
+                return result
         should_mark_fired = False
         scheduled_for = check_in.get("last_scheduled_for") or timestamp
         if force:
@@ -490,8 +548,22 @@ class Scheduler:
                     str(config.CHANNEL_ID),
                     max_tokens=POLL_WINDOW_MAX_TOKENS if proactive_poll else None,
                 )
+                # 主动联系一律看不到自己那串无人回应的发言，避免拿它当新素材。
+                # 换成一句计数：她仍然知道自己已经说了多少、该收敛，但拿不到
+                # 具体内容去翻新。window 对象本身不动，compact 游标照常推进。
+                messages, dropped = _drop_unanswered_tail(window.messages)
+                if dropped:
+                    messages = messages + [{
+                        "role": "user",
+                        "content": (
+                            f"[系统提示：在这之后你已经主动说过 {dropped} 条，"
+                            f"她一条都还没有回。这些是你自己说的话，不是新的素材，"
+                            f"不要从里面翻话题，也不要换个说法再说一遍。]"
+                        ),
+                    }]
+                    logger.info(f"🔇 主动联系窗口摘掉 {dropped} 条无人回应的自己发言")
                 reply = await scheduled_action(
-                    self.db, prompt, timestamp, window.messages,
+                    self.db, prompt, timestamp, messages,
                     send_callback=send_delivery,
                     allow_silent=bool(check_in.get("allow_silent", True)),
                     trigger="check_in",
