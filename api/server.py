@@ -737,7 +737,10 @@ _MAIN_TEMPLATE_TOKEN_RE = re.compile(r"\{([a-z_]+)\}")
 
 def _validate_prompt_template(key: str, value: str):
     import string
-    if key == "main_template":
+    if key in ("main_template", "tool_worker_template"):
+        # tool_worker_template 复用 main_template 的占位符注入机制
+        # （build_tool_worker_system() 把它当 main_template 传给 build_prompt()），
+        # 所以校验也复用同一份白名单。
         from bot.prompts import MAIN_TEMPLATE_PLACEHOLDERS
         unknown = set(_MAIN_TEMPLATE_TOKEN_RE.findall(value)) - MAIN_TEMPLATE_PLACEHOLDERS
         if unknown:

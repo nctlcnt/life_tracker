@@ -174,6 +174,7 @@ def test_admin_prompt_editor_only_exposes_runtime_sections(tmp_path):
     }
     assert visible == {
         "main_template",
+        "tool_worker_template",
         "tools",
         "reminder",
         "weather_report",
@@ -184,3 +185,14 @@ def test_admin_prompt_editor_only_exposes_runtime_sections(tmp_path):
     }
     assert "morning" in inventory_only
     assert "dispatch_paraphrase_task" in inventory_only
+
+
+def test_tool_worker_template_default_is_savable_through_admin():
+    """LT-156：tool_worker_template 复用 main_template 的占位符校验规则
+    （api.server._validate_prompt_template）。默认内容里带一整段 JSON 输出
+    契约，回归防的是花括号被误判成不认识的占位符，导致这个 section 一保存
+    就 400，Admin 里再也编辑不了。"""
+    from api.server import _validate_prompt_template
+    from bot.async_pipeline.worker_prompts import DEFAULT_TOOL_WORKER_TEMPLATE
+
+    _validate_prompt_template("tool_worker_template", DEFAULT_TOOL_WORKER_TEMPLATE)

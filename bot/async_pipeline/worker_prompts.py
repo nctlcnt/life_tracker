@@ -1,4 +1,10 @@
-"""Prompt contracts shared by the LT-178 tool worker and result expresser."""
+"""Prompt contracts shared by the LT-178 tool worker and result expresser.
+
+LT-156: the tool worker's system prompt (core contract + placeholder layout)
+lives in prompt_sections.tool_worker_template, editable in Admin exactly like
+main_template. DEFAULT_TOOL_WORKER_TEMPLATE is only the seed/fallback for an
+empty DB row, not the runtime source of truth.
+"""
 
 from __future__ import annotations
 
@@ -15,10 +21,16 @@ from bot.ai_engine_base import (
 )
 from bot.database import Database
 from bot.memory import MemoryService
-from bot.prompts import build_prompt
+from bot.prompts import (
+    LABEL_DEADLINES,
+    LABEL_PENDING_REMINDERS,
+    LABEL_PROJECTS,
+    LABEL_TODAY_TIMELINE,
+    build_prompt,
+)
 
 
-TOOL_WORKER_CORE = """
+_TOOL_WORKER_CORE = """
 You are the portable background tool worker inside the same assistant. This
 is the assistant's private internal work, not a separate person or speaker
 talking to the assistant. You never speak directly to the end user and you
@@ -79,6 +91,22 @@ missing, execution failed, or the round/time budget is exhausted. In that case
 execution_results must contain the concrete reason or missing information.
 """.strip()
 
+# LT-156：执行轨的 system prompt 现在像 main_template 一样存在
+# prompt_sections.tool_worker_template 里，Admin 可编辑（核心指令 + JSON
+# 输出契约 + {tools}/{projects}/... 占位符布局 + 四个【】标题合在一条模板里）。
+# 这份常量只在该 DB 行为空时（全新库还没跑过 initialize_prompts_if_empty，
+# 或行被手动清空）当兜底默认值，不再是运行时唯一来源。
+DEFAULT_TOOL_WORKER_TEMPLATE = "\n\n".join(
+    [
+        _TOOL_WORKER_CORE,
+        "{tools}",
+        f"{LABEL_PROJECTS}\n{{projects}}",
+        f"{LABEL_TODAY_TIMELINE}\n{{today_timeline}}",
+        f"{LABEL_PENDING_REMINDERS}\n{{pending_reminders}}",
+        f"{LABEL_DEADLINES}\n{{deadlines}}",
+    ]
+)
+
 
 RESULT_EXPRESSION_CORE = """
 You are expressing a completed internal execution result to the user. The
@@ -121,16 +149,17 @@ def build_tool_worker_system(
 
     sections = db.get_prompt_sections()
     current = now or datetime.now()
+    # timestamp/timezone 是运行时事实，不是 prompt 内容，继续由代码注入而不是
+    # 存进可编辑模板；DB 模板本身（含 JSON 输出契约、占位符布局、四个标题）
+    # 整段可在 Admin 里编辑，为空时兜底为 DEFAULT_TOOL_WORKER_TEMPLATE。
+    # 时间戳放在模板*之后*而不是之前：放在开头会让每次请求的前 ~2500 字符
+    # 都不一样，prefix cache 从第一个字节就失配（PromptParts.with_suffix
+    # 的同一条理由——易变内容要放末尾，不能放前面把稳定前缀打掉）。
     template = "\n\n".join(
         [
-            TOOL_WORKER_CORE,
+            sections.get("tool_worker_template") or DEFAULT_TOOL_WORKER_TEMPLATE,
             f"Current local timestamp: {current.isoformat(timespec='seconds')}",
             f"Timezone: {config.TIMEZONE}",
-            "{tools}",
-            "{projects}",
-            "{today_timeline}",
-            "{pending_reminders}",
-            "{deadlines}",
         ]
     )
     prompt = build_prompt(

@@ -226,6 +226,7 @@ async function putJson(url: string, body: unknown) {
 
 const PROMPT_HINTS: Record<string, string> = {
   main_template: '完整 system prompt：人格/规则散文直接写在这里，系统知识用占位符注入。',
+  tool_worker_template: '执行轨（后台工具判断）的完整 system prompt：结尾要求 AI 只输出一个固定字段的 JSON，改动前务必确认 JSON 契约本身没有被破坏，否则该轨道会每次解析失败。',
   tools: '跨工具决策和各工具使用策略；经 {tools} 注入主模板（工具多轮的中间轮自动省略）。',
   reminder: 'Reminder 到点后的跟进模板，必须保留 {timestamp} 和 {action}。',
   weather_report: '天气总结模板，必须保留 {weather_data}。',
@@ -972,7 +973,7 @@ function PromptAdmin() {
         : <div className="admin-msg err">main_template section 不存在（后端未迁移？）</div>}
 
       <details className="prompt-others">
-        <summary>运行时补充模板（tools / reminder / weather）</summary>
+        <summary>运行时补充模板（执行轨 / tools / reminder / weather）</summary>
         <SectionListEditor sections={others} onSaved={reloadAll} />
       </details>
     </div>

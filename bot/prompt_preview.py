@@ -59,6 +59,7 @@ PROMPT_TRACK_MANIFEST: tuple[dict[str, Any], ...] = (
 
 _RUNTIME_SECTION_CONSUMERS: dict[str, list[str]] = {
     "main_template": ["聊天轨", "Check-in 表达轨", "结果表达轨"],
+    "tool_worker_template": ["执行轨"],
     "tools": ["执行轨", "legacy 非 apply 模式"],
     "reminder": ["Reminder 到点表达"],
     "weather_report": ["/weather 命令"],
@@ -360,11 +361,16 @@ def build_prompt_preview(
         tool_schemas=execution_tools,
         sources=[
             _source(
-                "code",
-                "执行轨协议与 JSON 契约",
-                "bot.async_pipeline.worker_prompts.TOOL_WORKER_CORE",
+                "database",
+                "执行轨整体模板（含 JSON 输出契约）",
+                "prompt_sections.tool_worker_template",
             ),
             _source("database", "工具业务策略", "prompt_sections.tools"),
+            _source(
+                "code",
+                "运行时事实：当前时间戳/时区",
+                "bot.async_pipeline.worker_prompts.build_tool_worker_system",
+            ),
             _source("dynamic", "执行上下文", "projects/timeline/reminders/deadlines"),
             _source("code", "可用工具 schema", "bot.tools.TOOLS"),
         ],

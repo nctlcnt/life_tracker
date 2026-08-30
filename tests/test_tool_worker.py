@@ -140,6 +140,21 @@ def test_tool_worker_prompt_is_persona_free_but_keeps_tool_policy(db):
     assert "PRIVATE PERSONA MARKER" not in prompt
 
 
+def test_tool_worker_prompt_is_managed_like_main_template(db):
+    """LT-156：执行轨的 system prompt 存在 prompt_sections.tool_worker_template
+    里，像 main_template 一样可以整段被 Admin 编辑覆盖，不再是代码常量。"""
+    db.set_prompt_section(
+        "tool_worker_template", "WORKER TEMPLATE MARKER\n\n{tools}"
+    )
+    db.set_prompt_section("tools", "APPLICATION TOOL POLICY MARKER")
+
+    prompt = build_tool_worker_system(db)
+
+    assert "WORKER TEMPLATE MARKER" in prompt
+    assert "APPLICATION TOOL POLICY MARKER" in prompt
+    assert "portable background tool worker" not in prompt
+
+
 def test_tool_results_are_the_same_assistants_internal_activity(db):
     prompt = build_result_expression_system(db)
     flat_prompt = " ".join(prompt.split())
