@@ -8,7 +8,11 @@ from datetime import datetime
 from typing import Any
 
 import config
-from bot.ai_engine_base import CHAT_WITHOUT_BUSINESS_TOOLS, _build_prompt
+from bot.ai_engine_base import (
+    CHAT_WITHOUT_BUSINESS_TOOLS,
+    _build_prompt,
+    _deadlines_for_prompt,
+)
 from bot.database import Database
 from bot.memory import MemoryService
 from bot.prompts import build_prompt
@@ -103,7 +107,11 @@ structured result below is authoritative and is not a new user request.
 
 
 def build_tool_worker_system(
-    db: Database, *, context_config: dict[str, Any] | None = None
+    db: Database,
+    *,
+    context_config: dict[str, Any] | None = None,
+    maintain_deadline_status: bool = True,
+    now: datetime | None = None,
 ) -> str:
     """Build a persona-free prompt with the existing app tool appendix."""
     context_config = context_config or {}
@@ -112,12 +120,11 @@ def build_tool_worker_system(
         return bool(context_config.get(key, True))
 
     sections = db.get_prompt_sections()
-    if include("include_deadlines"):
-        db.expire_past_deadlines()
+    current = now or datetime.now()
     template = "\n\n".join(
         [
             TOOL_WORKER_CORE,
-            f"Current local timestamp: {datetime.now().isoformat(timespec='seconds')}",
+            f"Current local timestamp: {current.isoformat(timespec='seconds')}",
             f"Timezone: {config.TIMEZONE}",
             "{tools}",
             "{projects}",
@@ -139,29 +146,50 @@ def build_tool_worker_system(
             else None
         ),
         deadlines=(
-            db.get_active_deadlines() if include("include_deadlines") else None
+            _deadlines_for_prompt(
+                db,
+                maintain_status=maintain_deadline_status,
+                now=current,
+            )
+            if include("include_deadlines")
+            else None
         ),
     )
     return prompt.flatten()
 
 
 def build_chat_only_system(
-    db: Database, *, memory_service: MemoryService | None = None
+    db: Database,
+    *,
+    memory_service: MemoryService | None = None,
+    maintain_deadline_status: bool = True,
+    now: datetime | None = None,
 ) -> str:
     prompt = _build_prompt(
         db,
         "chat",
         context_config={"include_tools": False},
         memory_service=memory_service,
+        maintain_deadline_status=maintain_deadline_status,
+        now=now,
     )
     return prompt.with_suffix(CHAT_WITHOUT_BUSINESS_TOOLS).flatten()
 
 
 def build_result_expression_system(
-    db: Database, *, memory_service: MemoryService | None = None
+    db: Database,
+    *,
+    memory_service: MemoryService | None = None,
+    maintain_deadline_status: bool = True,
+    now: datetime | None = None,
 ) -> str:
     return (
-        build_chat_only_system(db, memory_service=memory_service)
+        build_chat_only_system(
+            db,
+            memory_service=memory_service,
+            maintain_deadline_status=maintain_deadline_status,
+            now=now,
+        )
         + "\n\n"
         + RESULT_EXPRESSION_CORE
     )

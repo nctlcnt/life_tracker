@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import './admin.css';
+import { Button } from './ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 
 interface Preset {
   name: string;
@@ -45,6 +47,63 @@ interface PromptSection {
 
 interface PromptsResp {
   sections: PromptSection[];
+}
+
+interface PromptPreviewSource {
+  kind: 'database' | 'code' | 'dynamic' | 'plan';
+  label: string;
+  reference: string;
+  included: boolean;
+}
+
+interface PromptPreviewStats {
+  system_chars: number;
+  message_chars: number;
+  tool_schema_chars: number;
+  total_chars: number;
+  estimated_tokens: number;
+  sha256: string;
+}
+
+interface PromptPreviewTrack {
+  key: string;
+  label: string;
+  description: string;
+  status: 'active' | 'inactive' | 'planned' | 'unavailable';
+  system_prompt: string;
+  messages: Array<{ role: string; label?: string; content: string }>;
+  tool_schemas: unknown[];
+  sources: PromptPreviewSource[];
+  caveats: string[];
+  stats: PromptPreviewStats;
+}
+
+interface PromptPreviewResp {
+  generated_at: string;
+  read_only: boolean;
+  runtime: {
+    tool_worker_enabled: boolean;
+    tool_worker_apply: boolean;
+  };
+  selected_check_in_id: number | null;
+  check_ins: Array<{
+    id: number;
+    name: string;
+    label: string;
+    enabled: boolean;
+  }>;
+  section_inventory: {
+    counts: Record<'runtime' | 'fallback' | 'seed_only' | 'unused' | 'unknown', number>;
+    sections: Array<{
+      key: string;
+      label: string;
+      status: 'runtime' | 'fallback' | 'seed_only' | 'unused' | 'unknown';
+      consumers: string[];
+      chars: number;
+      updated_at: string | null;
+    }>;
+  };
+  tracks: PromptPreviewTrack[];
 }
 
 interface CheckIn {
@@ -857,6 +916,9 @@ function CheckInEditor({
 function PromptAdmin() {
   const [data, setData] = useState<PromptsResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [preview, setPreview] = useState<PromptPreviewResp | null>(null);
+  const [previewErr, setPreviewErr] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   const load = async () => {
     try {
@@ -869,7 +931,29 @@ function PromptAdmin() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  const loadPreview = async (checkInId?: number | null) => {
+    setPreviewLoading(true);
+    try {
+      const suffix = checkInId == null ? '' : `?check_in_id=${checkInId}`;
+      const r = await fetch(`/api/admin/prompts/preview${suffix}`);
+      if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+      setPreview(await r.json());
+      setPreviewErr(null);
+    } catch (e) {
+      setPreviewErr(String(e));
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const reloadAll = async () => {
+    await Promise.all([load(), loadPreview(preview?.selected_check_in_id)]);
+  };
+
+  useEffect(() => {
+    load();
+    loadPreview();
+  }, []);
 
   if (err && !data) return <div className="admin-msg err">加载失败: {err}</div>;
   if (!data) return <div className="admin-msg">加载中…</div>;
@@ -880,15 +964,219 @@ function PromptAdmin() {
   return (
     <div className="prompt-admin-page">
       {err && <div className="admin-msg err">{err}</div>}
+      <PromptRuntimePreview
+        data={preview}
+        error={previewErr}
+        loading={previewLoading}
+        onReload={() => loadPreview(preview?.selected_check_in_id)}
+        onCheckInChange={loadPreview}
+      />
       {main
-        ? <MainTemplateEditor section={main} onSaved={load} />
+        ? <MainTemplateEditor section={main} onSaved={reloadAll} />
         : <div className="admin-msg err">main_template section 不存在（后端未迁移？）</div>}
 
       <details className="prompt-others">
         <summary>其他模板（tools / 调度小模板 / dispatch）</summary>
-        <SectionListEditor sections={others} onSaved={load} />
+        <SectionListEditor sections={others} onSaved={reloadAll} />
       </details>
     </div>
+  );
+}
+
+function PromptRuntimePreview({ data, error, loading, onReload, onCheckInChange }: {
+  data: PromptPreviewResp | null;
+  error: string | null;
+  loading: boolean;
+  onReload: () => void;
+  onCheckInChange: (checkInId: number) => void;
+}) {
+  const [selectedKey, setSelectedKey] = useState('chat');
+  const selected = data?.tracks.find(track => track.key === selectedKey)
+    ?? data?.tracks[0];
+
+  return (
+    <section className="prompt-runtime-preview" aria-labelledby="prompt-preview-title">
+      <div className="prompt-preview-head">
+        <div>
+          <h2 id="prompt-preview-title">模型实际看到什么</h2>
+          <p>只读拼装结果；打开和刷新都不会调用模型，也不会修改数据库。</p>
+        </div>
+        <Button type="button" variant="outline" size="sm"
+                onClick={onReload} disabled={loading}>
+          {loading ? 'Rendering…' : 'Refresh preview'}
+        </Button>
+      </div>
+
+      <div aria-live="polite" className="prompt-preview-status">
+        {error && <div className="admin-msg err">预览加载失败：{error}</div>}
+        {!data && !error && <div className="admin-msg">正在拼装各条轨的 prompt…</div>}
+      </div>
+
+      {data && selected && (
+        <div className="prompt-preview-body">
+          <Tabs value={selected.key} onValueChange={setSelectedKey}
+                className="prompt-track-tabs">
+            <div className="prompt-track-tab-scroll">
+              <TabsList aria-label="选择要预览的模型轨道" className="prompt-track-tab-list">
+                {data.tracks.map(track => (
+                  <TabsTrigger key={track.key} value={track.key}
+                               className="prompt-track-tab-trigger">
+                    {track.label}
+                    <span className={`prompt-track-dot status-${track.status}`} aria-hidden="true" />
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </div>
+
+            {data.tracks.map(track => (
+              <TabsContent key={track.key} value={track.key} className="prompt-track-content">
+                <div className="prompt-track-overview">
+                  <div className="prompt-track-title-row">
+                    <div>
+                      <h3>{track.label}</h3>
+                      <p>{track.description}</p>
+                    </div>
+                    <span className={`prompt-status-label status-${track.status}`}>
+                      {track.status}
+                    </span>
+                  </div>
+
+                  {track.key === 'check_in' && data.check_ins.length > 0 && (
+                    <div className="prompt-checkin-select">
+                      <label htmlFor="prompt-preview-checkin">预览哪条 Check-in</label>
+                      <select id="prompt-preview-checkin"
+                              value={data.selected_check_in_id ?? ''}
+                              disabled={loading}
+                              onChange={event => onCheckInChange(Number(event.target.value))}>
+                        {data.check_ins.map(checkIn => (
+                          <option key={checkIn.id} value={checkIn.id}>
+                            {checkIn.label}{checkIn.enabled ? '' : '（disabled）'}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div className="prompt-preview-meta" aria-label="Prompt 大小和版本指纹">
+                    <span><b>{track.stats.total_chars.toLocaleString()}</b> chars</span>
+                    <span>约 <b>{track.stats.estimated_tokens.toLocaleString()}</b> tokens</span>
+                    <span>hash <code>{track.stats.sha256}</code></span>
+                    <span>{data.runtime.tool_worker_apply ? 'apply mode' : 'legacy tool mode'}</span>
+                    <span>snapshot {data.generated_at.replace('T', ' ')}</span>
+                  </div>
+                </div>
+
+                {track.caveats.length > 0 && (
+                  <div className="prompt-preview-caveats" role="note">
+                    {track.caveats.map(item => <p key={item}>{item}</p>)}
+                  </div>
+                )}
+
+                <div className="prompt-source-grid" aria-label="Prompt 来源">
+                  {track.sources.map(source => (
+                    <div key={`${source.kind}:${source.reference}`}
+                         className={`prompt-source ${source.included ? '' : 'excluded'}`}>
+                      <span className="prompt-source-kind">{source.kind}</span>
+                      <div className="prompt-source-copy">
+                        <b>{source.label}</b>
+                        <code>{source.reference}</code>
+                      </div>
+                      <span className="prompt-source-state">
+                        {source.included ? 'included' : 'not included'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {track.system_prompt ? (
+                  <PromptTextBlock title="System prompt" content={track.system_prompt} />
+                ) : (
+                  <div className="prompt-preview-empty">
+                    这条轨目前尚未接入运行时，所以没有实际 system prompt。
+                  </div>
+                )}
+
+                {track.messages.map((message, index) => (
+                  <PromptTextBlock
+                    key={`${message.role}:${message.label ?? index}`}
+                    title={message.label || `${message.role} message`}
+                    eyebrow={message.role}
+                    content={message.content}
+                  />
+                ))}
+
+                {track.tool_schemas.length > 0 && (
+                  <details className="prompt-tool-schemas">
+                    <summary>
+                      Tool schemas（{track.tool_schemas.length}）
+                      <span>{track.stats.tool_schema_chars.toLocaleString()} chars</span>
+                    </summary>
+                    <pre tabIndex={0}>{JSON.stringify(track.tool_schemas, null, 2)}</pre>
+                  </details>
+                )}
+              </TabsContent>
+            ))}
+          </Tabs>
+          <PromptSectionInventory inventory={data.section_inventory} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PromptSectionInventory({ inventory }: {
+  inventory: PromptPreviewResp['section_inventory'];
+}) {
+  const statusLabels: Record<string, string> = {
+    runtime: 'runtime',
+    fallback: 'fallback only',
+    seed_only: 'seed only',
+    unused: 'unused',
+    unknown: 'unknown',
+  };
+  return (
+    <details className="prompt-section-inventory">
+      <summary>
+        <span>数据库 section 使用地图</span>
+        <span>
+          {inventory.counts.runtime} runtime · {inventory.counts.fallback} fallback ·{' '}
+          {inventory.counts.seed_only} seed · {inventory.counts.unused} unused
+        </span>
+      </summary>
+      <div className="prompt-section-inventory-grid">
+        {inventory.sections.map(section => (
+          <div key={section.key} className="prompt-section-inventory-row">
+            <div className="prompt-section-inventory-name">
+              <code>{section.key}</code>
+              <span className={`prompt-section-status section-${section.status}`}>
+                {statusLabels[section.status]}
+              </span>
+            </div>
+            <span>{section.chars.toLocaleString()} chars</span>
+            <p>{section.consumers.length > 0 ? section.consumers.join('、') : '当前没有消费者'}</p>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function PromptTextBlock({ title, content, eyebrow }: {
+  title: string;
+  content: string;
+  eyebrow?: string;
+}) {
+  return (
+    <section className="prompt-final-block">
+      <div className="prompt-final-block-head">
+        <div>
+          {eyebrow && <span>{eyebrow}</span>}
+          <h4>{title}</h4>
+        </div>
+        <span>{content.length.toLocaleString()} chars</span>
+      </div>
+      <pre tabIndex={0}>{content}</pre>
+    </section>
   );
 }
 

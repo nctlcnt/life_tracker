@@ -438,6 +438,354 @@
   min-height: 62vh;
 }
 
+/* ── 各模型轨道最终 prompt 的只读预览 ── */
+.prompt-runtime-preview {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--card);
+}
+.prompt-preview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+.prompt-preview-head h2 {
+  margin: 0 0 4px;
+  font-family: var(--display);
+  font-size: 20px;
+  font-weight: 600;
+}
+.prompt-preview-head p,
+.prompt-track-overview p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.prompt-preview-status .admin-msg {
+  padding: 16px 0;
+}
+.prompt-track-tab-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  padding-bottom: 3px;
+}
+.prompt-track-tab-list {
+  width: max-content;
+  min-width: 100%;
+}
+.prompt-track-tab-trigger {
+  min-width: max-content;
+  padding-inline: 12px;
+}
+.prompt-track-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  opacity: 0.65;
+}
+.prompt-track-dot.status-active {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+.prompt-track-dot.status-planned {
+  border-style: dashed;
+  background: transparent;
+}
+.prompt-track-content {
+  display: grid;
+  gap: 14px;
+  padding-top: 12px;
+}
+.prompt-preview-body {
+  min-width: 0;
+}
+.prompt-track-overview {
+  display: grid;
+  gap: 12px;
+}
+.prompt-track-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.prompt-track-title-row h3 {
+  margin: 0 0 3px;
+  font-family: var(--display);
+  font-size: 18px;
+}
+.prompt-status-label {
+  padding: 3px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.prompt-status-label.status-active {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+.prompt-status-label.status-planned {
+  border-style: dashed;
+}
+.prompt-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.prompt-preview-meta > span {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--background);
+}
+.prompt-preview-meta b,
+.prompt-preview-meta code {
+  color: var(--foreground);
+  font-weight: 500;
+}
+.prompt-checkin-select {
+  display: grid;
+  grid-template-columns: max-content minmax(180px, 360px);
+  align-items: center;
+  gap: 10px;
+}
+.prompt-checkin-select label {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.prompt-checkin-select select {
+  min-width: 0;
+  height: 34px;
+  padding: 0 32px 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 12px;
+}
+.prompt-checkin-select select:focus-visible,
+.prompt-final-block pre:focus-visible,
+.prompt-tool-schemas pre:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.prompt-preview-caveats {
+  padding: 10px 12px;
+  border-left: 3px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.prompt-preview-caveats p {
+  margin: 0;
+}
+.prompt-preview-caveats p + p {
+  margin-top: 4px;
+}
+.prompt-source-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.prompt-source {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 7px 9px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--background);
+}
+.prompt-source.excluded {
+  opacity: 0.62;
+}
+.prompt-source-kind {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.prompt-source-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.prompt-source-copy b {
+  font-size: 12px;
+  font-weight: 500;
+}
+.prompt-source-copy code {
+  overflow-wrap: anywhere;
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.prompt-source-state {
+  grid-column: 2;
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+.prompt-final-block,
+.prompt-tool-schemas {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--background);
+}
+.prompt-final-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.prompt-final-block-head > div {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.prompt-final-block-head span,
+.prompt-tool-schemas summary span {
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.prompt-final-block-head h4 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+.prompt-final-block pre,
+.prompt-tool-schemas pre {
+  max-height: 520px;
+  margin: 0;
+  overflow: auto;
+  padding: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--foreground);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.prompt-tool-schemas summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: var(--foreground);
+  font-size: 12px;
+}
+.prompt-tool-schemas[open] summary {
+  border-bottom: 1px solid var(--border);
+}
+.prompt-preview-empty {
+  padding: 18px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 9px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  text-align: center;
+}
+.prompt-section-inventory {
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+.prompt-section-inventory > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  cursor: pointer;
+  color: var(--foreground);
+  font-size: 12px;
+}
+.prompt-section-inventory > summary span:last-child {
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-align: right;
+}
+.prompt-section-inventory-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.prompt-section-inventory-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 5px 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--background);
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+.prompt-section-inventory-name {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.prompt-section-inventory-name code {
+  overflow-wrap: anywhere;
+  color: var(--foreground);
+  font-size: 10px;
+}
+.prompt-section-status {
+  padding: 1px 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+.prompt-section-status.section-runtime {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+.prompt-section-status.section-unused {
+  border-style: dashed;
+}
+.prompt-section-inventory-row p {
+  grid-column: 1 / -1;
+  margin: 0;
+  line-height: 1.45;
+}
+
 .placeholder-bar {
   display: flex;
   flex-wrap: wrap;
@@ -512,6 +860,7 @@
     padding: 20px 16px 40px;
   }
   .admin-header,
+  .prompt-preview-head,
   .prompt-editor-head {
     flex-direction: column;
     align-items: stretch;
@@ -522,6 +871,24 @@
   }
   .prompt-admin {
     grid-template-columns: 1fr;
+  }
+  .prompt-source-grid {
+    grid-template-columns: 1fr;
+  }
+  .prompt-section-inventory-grid {
+    grid-template-columns: 1fr;
+  }
+  .prompt-section-inventory > summary {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .prompt-section-inventory > summary span:last-child {
+    text-align: left;
+  }
+  .prompt-checkin-select {
+    grid-template-columns: 1fr;
+    gap: 5px;
   }
   .prompt-list {
     display: grid;

@@ -70,6 +70,31 @@ def _memory_service(db: Database,
     return service or getattr(db, "_memory_service", None) or MemoryService(db)
 
 
+def _deadlines_for_prompt(
+    db: Database,
+    *,
+    maintain_status: bool = True,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Return the deadline rows that a prompt call would see.
+
+    Normal runtime calls keep the existing maintenance behavior: overdue rows
+    are first marked ``expired`` and then omitted.  Read-only tooling such as
+    the Admin prompt preview must not mutate production state, so it applies
+    the same cutoff in memory instead.
+    """
+    if maintain_status:
+        db.expire_past_deadlines()
+        return db.get_active_deadlines()
+
+    cutoff = (now or datetime.now()).isoformat()
+    return [
+        item
+        for item in db.get_active_deadlines()
+        if str(item.get("due_time") or "") >= cutoff
+    ]
+
+
 # 触发源标签
 _TRIGGER_LABELS = {
     "poll": "🔄 随机轮询",
@@ -121,7 +146,10 @@ def _build_prompt(db: Database, mode: str,
                   calendar: str | None = None,
                   relevant_history: list[dict] | None = None,
                   context_config: dict | None = None,
-                  memory_service: MemoryService | None = None) -> PromptParts:
+                  memory_service: MemoryService | None = None,
+                  *,
+                  maintain_deadline_status: bool = True,
+                  now: datetime | None = None) -> PromptParts:
     """
     从 DB 取数据，构建完整的 PromptParts 对象。
 
@@ -151,8 +179,11 @@ def _build_prompt(db: Database, mode: str,
     # Deadline：先自动过期，再取 active
     deadlines = []
     if include("include_deadlines"):
-        db.expire_past_deadlines()
-        deadlines = db.get_active_deadlines()
+        deadlines = _deadlines_for_prompt(
+            db,
+            maintain_status=maintain_deadline_status,
+            now=now,
+        )
 
     projects = db.get_all_project_names() if include("include_projects") else []
 
