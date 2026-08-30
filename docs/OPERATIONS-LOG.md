@@ -14,21 +14,21 @@
 
 ## 当前基线
 
-最后更新：2026-08-29 09:58 UTC
+最后更新：2026-08-30 03:52 UTC
 
 | 检查项 | 最近执行时间（UTC） | 状态 | 结果/证据 | 下次动作 |
 |---|---|---|---|---|
-| Python 全部自动测试 | 2026-08-29 09:55 | PASS | `.venv/bin/python -m pytest -q`：509 passed，84.61s（含 LT-178 双层 worker、durable ledger、降级与投递回归） | 每次部署前重跑 |
-| 前端生产构建 | 2026-08-29 09:53 | PASS | `npm run build --prefix frontend`：Vite 生产构建成功，2038 modules transformed | 每次部署前重跑 |
+| Python 全部自动测试 | 2026-08-30 03:20 | PASS | `.venv/bin/python -m pytest -q`：513 passed、1 warning，84.14s（含 Prompt runtime preview 回归） | 每次部署前重跑 |
+| 前端生产构建 | 2026-08-30 03:20 | PASS | `npm run build --prefix frontend`：Vite 生产构建成功，2045 modules transformed | 每次部署前重跑 |
 | npm 干净安装 | 2026-07-17 03:58 | PASS | `npm ci` 安装 287 packages；audit findings 与 07-11 相同，仍待审查 | 审查 audit findings；依赖变更后重跑 |
-| npm Docker builder | 2026-08-29 09:56 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功并重建 production app | Dockerfile/依赖变更后重跑 |
-| Production health endpoint | 2026-08-29 09:58 | PASS | `/internal/health` 与鉴权 `/api/health` 均返回 `{"status":"ok"}` | 每次部署后重跑 |
-| Production 容器状态 | 2026-08-29 09:57 | PASS | app `(healthy)`；Discord bot、scheduler、outbound、batcher、tool worker apply、heartbeat 全部启动，启动日志零 error/exception | 每次部署后重跑 |
-| SQLite quick check | 2026-08-29 09:58 | PASS | `PRAGMA quick_check` → `ok`；outbox、批次与待投递结果均无非终态记录 | 每次部署后重跑 |
-| Litestream 写入 R2 | 2026-08-29 09:56 | PASS | 部署后新 WAL segments 已写入 R2（generation f8f62c83c2d3df4f，index 00000440/00000441） | 每次部署后检查复制；每季度恢复演练 |
+| npm Docker builder | 2026-08-30 03:50 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功并重建 production app | Dockerfile/依赖变更后重跑 |
+| Production health endpoint | 2026-08-30 03:51 | PASS | `/internal/health` 与容器内鉴权 `/api/health` 均返回 `{"status":"ok"}`；只读 Prompt preview API 返回 5 条轨道 | 每次部署后重跑 |
+| Production 容器状态 | 2026-08-30 03:51 | PASS | app `(healthy)`；Discord bot、scheduler、outbound、batcher、tool worker apply、heartbeat 全部启动，启动日志零 error/exception | 每次部署后重跑 |
+| SQLite quick check | 2026-08-30 03:51 | PASS | `PRAGMA quick_check` → `ok`；outbox、批次与待投递结果均无非终态记录 | 每次部署后重跑 |
+| Litestream 写入 R2 | 2026-08-30 03:50 | PASS | 部署后新 WAL segments 已写入 R2（generation f8f62c83c2d3df4f，index 00000453/00000454） | 每次部署后检查复制；每季度恢复演练 |
 | 本地 SQLite 快照恢复 | 2026-08-29 09:55 | PASS | `scripts/backup_and_verify.py --label pre-lt178-production`：在线快照 39.5 MB，`integrity_check` → `ok`，28 张表行数逐张比对通过 | 每次破坏性迁移前重跑 |
 | R2/Litestream 完整恢复 | 2026-07-11 13:30 | PASS | 从 R2 恢复到全新 `/tmp` 路径；integrity check、数据新鲜度和 API-only smoke test 均通过 | 2026-10 前重跑，或 Litestream/R2 变更后立即重跑 |
-| 网络监听/路由审计 | 2026-08-29 09:58 | PASS | `infra audit`：全部干净；production 8080 仍只监听 `127.0.0.1` | 每次部署后重跑 |
+| 网络监听/路由审计 | 2026-08-30 03:51 | PASS | `infra audit`：全部干净；production 8080 仍只监听 `127.0.0.1`；临时 9001 已停止并注销 | 每次部署后重跑 |
 | Dashboard/API 鉴权 | 2026-07-17 06:55 | PASS | 自动验收全部通过；用户随后从真实浏览器确认登录和 Dashboard 使用“完全正常” | 每次鉴权/路由变更后重跑 |
 | Staging 启动与隔离 | 2026-08-26 11:01 | PASS | 外部 Dockge compose 已改为 `127.0.0.1:9001→8081`；容器 healthy，internal/auth health 200，测试 Discord Bot 上线，`infra audit` clean | 完成 LT-170 人工并发场景后再部署 production |
 | memory.md 独立异地备份 | 未知 | NOT TESTED | `data/memory.md` 已成为记忆权威存储（07-17 上线），Litestream 只覆盖 SQLite；迁移期靠 legacy 表 shadow 兜底 | LT-132 验收前建立独立备份并演练恢复 |
@@ -36,12 +36,20 @@
 ## 已知未闭环事项
 
 1. `life.purrden.cc` 仍是公网路由，但 Dashboard/API 已有应用层鉴权；Cloudflare Access 仍可作为额外防线，不再是保密性的唯一前置。
-2. ~~外部 Dockge staging 权威 compose 的端口绑定尚未满足 VPS 私有监听纪律~~ 已于 2026-08-26 改为登记端口 `9001` 且只绑定 `127.0.0.1`，`infra audit` 通过。
+2. ~~外部 Dockge staging 权威 compose 的端口绑定尚未满足 VPS 私有监听纪律~~ 已于 2026-08-26 改为私有监听；该 staging 后续已清空下线。2026-08-30 的 Prompt 临时预览复用登记端口 `9001` 并绑定 WireGuard，production 验证后已停止并注销。
 3. ~~本地 SQLite `.backup` 快照的恢复流程尚未单独演练~~ 已于 2026-08-23 演练通过，见下方演练记录；工具固化为 `scripts/backup_and_verify.py`。
 4. 2026-07-12 已决定暂不备份 `data/ai_traces/*.jsonl`。主机完全损坏时允许丢失 JSONL 原始 trace；SQLite 中的 `ai_runs`/`tool_calls` 仍由 Litestream 保护。
 5. `npm ci` 报告 1 low、2 moderate、2 high；需单独运行 `npm audit` 评估可达性和升级影响，禁止未经审查直接 `--force`。
 
 ## 演练记录
+
+### 2026-08-30 03:52 UTC — Prompt runtime preview 部署到 production
+
+- 内容：PR #21 / merge commit `0a1db04`；后台新增只读“模型实际看到什么”查看器，覆盖 chat、check-in、execution、result expression 与 planned timeline renderer 五条轨道，并显示工具 schema、Prompt 来源、统计和 section inventory。
+- 部署方式：`make deploy-local` 从最新 `main` 重建并重启 Dockge 管理的 production app；无数据库迁移，不改变现有双轨执行行为。
+- 部署前：513 个 Python 测试通过；前端生产构建通过；outbox、tool batches 与待投递结果均排空；在线快照 `data/life_tracker.db.bak-20260830-034944` 的 `integrity_check` → `ok`。
+- 部署后：app healthy；内部与鉴权 health 均 200；只读 Prompt preview API 返回 `read_only=true` 和 5 条轨道；Discord bot、scheduler、outbound consumer、batcher、tool worker 与 heartbeat 全部启动；SQLite `quick_check` → `ok`；Litestream 新 WAL 已写入 R2；公网 Dashboard 返回 200；`infra audit` clean，8080 仅绑定 `127.0.0.1`。
+- 临时环境清理：停止并移除 `life-tracker-prompt-preview` 容器及其网络，注销 WireGuard 预览端口 9001；未删除隔离数据目录和本地预览镜像。
 
 ### 2026-08-29 09:58 UTC — LT-178 双层 worker 部署到 production
 
