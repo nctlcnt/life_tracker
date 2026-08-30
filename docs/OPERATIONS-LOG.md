@@ -14,21 +14,21 @@
 
 ## 当前基线
 
-最后更新：2026-08-30 03:52 UTC
+最后更新：2026-08-30 05:51 UTC
 
 | 检查项 | 最近执行时间（UTC） | 状态 | 结果/证据 | 下次动作 |
 |---|---|---|---|---|
-| Python 全部自动测试 | 2026-08-30 03:20 | PASS | `.venv/bin/python -m pytest -q`：513 passed、1 warning，84.14s（含 Prompt runtime preview 回归） | 每次部署前重跑 |
-| 前端生产构建 | 2026-08-30 03:20 | PASS | `npm run build --prefix frontend`：Vite 生产构建成功，2045 modules transformed | 每次部署前重跑 |
-| npm 干净安装 | 2026-07-17 03:58 | PASS | `npm ci` 安装 287 packages；audit findings 与 07-11 相同，仍待审查 | 审查 audit findings；依赖变更后重跑 |
-| npm Docker builder | 2026-08-30 03:50 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功并重建 production app | Dockerfile/依赖变更后重跑 |
-| Production health endpoint | 2026-08-30 03:51 | PASS | `/internal/health` 与容器内鉴权 `/api/health` 均返回 `{"status":"ok"}`；只读 Prompt preview API 返回 5 条轨道 | 每次部署后重跑 |
-| Production 容器状态 | 2026-08-30 03:51 | PASS | app `(healthy)`；Discord bot、scheduler、outbound、batcher、tool worker apply、heartbeat 全部启动，启动日志零 error/exception | 每次部署后重跑 |
-| SQLite quick check | 2026-08-30 03:51 | PASS | `PRAGMA quick_check` → `ok`；outbox、批次与待投递结果均无非终态记录 | 每次部署后重跑 |
-| Litestream 写入 R2 | 2026-08-30 03:50 | PASS | 部署后新 WAL segments 已写入 R2（generation f8f62c83c2d3df4f，index 00000453/00000454） | 每次部署后检查复制；每季度恢复演练 |
+| Python 全部自动测试 | 2026-08-30 05:47 | PASS | `.venv/bin/python -m pytest -q`：514 passed、1 warning，82.18s（含 Prompt 编辑器瘦身回归 `test_admin_prompt_editor_only_exposes_runtime_sections`） | 每次部署前重跑 |
+| 前端生产构建 | 2026-08-30 05:48 | PASS | `npm run build --prefix frontend`：Vite 生产构建成功，2045 modules transformed | 每次部署前重跑 |
+| npm 干净安装 | 2026-08-30 05:48 | PASS | `npm ci` 安装 287 packages；audit findings（6 项，1 low/4 high/1 critical）与既往一致，仍待专项审查，不在本次改动范围 | 审查 audit findings；依赖变更后重跑 |
+| npm Docker builder | 2026-08-30 05:50 | PASS | `make deploy-local` 构建 `life-tracker:local` 成功并重建 production app（PR #22：Prompt 编辑器瘦身） | Dockerfile/依赖变更后重跑 |
+| Production health endpoint | 2026-08-30 05:50 | PASS | `/internal/health` 与容器内鉴权 `/api/health` 均返回 `{"status":"ok"}`；`/api/admin/prompts` 实测可见 section 精确为 `main_template`/`tools`/`reminder`/`weather_report` 4 个，其余 13 个进入 hidden | 每次部署后重跑 |
+| Production 容器状态 | 2026-08-30 05:50 | PASS | app `(healthy)`；Discord bot、scheduler、outbound、batcher、tool worker、heartbeat 全部启动，启动日志零 error/exception | 每次部署后重跑 |
+| SQLite quick check | 2026-08-30 05:51 | PASS | `PRAGMA quick_check` → `ok` | 每次部署后重跑 |
+| Litestream 写入 R2 | 2026-08-30 05:50 | PASS | 部署后新 WAL segments 已写入 R2（generation f8f62c83c2d3df4f，index 0000045a/0000045b） | 每次部署后检查复制；每季度恢复演练 |
 | 本地 SQLite 快照恢复 | 2026-08-29 09:55 | PASS | `scripts/backup_and_verify.py --label pre-lt178-production`：在线快照 39.5 MB，`integrity_check` → `ok`，28 张表行数逐张比对通过 | 每次破坏性迁移前重跑 |
 | R2/Litestream 完整恢复 | 2026-07-11 13:30 | PASS | 从 R2 恢复到全新 `/tmp` 路径；integrity check、数据新鲜度和 API-only smoke test 均通过 | 2026-10 前重跑，或 Litestream/R2 变更后立即重跑 |
-| 网络监听/路由审计 | 2026-08-30 03:51 | PASS | `infra audit`：全部干净；production 8080 仍只监听 `127.0.0.1`；临时 9001 已停止并注销 | 每次部署后重跑 |
+| 网络监听/路由审计 | 2026-08-30 05:51 | PASS | `infra audit`：全部干净；production 8080 仍只监听 `127.0.0.1`；临时 9001（本次 Prompt 编辑器瘦身验证复用）已停止并注销 | 每次部署后重跑 |
 | Dashboard/API 鉴权 | 2026-07-17 06:55 | PASS | 自动验收全部通过；用户随后从真实浏览器确认登录和 Dashboard 使用“完全正常” | 每次鉴权/路由变更后重跑 |
 | Staging 启动与隔离 | 2026-08-26 11:01 | PASS | 外部 Dockge compose 已改为 `127.0.0.1:9001→8081`；容器 healthy，internal/auth health 200，测试 Discord Bot 上线，`infra audit` clean | 完成 LT-170 人工并发场景后再部署 production |
 | memory.md 独立异地备份 | 未知 | NOT TESTED | `data/memory.md` 已成为记忆权威存储（07-17 上线），Litestream 只覆盖 SQLite；迁移期靠 legacy 表 shadow 兜底 | LT-132 验收前建立独立备份并演练恢复 |
