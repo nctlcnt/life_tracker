@@ -155,3 +155,32 @@ def test_admin_preview_endpoint_returns_the_manifest(tmp_path):
     assert inventory["identity"]["status"] == "fallback"
     assert inventory["morning"]["status"] == "seed_only"
     assert inventory["dispatch_paraphrase_task"]["status"] == "unused"
+
+
+def test_admin_prompt_editor_only_exposes_runtime_sections(tmp_path):
+    db = _db(tmp_path)
+    memory = MemoryService(db)
+    original_db = server.db
+    original_memory = server.memory
+    server.set_database(db, memory)
+    try:
+        response = asyncio.run(server.admin_list_prompts())
+    finally:
+        server.db = original_db
+        server.memory = original_memory
+
+    visible = {
+        item["key"] for item in response["sections"] if not item["hidden"]
+    }
+    assert visible == {
+        "main_template",
+        "tools",
+        "reminder",
+        "weather_report",
+    }
+
+    inventory_only = {
+        item["key"] for item in response["sections"] if item["hidden"]
+    }
+    assert "morning" in inventory_only
+    assert "dispatch_paraphrase_task" in inventory_only

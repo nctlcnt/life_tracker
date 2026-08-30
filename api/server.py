@@ -952,7 +952,7 @@ async def admin_test_preset(body: dict):
 @app.get("/api/admin/prompts")
 async def admin_list_prompts():
     """列出可编辑 prompt sections。正文来自 DB，不提交到 Git。"""
-    from bot.prompts import LEGACY_STRUCTURED_KEYS, PROMPT_SECTION_LABELS
+    from bot.prompts import PROMPT_SECTION_LABELS, RUNTIME_EDITABLE_SECTION_KEYS
     rows = {row["key"]: row for row in db.list_prompt_sections()}
     sections = []
     for key, label in PROMPT_SECTION_LABELS.items():
@@ -965,9 +965,9 @@ async def admin_list_prompts():
             "current_value": value,
             "updated_at": row["updated_at"] if row else None,
             "empty": not bool(value.strip()),
-            # 已内联进 main_template 的旧散文 section：UI 隐藏，API 保留读写
-            # 作为回滚/急救通道
-            "hidden": key in LEGACY_STRUCTURED_KEYS,
+            # 只展示修改后会影响现有运行时的模板。fallback、seed-only 和
+            # 未接入运行时的历史 POC 仍保留在 DB/API，供回滚与 inventory 查看。
+            "hidden": key not in RUNTIME_EDITABLE_SECTION_KEYS,
         })
     return {"sections": sections}
 

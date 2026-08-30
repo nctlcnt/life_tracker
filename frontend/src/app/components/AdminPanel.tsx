@@ -41,7 +41,7 @@ interface PromptSection {
   current_value: string;
   updated_at: string | null;
   empty: boolean;
-  // 已内联进 main_template 的旧散文 section：API 保留读写，UI 不再展示
+  // fallback / seed-only / unused section：API 保留读写，编辑器不再展示
   hidden?: boolean;
 }
 
@@ -227,11 +227,7 @@ async function putJson(url: string, body: unknown) {
 const PROMPT_HINTS: Record<string, string> = {
   main_template: '完整 system prompt：人格/规则散文直接写在这里，系统知识用占位符注入。',
   tools: '跨工具决策和各工具使用策略；经 {tools} 注入主模板（工具多轮的中间轮自动省略）。',
-  proactive_gemini: 'Gemini 主动轮询模板，必须保留 {timestamp}。',
-  proactive_claude: 'Claude/OpenAI/Relay 主动轮询模板，必须保留 {timestamp}。',
   reminder: 'Reminder 到点后的跟进模板，必须保留 {timestamp} 和 {action}。',
-  bedtime: '睡前提醒模板，必须保留 {timestamp}。',
-  morning: '早间开启模板；当前仅供后续调用点使用。',
   weather_report: '天气总结模板，必须保留 {weather_data}。',
 };
 
@@ -976,7 +972,7 @@ function PromptAdmin() {
         : <div className="admin-msg err">main_template section 不存在（后端未迁移？）</div>}
 
       <details className="prompt-others">
-        <summary>其他模板（tools / 调度小模板 / dispatch）</summary>
+        <summary>运行时补充模板（tools / reminder / weather）</summary>
         <SectionListEditor sections={others} onSaved={reloadAll} />
       </details>
     </div>

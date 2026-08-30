@@ -84,6 +84,16 @@ MAIN_TEMPLATE_PLACEHOLDERS = frozenset(PLACEHOLDER_TIERS)
 LEGACY_STRUCTURED_KEYS = ("identity", "user_model", "system_mechanics",
                           "communication", "protocols")
 
+# Admin 里只开放会影响当前运行时的 section。其余行仍保留在 DB：旧结构化
+# section 用于 main_template 回滚，seed 模板只在首次创建 Check-in 时复制，
+# dispatch 则属于未接入运行时的历史 POC。
+RUNTIME_EDITABLE_SECTION_KEYS = frozenset({
+    "main_template",
+    "tools",
+    "reminder",
+    "weather_report",
+})
+
 _MAIN_PLACEHOLDER_RE = re.compile(r"\{(" + "|".join(PLACEHOLDER_TIERS) + r")\}")
 
 
