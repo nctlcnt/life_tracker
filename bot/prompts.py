@@ -484,3 +484,14 @@ def get_prompt_template(key: str, sections: dict[str, str] | None = None) -> str
         raise KeyError(key)
     return (sections[key] or "").strip()
 
+
+def render_check_in_prompt(check_in: dict, timestamp: str) -> str:
+    """Render the final scheduler instruction for one configured check-in."""
+    template = check_in.get("prompt_template") or ""
+    values = {
+        "timestamp": timestamp,
+        "name": check_in.get("name") or "",
+        "label": check_in.get("label") or check_in.get("name") or "",
+        "instructions": check_in.get("instructions") or "",
+    }
+    return template.format(**values)

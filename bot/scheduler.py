@@ -25,7 +25,7 @@ from bot.database import Database
 from bot.memory import MemoryService
 from bot.memory import scene_state
 from bot.memory.curator import CURATOR_NAME
-from bot.prompts import get_prompt_template
+from bot.prompts import get_prompt_template, render_check_in_prompt
 from bot.logger import get_logger
 import config
 
@@ -567,14 +567,7 @@ class Scheduler:
 
     @staticmethod
     def _render_check_in_prompt(check_in: dict, timestamp: str) -> str:
-        template = check_in.get("prompt_template") or ""
-        values = {
-            "timestamp": timestamp,
-            "name": check_in.get("name") or "",
-            "label": check_in.get("label") or check_in.get("name") or "",
-            "instructions": check_in.get("instructions") or "",
-        }
-        return template.format(**values)
+        return render_check_in_prompt(check_in, timestamp)
 
     # ── Curator 循环：长期记忆自动批次（LT-136，默认关闭）─────
 

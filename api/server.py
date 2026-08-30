@@ -972,6 +972,21 @@ async def admin_list_prompts():
     return {"sections": sections}
 
 
+@app.get("/api/admin/prompts/preview")
+async def admin_preview_prompts(check_in_id: int | None = None):
+    """Render every runtime prompt track without mutating application data."""
+    from bot.prompt_preview import build_prompt_preview
+
+    try:
+        return build_prompt_preview(
+            db,
+            memory_service=memory,
+            check_in_id=check_in_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.put("/api/admin/prompts/{key}")
 async def admin_save_prompt(key: str, body: dict):
     """保存单个 prompt section。"""
