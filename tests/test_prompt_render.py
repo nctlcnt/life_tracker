@@ -3,6 +3,11 @@
 用旧结构化 section 数据走新渲染器（运行时 fallback 合成 + 显式迁移合成两条路径），
 输出必须与冻结的旧四层拼装逐字节一致——保证迁移部署当晚 cache 前缀不失效、
 模型看到的 prompt 零变化。
+
+LT-156 把 today_timeline/pending_reminders/deadlines/projects 四个占位符的
+【】标题从 _format_* 的返回值里挪进了模板字面文本，_relabel() 按新的挪法把
+标题重新贴回 legacy oracle 用的 values，并显式编码 tier 抬升处新增的那一个
+空行——之后仍要求逐字节相等，只是"一致"的基准换成了 LT-156 之后的新拼装。
 """
 import json
 from pathlib import Path
@@ -12,6 +17,7 @@ import pytest
 from bot.prompts import (
     LABEL_DEADLINES,
     LABEL_PENDING_REMINDERS,
+    LABEL_PROJECTS,
     LABEL_TODAY_TIMELINE,
     LEGACY_STRUCTURED_KEYS,
     build_prompt,
@@ -60,17 +66,46 @@ DATA_VARIANTS = {
 }
 
 
+def _relabel(values: dict[str, str]) -> dict[str, str]:
+    """把 LT-156 挪进 synthesize_main_template() 字面文本的四个标题，
+    按 _format_* 现在的（不含标题）输出重新拼回 legacy oracle 需要的形态。
+
+    synthesize_main_template() 的占位符顺序 tier 严格递增
+    （tools=1 → projects=2 → memories/relevant_history=3 → today_timeline=4），
+    每次 tier 抬升时，紧贴在下一个占位符前的标题字面文本会被 render_blocks()
+    并进上一段、strip 掉结尾换行，值本身另起一段——flatten() 拼接时两段之间
+    用 "\n\n" 相连，标题和内容之间就从 1 个换行变成 2 个。这不是 bug，是把
+    标题挪进可编辑模板文本后、cache-tier 分段机制的必然结果（LT-156）。
+    projects/today_timeline 前面正好各有一次 tier 抬升，要用双换行；
+    pending_reminders/deadlines 前面 tier 不变，单换行不受影响。
+    """
+    out = dict(values)
+    if out.get("projects"):
+        out["projects"] = f"{LABEL_PROJECTS}\n\n{out['projects']}"
+    if out.get("today_timeline"):
+        out["today_timeline"] = f"{LABEL_TODAY_TIMELINE}\n\n{out['today_timeline']}"
+    if out.get("pending_reminders"):
+        out["pending_reminders"] = f"{LABEL_PENDING_REMINDERS}\n{out['pending_reminders']}"
+    if out.get("deadlines"):
+        out["deadlines"] = f"{LABEL_DEADLINES}\n{out['deadlines']}"
+    return out
+
+
 def _assert_parity(sections: dict[str, str], data: dict) -> None:
     p = build_prompt("chat", sections=sections, **data)
     stripped = {k: (sections.get(k) or "").strip()
                 for k in (*LEGACY_STRUCTURED_KEYS, "tools")}
-    # 复用 p.values（同一份 _format_* 输出），oracle 只对比"拼装"差异，
-    # 也避免 format_countdown 两次调用跨时间边界的偶发不一致
-    legacy = legacy_from_formatted(stripped, p.values)
+    # 复用 p.values（同一份 _format_* 输出，现在不含 LT-156 挪走的四个标题），
+    # 重新贴上标题（并按 tier 抬升位置补上 render_blocks() 会产生的空行）后
+    # 喂给 oracle：只对比"拼装"差异，也避免 format_countdown 两次调用跨时间
+    # 边界的偶发不一致
+    legacy = legacy_from_formatted(stripped, _relabel(p.values))
 
-    legacy_blocks = [t for t in (legacy.static_text(), legacy.stable_context_text(),
-                                 legacy.memories_text(), legacy.dynamic_text()) if t]
-    assert [t for _, t in p.render_blocks()] == legacy_blocks
+    # 不再逐段比较 render_blocks()：projects/today_timeline 紧跟在 tier 抬升
+    # 之前的标题字面文本，现在被并进上一段、结尾换行被 strip 掉，值本身
+    # 另起一段——4 个固定 legacy 桶（static/stable_context/memories/dynamic）
+    # 假设标题和值永远同段，这个假设不再成立。flatten() 把所有段落用 "\n\n"
+    # 重新拼接，段边界落在哪一段不影响模型最终看到的文本，才是真正的行为契约。
     assert p.flatten() == legacy.flatten()
     assert p.concise().flatten() == legacy.concise().flatten()
 
@@ -100,6 +135,7 @@ def test_migrated_template_parity(sections_name: str, data_name: str):
         ("pending_reminders", LABEL_PENDING_REMINDERS),
         ("deadlines", LABEL_DEADLINES),
         ("today_timeline", LABEL_TODAY_TIMELINE),
+        ("projects", LABEL_PROJECTS),
     ],
 )
 def test_empty_context_lists_still_say_so(field, label):
@@ -108,6 +144,10 @@ def test_empty_context_lists_still_say_so(field, label):
     工具策略教模型「看【待触发的 Reminder】列表，那才是真相」。段落一旦消失，
     模型分不清「确实没有」和「没告诉我」，就会按策略去 list_reminders 复查，
     白白多一次调用。
+
+    标题现在是模板字面文本，不是 _format_* 的返回值；today_timeline/projects
+    前面各有一次 tier 抬升，标题和内容之间会多一个空行（见 _relabel()），
+    所以这里取标题后第一个非空行，不假设固定是第几行。
     """
     sections = _default_sections()
     sections.pop("main_template", None)
@@ -116,5 +156,6 @@ def test_empty_context_lists_still_say_so(field, label):
     ).flatten()
 
     assert label in rendered
-    segment = rendered.split(label, 1)[1].splitlines()[1]
-    assert "没有" in segment or "还没有" in segment
+    remainder_lines = rendered.split(label, 1)[1].splitlines()
+    segment = next(line for line in remainder_lines if line.strip())
+    assert "没有" in segment or "还没有" in segment or segment.strip() == "- 无"

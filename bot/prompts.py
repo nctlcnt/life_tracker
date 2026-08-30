@@ -44,6 +44,7 @@ PROMPT_SECTION_LABELS = {
     "communication": "COMMUNICATION",
     "protocols": "PROTOCOLS",
     "tools": "TOOLS_SECTION",
+    "tool_worker_template": "TOOL_WORKER_TEMPLATE",
     "proactive_gemini": "PROACTIVE_PROMPT_GEMINI",
     "proactive_claude": "PROACTIVE_PROMPT_CLAUDE",
     "reminder": "REMINDER_PROMPT",
@@ -89,10 +90,16 @@ LEGACY_STRUCTURED_KEYS = ("identity", "user_model", "system_mechanics",
 # dispatch 则属于未接入运行时的历史 POC。
 RUNTIME_EDITABLE_SECTION_KEYS = frozenset({
     "main_template",
+    "tool_worker_template",
     "tools",
     "reminder",
     "weather_report",
 })
+
+# tool_worker_template 走的是和 main_template 完全一样的整体模板 + 占位符
+# 注入机制（LT-156：执行轨也"像整体模板那样管理"）——build_tool_worker_system()
+# 把它当 build_prompt() 的 main_template 传入，所以允许的占位符集合与
+# MAIN_TEMPLATE_PLACEHOLDERS 相同；校验逻辑（api/server.py）复用同一份白名单。
 
 _MAIN_PLACEHOLDER_RE = re.compile(r"\{(" + "|".join(PLACEHOLDER_TIERS) + r")\}")
 
@@ -104,8 +111,12 @@ def synthesize_main_template(sections: dict[str, str]) -> str:
     顺序内联，9 个占位符按旧 Block 1-4 顺序排列，渲染结果与旧拼装逐字节一致。
     """
     parts = [p for k in LEGACY_STRUCTURED_KEYS if (p := (sections.get(k) or "").strip())]
-    parts += ["{tools}", "{projects}", "{memories}", "{relevant_history}",
-              "{today_timeline}", "{pending_reminders}", "{deadlines}",
+    parts += ["{tools}",
+              f"{LABEL_PROJECTS}\n{{projects}}",
+              "{memories}", "{relevant_history}",
+              f"{LABEL_TODAY_TIMELINE}\n{{today_timeline}}",
+              f"{LABEL_PENDING_REMINDERS}\n{{pending_reminders}}",
+              f"{LABEL_DEADLINES}\n{{deadlines}}",
               "{weather}", "{calendar}"]
     return "\n\n".join(parts)
 
@@ -207,6 +218,16 @@ class PromptParts:
 
 
 # ── 动态段落格式化函数 ──────────────────────────────────────────
+#
+# LABEL_* 分两类，取决于对应 _format_* 是否会返回空串：
+# - today_timeline / pending_reminders / deadlines / projects 永远有内容
+#   （没有数据时也返回"当前没有…"占位句），所以标题挪进了 main_template /
+#   synthesize_main_template() 的字面文本里，Admin 可见可编辑；_format_*
+#   本身不再拼标题。
+# - memories / relevant_history / weather / calendar 会在没数据时整段消失
+#   （返回空串，占位符从渲染结果里完全抹掉），标题必须继续跟着 _format_*
+#   一起出现/消失，不能挪进模板字面文本——否则数据为空时会留下一个
+#   悬空的标题行。这四个 LABEL_* 仍在下面的 _format_* 里拼接。
 
 LABEL_MEMORIES = "【你现在记着的事】"
 LABEL_RELEVANT_HISTORY = "【可能相关的历史片段】"
@@ -315,7 +336,7 @@ def _format_relevant_history(snippets: list[dict] | None) -> str:
 
 def _format_today_timeline(events: list[dict] | None) -> str:
     if not events:
-        return f"{LABEL_TODAY_TIMELINE}\n- 今天还没有 timeline 记录"
+        return "- 今天还没有 timeline 记录"
     lines = []
     for e in events:
         cat_part = e['category']
@@ -326,7 +347,7 @@ def _format_today_timeline(events: list[dict] | None) -> str:
         if e.get("notes"):
             line += f" | 备注: {e['notes']}"
         lines.append(line)
-    return f"{LABEL_TODAY_TIMELINE}\n" + "\n".join(lines)
+    return "\n".join(lines)
 
 
 def _format_weather(weather: str | None) -> str:
@@ -343,27 +364,27 @@ def _format_calendar(calendar: str | None) -> str:
 
 def _format_projects(projects: list[dict] | None) -> str:
     if not projects:
-        return f"{LABEL_PROJECTS}\n- 无"
+        return "- 无"
     lines = [f"- {p['project_name']}" for p in projects]
-    return f"{LABEL_PROJECTS}\n" + "\n".join(lines)
+    return "\n".join(lines)
 
 
 def _format_deadlines(deadlines: list[dict] | None) -> str:
     if not deadlines:
         # 段落整个消失，模型就分不清「确实没有」和「没告诉我」，只好自己去查。
-        return f"{LABEL_DEADLINES}\n- 当前没有待完成的 deadline"
+        return "- 当前没有待完成的 deadline"
     lines = []
     for d in deadlines:
         countdown = format_countdown(d["due_time"])
         line = f"- [id={d['id']}] {d['title']} | 📅 {d['due_time']} | {countdown}"
         lines.append(line)
-    return f"{LABEL_DEADLINES}\n" + "\n".join(lines)
+    return "\n".join(lines)
 
 
 def _format_pending_reminders(pending: list[dict] | None) -> str:
     if not pending:
         # 同上：工具策略要模型「看这个列表，那才是真相」，列表却不在 prompt 里。
-        return f"{LABEL_PENDING_REMINDERS}\n- 当前没有待触发的 reminder"
+        return "- 当前没有待触发的 reminder"
     lines = []
     for r in pending:
         countdown = format_countdown(r["trigger_time"])
@@ -373,7 +394,7 @@ def _format_pending_reminders(pending: list[dict] | None) -> str:
         head += "]"
         line = f"{head} {r['trigger_time']} | {countdown} | {r.get('priority', 'normal')} | {r['action']}"
         lines.append(line)
-    return f"{LABEL_PENDING_REMINDERS}\n" + "\n".join(lines)
+    return "\n".join(lines)
 
 
 def build_prompt(
