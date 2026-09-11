@@ -8,6 +8,8 @@ Instead of asking you to manually maintain a planner, journal, task manager, and
 
 It is currently designed as a **single-user, self-hosted system**.
 
+![Day view: today's timeline, todos, deadlines, and reminders](docs/images/dashboard-day.png)
+
 ---
 
 ## What can it do?
@@ -19,6 +21,8 @@ Just talk normally.
 Life Tracker can recognize activities, plans, events, and changes in your day and turn them into structured timeline entries.
 
 The web dashboard visualizes this information as a daily and weekly timeline, so you can look back and see how your time was actually spent without manually logging every activity.
+
+![Week view: seven days of logged activity at a glance](docs/images/dashboard-week.png)
 
 ### 💬 Talk through Discord
 
@@ -65,6 +69,8 @@ The dashboard can visualize project activity using views such as:
 
 This makes it possible to see not only *what* you worked on, but also how consistently a project has been active over time.
 
+![Project overview: per-project focus activity heatmap](docs/images/dashboard-projects.png)
+
 ### 🔔 Send proactive messages
 
 The assistant does not need to wait for you to start every conversation.
@@ -87,6 +93,8 @@ A routine can also decide that nothing useful needs to be said and remain silent
 Life Tracker includes an evolving memory system for preserving useful context beyond the immediate conversation window.
 
 The memory subsystem is still under development and its behaviour may change as the project evolves.
+
+![Memory view: durable notes the assistant has saved, grouped by type](docs/images/dashboard-memory.png)
 
 ---
 
@@ -131,6 +139,8 @@ This makes routines usable for much more than fixed reminders.
 
 They can act more like small scheduled AI behaviours.
 
+![Admin · Check-ins: configurable proactive routines](docs/images/admin-checkins.png)
+
 ### 🤖 Bring your own model and API
 
 Life Tracker is not tied to one AI provider.
@@ -144,6 +154,8 @@ This is useful if you want to:
 - use a relay or gateway
 - assign different models to different workloads
 - configure fallback models
+
+![Admin · Presets: manage model providers, active model, and fallback](docs/images/admin-presets.png)
 
 ### ♻️ Prompt-cache keep-alive
 
