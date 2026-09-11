@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { ListItem } from './components/ItemList';
 import { WeekView, getMonday } from './components/WeekView';
 import { TimelineEvent } from './components/MultiLaneTimeline';
-import { RhythmView } from './components/RhythmView';
 import { ProjectOverview } from './components/ProjectOverview';
 import { Dashboard } from './components/Dashboard';
 import { AdminPanel } from './components/AdminPanel';
@@ -18,7 +17,7 @@ function fmtDateStr(d: Date) {
 }
 
 // ── Tab 类型 ────────────────────────────────────────────────────
-type ViewMode = 'day' | 'week' | 'project' | 'rhythm' | 'memory';
+type ViewMode = 'day' | 'week' | 'project' | 'memory';
 
 type Route = 'dashboard' | 'admin' | 'traces';
 
@@ -81,10 +80,9 @@ function DashboardApp() {
   const headerDayNameEn = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][selectedDateObj.getDay()];
 
   useEffect(() => {
-    // Day + Rhythm both need timeline; Day additionally needs todos /
-    // reminders / deadlines for the right rail. Memory only needs memories.
-    // Week / Project skip this entirely.
-    const needsTimeline = viewMode === 'day' || viewMode === 'rhythm';
+    // Day needs timeline plus todos / reminders / deadlines for the right
+    // rail. Memory only needs memories. Week / Project skip this entirely.
+    const needsTimeline = viewMode === 'day';
     const needsDayLists = viewMode === 'day';
     const needsMemories = viewMode === 'memory';
     if (!needsTimeline && !needsDayLists && !needsMemories) return;
@@ -214,11 +212,10 @@ function DashboardApp() {
     day: 'Day',
     week: 'Week',
     project: 'Projects',
-    rhythm: 'Rhythm',
     memory: 'Memory',
   };
-  const tabOrder: ViewMode[] = ['day', 'week', 'project', 'rhythm', 'memory'];
-  const showDateNav = viewMode === 'day' || viewMode === 'rhythm';
+  const tabOrder: ViewMode[] = ['day', 'week', 'project', 'memory'];
+  const showDateNav = viewMode === 'day';
 
   return (
     <div className="dash size-full bg-background overflow-hidden flex flex-col text-foreground">
@@ -269,10 +266,6 @@ function DashboardApp() {
       ) : viewMode === 'project' ? (
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <ProjectOverview />
-        </div>
-      ) : viewMode === 'rhythm' ? (
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <RhythmView events={timelineEvents} date={currentDate} />
         </div>
       ) : viewMode === 'memory' ? (
         <div className="flex-1 min-h-0 overflow-auto">
