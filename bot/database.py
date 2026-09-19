@@ -12,6 +12,22 @@ from typing import Optional
 from bot.embeddings import CONTEXT_MESSAGES, cosine_similarity, recency_weight
 
 
+def utc_now_iso() -> str:
+    return _fmt_utc_iso(datetime.now(timezone.utc))
+
+
+def normalize_utc_iso(raw: str) -> str:
+    """把带时区的 ISO 8601 转成 UTC 固定格式；naive 时间抛 ValueError。"""
+    dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        raise ValueError("timestamp must include a timezone")
+    return _fmt_utc_iso(dt)
+
+
+def _fmt_utc_iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def _normalize_memory_valid_until(value: str | None) -> str | None:
     """Normalize memory expiry to SQLite UTC datetime text, or None for permanent."""
     if value is None:
@@ -455,6 +471,23 @@ class Database:
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY(curator_name, channel_id)
             );
+
+            -- 用户亲手写的 memo（App / 快捷指令等入口）。
+            -- AI 只通过 prompt 注入读取，不写、不从它派生数据（见 docs/codebase/backend-memo-plan.md）。
+            CREATE TABLE IF NOT EXISTS memos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id TEXT NOT NULL UNIQUE,      -- App 生成的 UUID；无 client_id 的来源由后端生成 uuid4
+                content TEXT NOT NULL,               -- 原文，原样保存
+                occurred_at TEXT NOT NULL,           -- memo 所属时间，用户可改；UTC 固定格式
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,            -- 任何修改（含软删除）都要更新，增量同步靠它
+                deleted_at TEXT,                     -- 软删除；NULL = 未删除
+                images_json TEXT NOT NULL DEFAULT '[]',
+                source TEXT NOT NULL DEFAULT 'app'
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_memos_sync ON memos(updated_at, id);
+            CREATE INDEX IF NOT EXISTS idx_memos_occurred ON memos(occurred_at) WHERE deleted_at IS NULL;
         """)
         conn.commit()
         # 兼容已有库：evidence_role CHECK 扩容（contextualizes）。
@@ -804,6 +837,7 @@ class Database:
             "include_memories": True,
             "include_relevant_history": True,
             "include_today_timeline": True,
+            "include_today_memos": True,
             "include_pending_reminders": True,
             "include_deadlines": True,
             "include_weather": True,
@@ -2118,6 +2152,116 @@ class Database:
         affected = cursor.rowcount
         conn.close()
         return affected > 0
+
+    # ============ Memos ============
+
+    @staticmethod
+    def _memo_row_to_dict(row: sqlite3.Row) -> dict:
+        item = dict(row)
+        # App 的 MemoDTO.id 是 String；返回整数会在客户端解码失败。
+        item["id"] = str(item["id"])
+        try:
+            item["images"] = json.loads(item.pop("images_json") or "[]")
+        except json.JSONDecodeError:
+            item["images"] = []
+        return item
+
+    def upsert_memo(self, *, client_id: str, content: str, occurred_at: str,
+                     images: Optional[list] = None, source: str = "app") -> dict:
+        """新建一条 memo；client_id 已存在时不修改，直接返回已有行（幂等）。"""
+        now = utc_now_iso()
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO memos "
+            "(client_id, content, occurred_at, created_at, updated_at, images_json, source) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(client_id) DO NOTHING",
+            (client_id, content, occurred_at, now, now,
+             json.dumps(images or []), source),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM memos WHERE client_id = ?", (client_id,)
+        ).fetchone()
+        conn.close()
+        return self._memo_row_to_dict(row)
+
+    def get_memo(self, memo_id: int) -> Optional[dict]:
+        """按 id 取，含已软删除的。"""
+        conn = self._get_conn()
+        row = conn.execute("SELECT * FROM memos WHERE id = ?", (memo_id,)).fetchone()
+        conn.close()
+        return self._memo_row_to_dict(row) if row else None
+
+    def update_memo(self, memo_id: int, **fields) -> Optional[dict]:
+        """只更新传入的 content / occurred_at / images；行不存在或已软删除返回 None。"""
+        allowed = {"content", "occurred_at", "images"}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if "images" in updates:
+            updates["images_json"] = json.dumps(updates.pop("images"))
+        if not updates:
+            return self.get_memo(memo_id)
+        updates["updated_at"] = utc_now_iso()
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        conn = self._get_conn()
+        cursor = conn.execute(
+            f"UPDATE memos SET {set_clause} WHERE id = ? AND deleted_at IS NULL",
+            (*updates.values(), memo_id),
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            conn.close()
+            return None
+        row = conn.execute("SELECT * FROM memos WHERE id = ?", (memo_id,)).fetchone()
+        conn.close()
+        return self._memo_row_to_dict(row)
+
+    def soft_delete_memo(self, memo_id: int) -> bool:
+        """deleted_at = updated_at = now；已删除或不存在返回 False（不报错）。"""
+        now = utc_now_iso()
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE memos SET deleted_at = ?, updated_at = ? "
+            "WHERE id = ? AND deleted_at IS NULL",
+            (now, now, memo_id),
+        )
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
+    def list_memos_after(self, cursor_updated_at: Optional[str], cursor_id: int,
+                          limit: int) -> list[dict]:
+        """增量同步：返回 (updated_at, id) 严格大于游标的行，含已软删除的。
+
+        limit 由调用方决定（分页层通常多要一条来判断 has_more）。
+        """
+        conn = self._get_conn()
+        if cursor_updated_at is None:
+            rows = conn.execute(
+                "SELECT * FROM memos ORDER BY updated_at, id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM memos "
+                "WHERE updated_at > ? OR (updated_at = ? AND id > ?) "
+                "ORDER BY updated_at, id LIMIT ?",
+                (cursor_updated_at, cursor_updated_at, cursor_id, limit),
+            ).fetchall()
+        conn.close()
+        return [self._memo_row_to_dict(r) for r in rows]
+
+    def list_memos_between(self, start_utc: str, end_utc: str) -> list[dict]:
+        """未删除、occurred_at 落在 [start_utc, end_utc) 的行，按 occurred_at 升序；给 prompt 注入用。"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM memos WHERE deleted_at IS NULL "
+            "AND occurred_at >= ? AND occurred_at < ? ORDER BY occurred_at",
+            (start_utc, end_utc),
+        ).fetchall()
+        conn.close()
+        return [self._memo_row_to_dict(r) for r in rows]
 
     # ============ 应用状态 KV ============
 

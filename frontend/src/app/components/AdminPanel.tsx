@@ -172,6 +172,7 @@ const CHECK_IN_CONTEXT_KEYS = [
   'include_memories',
   'include_relevant_history',
   'include_today_timeline',
+  'include_today_memos',
   'include_pending_reminders',
   'include_deadlines',
   'include_weather',

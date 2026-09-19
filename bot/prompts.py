@@ -7,8 +7,8 @@ small non-user-specific runtime hints.
 
 架构（LT-129：单一整体模板 + 占位符注入）：
 - `main_template` section = 完整 system prompt 正文，人格/规则散文直接写在里面，
-  系统知识通过 9 个占位符注入（{tools} {projects} {memories} {relevant_history}
-  {today_timeline} {pending_reminders} {deadlines} {weather} {calendar}）。
+  系统知识通过 10 个占位符注入（{tools} {projects} {memories} {relevant_history}
+  {today_timeline} {today_memos} {pending_reminders} {deadlines} {weather} {calendar}）。
 - 渲染时按占位符的 cache tier 把模板切成 ≤4 个单调段（PLACEHOLDER_TIERS），
   对应 Anthropic cache_control 的 4 个上限——默认模板排序下分块结果与旧的
   四层 PromptParts 完全一致，模板乱序时仍正确、只是 cache 效率下降。
@@ -73,6 +73,7 @@ PLACEHOLDER_TIERS: dict[str, int] = {
     "memories": 3,
     "relevant_history": 3,
     "today_timeline": 4,
+    "today_memos": 4,
     "pending_reminders": 4,
     "deadlines": 4,
     "weather": 4,
@@ -108,13 +109,15 @@ def synthesize_main_template(sections: dict[str, str]) -> str:
     """从旧结构化 section 合成等价的 main_template。
 
     迁移和运行时 fallback（main_template 为空）共用：5 段散文按旧 Block 1
-    顺序内联，9 个占位符按旧 Block 1-4 顺序排列，渲染结果与旧拼装逐字节一致。
+    顺序内联，10 个占位符按旧 Block 1-4 顺序排列（today_memos 是后加的，
+    紧跟 today_timeline，同属 Block 4），渲染结果与旧拼装逐字节一致。
     """
     parts = [p for k in LEGACY_STRUCTURED_KEYS if (p := (sections.get(k) or "").strip())]
     parts += ["{tools}",
               f"{LABEL_PROJECTS}\n{{projects}}",
               "{memories}", "{relevant_history}",
               f"{LABEL_TODAY_TIMELINE}\n{{today_timeline}}",
+              "{today_memos}",
               f"{LABEL_PENDING_REMINDERS}\n{{pending_reminders}}",
               f"{LABEL_DEADLINES}\n{{deadlines}}",
               "{weather}", "{calendar}"]
@@ -144,7 +147,7 @@ class PromptParts:
     """
     单一整体模板 + 占位符展开值（LT-129）。
 
-    template 是 main_template 原文（含 {memories} 等占位符），values 是 9 个
+    template 是 main_template 原文（含 {memories} 等占位符），values 是 10 个
     占位符的已格式化文本（可为空串）。render_blocks() 按 PLACEHOLDER_TIERS
     把渲染结果切成 ≤4 个单调段——占位符按稳定→易变排列时，切段结果与旧的
     静态/projects/memories/动态四层完全一致：
@@ -237,6 +240,7 @@ LABEL_WEATHER = "【今日天气】"
 LABEL_CALENDAR = "【Google Calendar（今天 + 未来 7 天，计划中的日程）】"
 LABEL_PROJECTS = "【现有项目列表（Focus 用，只能引用这里已有的项目）】"
 LABEL_PENDING_REMINDERS = "【待触发的 Reminder（你自己设的 follow-up 队列）】"
+LABEL_TODAY_MEMOS = "【她今天亲手写的 memo（原文）】"
 
 WEATHER_CONTEXT_SUFFIX = "可以自然地提一下天气，但不要像天气预报一样念数据。"
 
@@ -316,6 +320,18 @@ def format_memory_tiers(*, asserted: list[dict], hedged: list[dict],
             f"不要当成确定的事实：\n"
             + "\n".join(f"- [id={m['id']}] {m['summary']}" for m in hedged))
     return "\n\n".join(parts)
+
+
+def _format_today_memos(memos: list[dict] | None) -> str:
+    """App 里用户亲手写的 memo，原文注入，AI 只读不派生数据。
+
+    和 memories/weather 同一类：没有数据时整段消失，标题跟着 _format_*
+    一起出现/消失，不挪进模板字面文本。
+    """
+    if not memos:
+        return ""
+    lines = [f"- {m['local_time']} | {m['content']}" for m in memos]
+    return f"{LABEL_TODAY_MEMOS}\n" + "\n".join(lines)
 
 
 def _format_relevant_history(snippets: list[dict] | None) -> str:
@@ -404,6 +420,7 @@ def build_prompt(
     memory_markdown: str | None = None,
     relevant_history: list[dict] | None = None,
     today_timeline: list[dict] | None = None,
+    today_memos: list[dict] | None = None,
     weather: str | None = None,
     calendar: str | None = None,
     deadlines: list[dict] | None = None,
@@ -438,6 +455,7 @@ def build_prompt(
             "memories": _format_memories(memories, memory_markdown),
             "relevant_history": _format_relevant_history(relevant_history),
             "today_timeline": _format_today_timeline(today_timeline),
+            "today_memos": _format_today_memos(today_memos),
             "pending_reminders": _format_pending_reminders(pending_reminders),
             "deadlines": _format_deadlines(deadlines),
             "weather": _format_weather(weather),

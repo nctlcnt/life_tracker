@@ -6,7 +6,7 @@
 |------|---------|----------|
 | `main.py` | Process bootstrap for database, API, Discord bot, and scheduler | `main.py` |
 | `config.py` | Loads `config.json`, validates settings, and manages mutable AI/calendar state | `config.py` |
-| `api/` | FastAPI routes and static frontend mounting | `api/server.py` |
+| `api/` | FastAPI routes and static frontend mounting | `api/server.py`, [API reference](API.md) |
 | `bot/` | Discord, AI adapters/tool loop, scheduling, persistence, prompts, and external integrations | `bot/*.py` |
 | `frontend/` | React/Vite dashboard source and frontend manifest | `frontend/src/`, `frontend/package.json` |
 | `tests/` | pytest prompt-rendering and scheduler tests | `pytest.ini`, `tests/test_*.py` |

@@ -21,6 +21,7 @@ from bot.ai_engine_base import (
 )
 from bot.database import Database
 from bot.memory import MemoryService
+from bot.memos import get_today_memos_for_prompt
 from bot.prompts import (
     LABEL_DEADLINES,
     LABEL_PENDING_REMINDERS,
@@ -102,6 +103,7 @@ DEFAULT_TOOL_WORKER_TEMPLATE = "\n\n".join(
         "{tools}",
         f"{LABEL_PROJECTS}\n{{projects}}",
         f"{LABEL_TODAY_TIMELINE}\n{{today_timeline}}",
+        "{today_memos}",
         f"{LABEL_PENDING_REMINDERS}\n{{pending_reminders}}",
         f"{LABEL_DEADLINES}\n{{deadlines}}",
     ]
@@ -168,6 +170,11 @@ def build_tool_worker_system(
         projects=db.get_all_project_names() if include("include_projects") else None,
         today_timeline=(
             db.get_today_events() if include("include_today_timeline") else None
+        ),
+        today_memos=(
+            get_today_memos_for_prompt(db, now=current) or None
+            if include("include_today_memos")
+            else None
         ),
         pending_reminders=(
             db.list_active_reminders()

@@ -2,11 +2,13 @@
 FastAPI 接口模块
 给前端提供数据
 """
+import base64
 import os
 import re
 import sqlite3
+import uuid
 from html import escape
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,7 +23,7 @@ from api.auth import (
     secure_compare,
     session_token,
 )
-from bot.database import Database
+from bot.database import Database, normalize_utc_iso
 from bot.memory import MemoryService
 from bot.merge import merge_events
 from bot import trace as ai_trace
@@ -292,6 +294,102 @@ async def delete_memory(memory_id: int):
     """删除一条记忆"""
     memory.delete_durable(memory_id)
     return {"status": "ok"}
+
+
+# ============ Memos（App 亲手写的 memo，见 docs/codebase/backend-memo-plan.md）============
+
+MEMO_SYNC_LIMIT_DEFAULT = 200
+MEMO_SYNC_LIMIT_MAX = 500
+
+
+def _encode_memo_cursor(updated_at: str, memo_id: int) -> str:
+    raw = f"{updated_at}|{memo_id}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _decode_memo_cursor(cursor: str) -> tuple[str, int]:
+    raw = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8")
+    updated_at, _, memo_id = raw.rpartition("|")
+    if not updated_at or not memo_id.isdigit():
+        raise ValueError("malformed cursor")
+    return updated_at, int(memo_id)
+
+
+@app.get("/api/memos")
+async def list_memos(cursor: str | None = None, limit: int = MEMO_SYNC_LIMIT_DEFAULT):
+    """增量拉取，包含已软删除的行（App 需要知道哪些被删了）。"""
+    limit = max(1, min(limit, MEMO_SYNC_LIMIT_MAX))
+    cursor_updated_at: str | None = None
+    cursor_id = 0
+    if cursor:
+        try:
+            cursor_updated_at, cursor_id = _decode_memo_cursor(cursor)
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(status_code=400, detail="invalid cursor")
+    rows = db.list_memos_after(cursor_updated_at, cursor_id, limit + 1)
+    has_more = len(rows) > limit
+    items = rows[:limit]
+    if items:
+        last = items[-1]
+        next_cursor = _encode_memo_cursor(last["updated_at"], int(last["id"]))
+    else:
+        next_cursor = cursor
+    return {"items": items, "next_cursor": next_cursor, "has_more": has_more}
+
+
+@app.post("/api/memos")
+async def create_memo(body: dict):
+    """App / 快捷指令等入口新建一条 memo；重复 client_id 幂等，返回已有内容而不覆盖。"""
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+    raw_occurred_at = body.get("occurred_at")
+    if not raw_occurred_at:
+        raise HTTPException(status_code=400, detail="occurred_at required")
+    try:
+        occurred_at = normalize_utc_iso(raw_occurred_at)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="occurred_at must include a timezone")
+    client_id = (body.get("client_id") or "").strip() or str(uuid.uuid4())
+    return db.upsert_memo(
+        client_id=client_id,
+        content=content,
+        occurred_at=occurred_at,
+        images=body.get("images") or [],
+        source=body.get("source") or "app",
+    )
+
+
+@app.patch("/api/memos/{memo_id}")
+async def update_memo(memo_id: int, body: dict):
+    """只更新 body 里出现的字段：content / occurred_at / images。"""
+    fields = {}
+    if "content" in body:
+        content = (body.get("content") or "").strip()
+        if not content:
+            raise HTTPException(status_code=400, detail="content required")
+        fields["content"] = content
+    if "occurred_at" in body:
+        try:
+            fields["occurred_at"] = normalize_utc_iso(body.get("occurred_at"))
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="occurred_at must include a timezone")
+    if "images" in body:
+        fields["images"] = body.get("images") or []
+    if not fields:
+        raise HTTPException(status_code=400, detail="no fields to update")
+    memo = db.update_memo(memo_id, **fields)
+    if memo is None:
+        raise HTTPException(status_code=404, detail="memo not found")
+    return memo
+
+
+@app.delete("/api/memos/{memo_id}", status_code=204)
+async def delete_memo(memo_id: int):
+    """删除一条 memo。不存在或已删除也返回 204：App 的 pushPending() 一旦某条
+    抛错就会中断整轮同步，重复删除必须幂等，否则这条删除会一直卡在队列里。"""
+    db.soft_delete_memo(memo_id)
+    return Response(status_code=204)
 
 
 @app.get("/api/reminders")

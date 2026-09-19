@@ -12,6 +12,7 @@ import re
 
 from bot.tools import POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, TOOLS
 from bot.memory.personal_repository import PersonalMemoryRepository
+from bot.memos import get_today_memos_for_prompt
 from bot.prompts import build_prompt, format_memory_tiers, PromptParts
 from bot.memory import MemoryRecallDisabled, MemoryRecallUnavailable, MemoryService
 from bot.memory import scene_state
@@ -175,6 +176,10 @@ def _build_prompt(db: Database, mode: str,
             memories = memory.list_durable()
             memory_markdown = memory.durable_markdown()
     today_timeline = db.get_today_events() if include("include_today_timeline") else []
+    today_memos = (
+        get_today_memos_for_prompt(db, now=now)
+        if include("include_today_memos") else []
+    )
 
     # Deadline：先自动过期，再取 active
     deadlines = []
@@ -206,6 +211,7 @@ def _build_prompt(db: Database, mode: str,
         memory_markdown=(memory_tiers or memory_markdown) or None,
         relevant_history=relevant_history or None,
         today_timeline=today_timeline or None,
+        today_memos=today_memos or None,
         weather=weather,
         calendar=calendar,
         deadlines=deadlines or None,
