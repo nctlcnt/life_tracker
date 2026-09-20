@@ -47,8 +47,8 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/memos?cursor=&limit=200` | 增量拉取，含已软删除的行；`{items, next_cursor, has_more}`，`limit` 上限 500 |
-| POST | `/api/memos` | body `{client_id?, content, occurred_at, images?, source?}`；`occurred_at` 必须带时区，否则 400；重复 `client_id` 幂等，返回已有内容 |
-| PATCH | `/api/memos/{memo_id}` | body `{content?, occurred_at?, images?}`，只更新出现的字段；不存在或已软删除 404 |
+| POST | `/api/memos` | body `{client_id?, content, occurred_at, images?, source?, latitude?, longitude?, place_name?}`；`occurred_at` 必须带时区，否则 400；地点三个字段作为整体处理；传 null 表示清空；不注入 AI；重复 `client_id` 幂等，返回已有内容 |
+| PATCH | `/api/memos/{memo_id}` | body `{content?, occurred_at?, images?, latitude?, longitude?, place_name?}`，只更新出现的字段；地点三个字段作为整体处理；传 null 表示清空；不注入 AI；不存在或已软删除 404 |
 | DELETE | `/api/memos/{memo_id}` | 软删除；不存在或已删除也返回 204（保证 App 同步队列幂等） |
 
 响应里的 `id` 是字符串，`created_at`/`updated_at`/`occurred_at`/`deleted_at` 统一是 UTC 毫秒精度 `...Z` 格式，游标是 `base64url("{updated_at}|{id}")`。

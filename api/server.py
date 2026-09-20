@@ -3,6 +3,7 @@ FastAPI 接口模块
 给前端提供数据
 """
 import base64
+import math
 import os
 import re
 import sqlite3
@@ -337,9 +338,68 @@ async def list_memos(cursor: str | None = None, limit: int = MEMO_SYNC_LIMIT_DEF
     return {"items": items, "next_cursor": next_cursor, "has_more": has_more}
 
 
+def _memo_location_from_body(body: dict) -> dict | None:
+    """从请求 body 里取地点字段，作为一个整体处理。
+
+    - 三个 key 都不出现：返回 None，表示「不涉及地点」（POST 时就是没有地点，PATCH 时就是不修改）。
+    - 只要出现其中任意一个：三个字段按整体处理，没出现的当作 null。
+      App 每次都会发送完整的三个字段；按整体处理可以避免「只改了纬度」这种半更新状态。
+    校验：
+    - latitude / longitude 要么同时为 null，要么同时是数字（bool 不算数字）
+    - latitude ∈ [-90, 90]，longitude ∈ [-180, 180]
+    - place_name 是字符串或 null；去掉首尾空白后为空时当作 null；最长 200 字符
+    - 经纬度为 null 时，place_name 强制为 null（没有坐标的地名没有意义）
+    不合法时抛 HTTPException(400)。
+    """
+    if "latitude" not in body and "longitude" not in body and "place_name" not in body:
+        return None
+
+    lat = body.get("latitude")
+    lon = body.get("longitude")
+    place_name = body.get("place_name")
+
+    def _is_number(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    if lat is None and lon is None:
+        valid_lat = None
+        valid_lon = None
+    elif _is_number(lat) and _is_number(lon):
+        if math.isnan(lat) or math.isinf(lat) or math.isnan(lon) or math.isinf(lon):
+            raise HTTPException(status_code=400, detail="latitude and longitude cannot be NaN or Inf")
+        if not (-90 <= lat <= 90):
+            raise HTTPException(status_code=400, detail="latitude must be between -90 and 90")
+        if not (-180 <= lon <= 180):
+            raise HTTPException(status_code=400, detail="longitude must be between -180 and 180")
+        valid_lat = float(lat)
+        valid_lon = float(lon)
+    else:
+        raise HTTPException(status_code=400, detail="latitude and longitude must both be null or both be numbers in range")
+
+    if place_name is not None:
+        if not isinstance(place_name, str):
+            raise HTTPException(status_code=400, detail="place_name must be a string or null")
+        place_name = place_name.strip() or None
+        if place_name is not None and len(place_name) > 200:
+            raise HTTPException(status_code=400, detail="place_name must be at most 200 characters")
+
+    # 经纬度为 null 时，place_name 强制为 null（没有坐标的地名没有意义）
+    if valid_lat is None:
+        place_name = None
+
+    return {
+        "latitude": valid_lat,
+        "longitude": valid_lon,
+        "place_name": place_name,
+    }
+
+
 @app.post("/api/memos")
 async def create_memo(body: dict):
-    """App / 快捷指令等入口新建一条 memo；重复 client_id 幂等，返回已有内容而不覆盖。"""
+    """App / 快捷指令等入口新建一条 memo；重复 client_id 幂等，返回已有内容而不覆盖。
+
+    body: {client_id?, content, occurred_at, images?, source?, latitude?, longitude?, place_name?}
+    """
     content = (body.get("content") or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="content required")
@@ -351,18 +411,20 @@ async def create_memo(body: dict):
     except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="occurred_at must include a timezone")
     client_id = (body.get("client_id") or "").strip() or str(uuid.uuid4())
+    location = _memo_location_from_body(body) or {}
     return db.upsert_memo(
         client_id=client_id,
         content=content,
         occurred_at=occurred_at,
         images=body.get("images") or [],
         source=body.get("source") or "app",
+        **location,
     )
 
 
 @app.patch("/api/memos/{memo_id}")
 async def update_memo(memo_id: int, body: dict):
-    """只更新 body 里出现的字段：content / occurred_at / images。"""
+    """只更新 body 里出现的字段：content / occurred_at / images / latitude / longitude / place_name。"""
     fields = {}
     if "content" in body:
         content = (body.get("content") or "").strip()
@@ -376,6 +438,9 @@ async def update_memo(memo_id: int, body: dict):
             raise HTTPException(status_code=400, detail="occurred_at must include a timezone")
     if "images" in body:
         fields["images"] = body.get("images") or []
+    location = _memo_location_from_body(body)
+    if location is not None:
+        fields.update(location)
     if not fields:
         raise HTTPException(status_code=400, detail="no fields to update")
     memo = db.update_memo(memo_id, **fields)

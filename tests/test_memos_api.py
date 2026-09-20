@@ -145,6 +145,101 @@ def test_list_memos_after_can_miss_an_update_that_lands_behind_an_already_issued
     assert early["id"] not in [item["id"] for item in page]
 
 
+def test_upsert_memo_with_location_returns_location(tmp_path):
+    db = _db(tmp_path)
+    memo = db.upsert_memo(
+        client_id="loc-1", content="带地点", occurred_at="2026-09-18T04:20:00.000Z",
+        latitude=-33.9173, longitude=151.2313, place_name="Kensington",
+    )
+    assert memo["latitude"] == -33.9173
+    assert memo["longitude"] == 151.2313
+    assert memo["place_name"] == "Kensington"
+
+
+def test_upsert_memo_without_location_has_none_location_fields(tmp_path):
+    db = _db(tmp_path)
+    memo = db.upsert_memo(
+        client_id="loc-2", content="无地点", occurred_at="2026-09-18T04:20:00.000Z",
+    )
+    assert "latitude" in memo and memo["latitude"] is None
+    assert "longitude" in memo and memo["longitude"] is None
+    assert "place_name" in memo and memo["place_name"] is None
+
+
+def test_upsert_memo_duplicate_client_id_with_different_location_keeps_first(tmp_path):
+    db = _db(tmp_path)
+    first = db.upsert_memo(
+        client_id="loc-dup", content="第一次", occurred_at="2026-09-18T04:20:00.000Z",
+        latitude=-33.9173, longitude=151.2313, place_name="Kensington",
+    )
+    second = db.upsert_memo(
+        client_id="loc-dup", content="第二次", occurred_at="2026-09-18T05:00:00.000Z",
+        latitude=31.2304, longitude=121.4737, place_name="Shanghai",
+    )
+    assert first == second
+    assert second["latitude"] == -33.9173
+    assert second["place_name"] == "Kensington"
+
+
+def test_update_memo_can_clear_location_and_bumps_updated_at(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    ticks = count()
+    monkeypatch.setattr(
+        database_module, "utc_now_iso",
+        lambda: f"2026-09-18T04:20:{next(ticks):02d}.000Z",
+    )
+    memo = db.upsert_memo(
+        client_id="loc-clear", content="test", occurred_at="2026-09-18T04:20:00.000Z",
+        latitude=-33.9173, longitude=151.2313, place_name="Kensington",
+    )
+    updated = db.update_memo(
+        int(memo["id"]), latitude=None, longitude=None, place_name=None,
+    )
+    assert updated is not None
+    assert updated["updated_at"] > memo["updated_at"]
+    assert updated["latitude"] is None
+    assert updated["longitude"] is None
+    assert updated["place_name"] is None
+
+
+def test_memos_migration_from_old_schema(tmp_path):
+    import sqlite3
+    db_file = tmp_path / "old_memos.db"
+    conn = sqlite3.connect(str(db_file))
+    conn.execute("""
+        CREATE TABLE memos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id TEXT NOT NULL UNIQUE,
+            content TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            images_json TEXT NOT NULL DEFAULT '[]',
+            source TEXT NOT NULL DEFAULT 'app'
+        )
+    """)
+    conn.execute(
+        "INSERT INTO memos (client_id, content, occurred_at, created_at, updated_at) "
+        "VALUES ('old-1', '旧数据', '2026-09-18T04:20:00.000Z', '2026-09-18T04:20:00.000Z', '2026-09-18T04:20:00.000Z')"
+    )
+    conn.commit()
+    conn.close()
+
+    # 打开数据库，应自动执行加列迁移
+    db = Database(str(db_file))
+    memo = db.get_memo(1)
+    assert memo is not None
+    assert "latitude" in memo and memo["latitude"] is None
+    assert "longitude" in memo and memo["longitude"] is None
+    assert "place_name" in memo and memo["place_name"] is None
+
+    # 再次打开，确认迁移幂等不报错
+    db2 = Database(str(db_file))
+    memo2 = db2.get_memo(1)
+    assert memo2 == memo
+
+
 # ────────────────────────────────────────────────────────────────
 # bot.memos：今天的范围 + prompt 用的取数
 # ────────────────────────────────────────────────────────────────
@@ -216,6 +311,22 @@ def test_get_today_memos_for_prompt_adds_local_time(tmp_path, monkeypatch):
     assert memos[0]["content"] == "喝咖啡"
 
 
+def test_get_today_memos_for_prompt_omits_location_fields(tmp_path, monkeypatch):
+    monkeypatch.setattr(timezone_state, "get_timezone", lambda: "UTC")
+    db = _db(tmp_path)
+    db.upsert_memo(
+        client_id="m-loc", content="在公园散步", occurred_at="2026-09-18T05:30:00.000Z",
+        latitude=-33.9173, longitude=151.2313, place_name="Centennial Park",
+    )
+    now = datetime(2026, 9, 18, 10, 0, 0)
+    memos = get_today_memos_for_prompt(db, now=now)
+    assert len(memos) == 1
+    assert "latitude" not in memos[0]
+    assert "longitude" not in memos[0]
+    assert "place_name" not in memos[0]
+    assert memos[0]["content"] == "在公园散步"
+
+
 # ────────────────────────────────────────────────────────────────
 # bot.prompts._format_today_memos
 # ────────────────────────────────────────────────────────────────
@@ -227,6 +338,21 @@ def test_format_today_memos_empty_vanishes_and_data_has_label():
     rendered = _format_today_memos([{"local_time": "09:30", "content": "写代码"}])
     assert rendered.startswith(LABEL_TODAY_MEMOS)
     assert "09:30 | 写代码" in rendered
+
+
+def test_format_today_memos_does_not_contain_location_info(tmp_path, monkeypatch):
+    monkeypatch.setattr(timezone_state, "get_timezone", lambda: "UTC")
+    db = _db(tmp_path)
+    db.upsert_memo(
+        client_id="m-loc2", content="吃午饭", occurred_at="2026-09-18T05:30:00.000Z",
+        latitude=-33.9173, longitude=151.2313, place_name="Kensington",
+    )
+    now = datetime(2026, 9, 18, 10, 0, 0)
+    rendered = _format_today_memos(get_today_memos_for_prompt(db, now=now))
+    assert "Kensington" not in rendered
+    assert "-33.9173" not in rendered
+    assert "151.2313" not in rendered
+    assert "吃午饭" in rendered
 
 
 # ────────────────────────────────────────────────────────────────
@@ -365,6 +491,108 @@ class MemosApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_requires_api_key(self):
         response = await self.client.get("/api/memos")
         self.assertEqual(response.status_code, 401)
+
+    async def test_post_with_location_returns_200_and_location_fields(self):
+        response = await self._post_memo(
+            client_id="loc-post-1",
+            latitude=-33.9173,
+            longitude=151.2313,
+            place_name="Kensington",
+        )
+        self.assertEqual(response.status_code, 200)
+        memo = response.json()
+        self.assertEqual(memo["latitude"], -33.9173)
+        self.assertEqual(memo["longitude"], 151.2313)
+        self.assertEqual(memo["place_name"], "Kensington")
+
+    async def test_post_without_location_has_null_location_fields(self):
+        response = await self._post_memo(client_id="loc-post-2")
+        self.assertEqual(response.status_code, 200)
+        memo = response.json()
+        self.assertIn("latitude", memo)
+        self.assertIsNone(memo["latitude"])
+        self.assertIn("longitude", memo)
+        self.assertIsNone(memo["longitude"])
+        self.assertIn("place_name", memo)
+        self.assertIsNone(memo["place_name"])
+
+    async def test_post_latitude_without_longitude_returns_400(self):
+        response = await self._post_memo(client_id="loc-post-3", latitude=-33.9173)
+        self.assertEqual(response.status_code, 400)
+
+    async def test_post_invalid_location_values_return_400(self):
+        r1 = await self._post_memo(client_id="inv-1", latitude=91, longitude=100)
+        self.assertEqual(r1.status_code, 400)
+
+        r2 = await self._post_memo(client_id="inv-2", latitude=0, longitude=-181)
+        self.assertEqual(r2.status_code, 400)
+
+        r3 = await self._post_memo(client_id="inv-3", latitude=True, longitude=100)
+        self.assertEqual(r3.status_code, 400)
+
+    async def test_post_place_name_with_null_coordinates_forces_place_name_to_null(self):
+        response = await self._post_memo(
+            client_id="loc-post-4",
+            place_name="Kensington",
+        )
+        self.assertEqual(response.status_code, 200)
+        memo = response.json()
+        self.assertIsNone(memo["latitude"])
+        self.assertIsNone(memo["longitude"])
+        self.assertIsNone(memo["place_name"])
+
+    async def test_patch_clear_location_returns_200_and_bumps_updated_at(self):
+        created = (await self._post_memo(
+            client_id="loc-patch-1",
+            latitude=-33.9173,
+            longitude=151.2313,
+            place_name="Kensington",
+        )).json()
+        response = await self.client.patch(
+            f"/api/memos/{created['id']}",
+            json={"latitude": None, "longitude": None, "place_name": None},
+            headers={"X-API-Key": TEST_KEY},
+        )
+        self.assertEqual(response.status_code, 200)
+        patched = response.json()
+        self.assertIsNone(patched["latitude"])
+        self.assertIsNone(patched["longitude"])
+        self.assertIsNone(patched["place_name"])
+        self.assertGreater(patched["updated_at"], created["updated_at"])
+
+    async def test_patch_content_only_preserves_location(self):
+        created = (await self._post_memo(
+            client_id="loc-patch-2",
+            latitude=-33.9173,
+            longitude=151.2313,
+            place_name="Kensington",
+        )).json()
+        response = await self.client.patch(
+            f"/api/memos/{created['id']}",
+            json={"content": "仅修改内容"},
+            headers={"X-API-Key": TEST_KEY},
+        )
+        self.assertEqual(response.status_code, 200)
+        patched = response.json()
+        self.assertEqual(patched["content"], "仅修改内容")
+        self.assertEqual(patched["latitude"], -33.9173)
+        self.assertEqual(patched["longitude"], 151.2313)
+        self.assertEqual(patched["place_name"], "Kensington")
+
+    async def test_get_memos_incremental_includes_location_fields(self):
+        await self._post_memo(
+            client_id="loc-get-1",
+            latitude=-33.9173,
+            longitude=151.2313,
+            place_name="Kensington",
+        )
+        response = await self.client.get("/api/memos", headers={"X-API-Key": TEST_KEY})
+        self.assertEqual(response.status_code, 200)
+        items = response.json()["items"]
+        match = next(item for item in items if item["client_id"] == "loc-get-1")
+        self.assertEqual(match["latitude"], -33.9173)
+        self.assertEqual(match["longitude"], 151.2313)
+        self.assertEqual(match["place_name"], "Kensington")
 
 
 if __name__ == "__main__":

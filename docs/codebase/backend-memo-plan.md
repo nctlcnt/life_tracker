@@ -39,7 +39,11 @@ CREATE TABLE IF NOT EXISTS memos (
     updated_at TEXT NOT NULL,            -- 任何修改（含软删除）都要更新，增量同步靠它
     deleted_at TEXT,                     -- 软删除；NULL = 未删除
     images_json TEXT NOT NULL DEFAULT '[]',  -- JSON 数组，附件 URL
-    source TEXT NOT NULL DEFAULT 'app'   -- app / shortcut / discord / mcp ...
+    source TEXT NOT NULL DEFAULT 'app',  -- app / shortcut / discord / mcp ...
+    -- 写 memo 时所在的地点。只给 App 显示用，不注入任何 AI 上下文
+    latitude REAL,
+    longitude REAL,
+    place_name TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_memos_sync ON memos(updated_at, id);
@@ -132,18 +136,20 @@ def _fmt(dt: datetime) -> str:
 
 ### `POST /api/memos`
 
-body：`{client_id, content, occurred_at, images?, source?}`
+body：`{client_id?, content, occurred_at, images?, source?, latitude?, longitude?, place_name?}`
 
 - `content` 去掉首尾空白后为空 → 400
 - `occurred_at` 缺失或不带时区 → 400
 - `client_id` 缺失 → 后端生成 uuid4
+- 地点字段（`latitude`, `longitude`, `place_name`）作为整体处理，不注入 AI；经纬度为 null 时 `place_name` 强制为 null
 - 返回完整 Memo（200）。重复的 `client_id` 返回已有那条，**不**覆盖内容。
 
 ### `PATCH /api/memos/{id}`
 
-body：`{content?, occurred_at?, images?}`，只更新出现的字段。
+body：`{content?, occurred_at?, images?, latitude?, longitude?, place_name?}`，只更新出现的字段。
 
 - 行不存在或已软删除 → 404
+- 地点三个字段作为整体处理；传 null 表示清空；不注入 AI
 - 返回更新后的完整 Memo，`updated_at` 已更新
 
 ### `DELETE /api/memos/{id}`

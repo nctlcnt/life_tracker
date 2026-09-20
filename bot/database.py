@@ -483,7 +483,11 @@ class Database:
                 updated_at TEXT NOT NULL,            -- 任何修改（含软删除）都要更新，增量同步靠它
                 deleted_at TEXT,                     -- 软删除；NULL = 未删除
                 images_json TEXT NOT NULL DEFAULT '[]',
-                source TEXT NOT NULL DEFAULT 'app'
+                source TEXT NOT NULL DEFAULT 'app',
+                -- 写 memo 时所在的地点。只给 App 显示用，不注入任何 AI 上下文
+                latitude REAL,
+                longitude REAL,
+                place_name TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_memos_sync ON memos(updated_at, id);
@@ -685,6 +689,15 @@ class Database:
                 conn.execute(stmt)
             except sqlite3.OperationalError:
                 pass
+
+        # memos 地点字段（见 docs/codebase/backend-memo-plan.md）
+        for ddl in ("ALTER TABLE memos ADD COLUMN latitude REAL",
+                    "ALTER TABLE memos ADD COLUMN longitude REAL",
+                    "ALTER TABLE memos ADD COLUMN place_name TEXT"):
+            try:
+                conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass  # 列已存在
 
         # 一次性兼容迁移：项目曾经只存在于 events.project_name。
         # 新版本改为用户手动项目表后，需要把已有历史项目注册进去，避免升级后 Project Overview 变空。
@@ -2167,17 +2180,21 @@ class Database:
         return item
 
     def upsert_memo(self, *, client_id: str, content: str, occurred_at: str,
-                     images: Optional[list] = None, source: str = "app") -> dict:
+                    images: Optional[list] = None, source: str = "app",
+                    latitude: Optional[float] = None,
+                    longitude: Optional[float] = None,
+                    place_name: Optional[str] = None) -> dict:
         """新建一条 memo；client_id 已存在时不修改，直接返回已有行（幂等）。"""
         now = utc_now_iso()
         conn = self._get_conn()
         conn.execute(
             "INSERT INTO memos "
-            "(client_id, content, occurred_at, created_at, updated_at, images_json, source) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "(client_id, content, occurred_at, created_at, updated_at, images_json, source, "
+            "latitude, longitude, place_name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(client_id) DO NOTHING",
             (client_id, content, occurred_at, now, now,
-             json.dumps(images or []), source),
+             json.dumps(images or []), source, latitude, longitude, place_name),
         )
         conn.commit()
         row = conn.execute(
@@ -2194,8 +2211,8 @@ class Database:
         return self._memo_row_to_dict(row) if row else None
 
     def update_memo(self, memo_id: int, **fields) -> Optional[dict]:
-        """只更新传入的 content / occurred_at / images；行不存在或已软删除返回 None。"""
-        allowed = {"content", "occurred_at", "images"}
+        """只更新传入的 content / occurred_at / images / latitude / longitude / place_name；行不存在或已软删除返回 None。"""
+        allowed = {"content", "occurred_at", "images", "latitude", "longitude", "place_name"}
         updates = {k: v for k, v in fields.items() if k in allowed}
         if "images" in updates:
             updates["images_json"] = json.dumps(updates.pop("images"))

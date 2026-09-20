@@ -53,7 +53,13 @@ def get_today_memos_for_prompt(db: Database, now: datetime | None = None) -> lis
 
     AI 需要的是本地时间，表里存的是 UTC，所以在这里转换一次，调用方
     直接把结果传给 build_prompt(today_memos=...) 即可。
+
+    地点字段故意不传：地点只给 App 显示用，不进入 AI 上下文。
     """
     start, end = today_memo_range_utc(now)
     memos = db.list_memos_between(start, end)
-    return [{**m, "local_time": _local_time_label(m["occurred_at"])} for m in memos]
+    return [
+        {"id": m["id"], "content": m["content"], "occurred_at": m["occurred_at"],
+         "local_time": _local_time_label(m["occurred_at"])}
+        for m in memos
+    ]
