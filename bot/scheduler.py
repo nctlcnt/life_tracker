@@ -39,6 +39,14 @@ CALENDAR_REFRESH_HOUR = 6
 CALENDAR_REFRESH_MINUTE = 5
 REMINDER_BATCH_WINDOW = timedelta(minutes=5)
 
+# 静音时段：只作用于 after_ai_call 类型的主动轮询（random_poll、ttl_followup 等）。
+# window 类型的 check-in（早安、睡前）和 reminder/DDL 提醒不受影响——
+# 前者的时段是手动设定的，后者必须按时送达。
+# 时段内不会调用 AI，所以夜里不再为了得到一个 [SILENT] 而消耗 token。
+# app_state 里的 quiet_hours 可以覆盖默认值：格式 "HH:MM-HH:MM"，"off" 表示关闭。
+QUIET_HOURS_STATE_KEY = "quiet_hours"
+DEFAULT_QUIET_HOURS = ("00:00", "06:00")
+
 # curator 自动调度（LT-136）：检查间隔与两次尝试的最小间隔（失败退避兼节流）
 CURATOR_CHECK_INTERVAL_SECONDS = 900.0
 CURATOR_ATTEMPT_COOLDOWN_SECONDS = 3600.0
@@ -208,7 +216,7 @@ class Scheduler:
             logger.warning(f"⚠️ Google Calendar 健康提醒发送失败: {send_error}")
 
     def poll_enabled(self) -> bool:
-        """随机轮询开关（app_state 持久化，/poll 命令切换）。缺省为开。"""
+        """随机轮询开关（check-in 的 enabled，在 Admin 页面切换）。缺省为开。"""
         check_in = self.db.get_check_in("random_poll")
         if check_in is not None:
             return bool(check_in.get("enabled"))
@@ -217,11 +225,11 @@ class Scheduler:
     async def _timer_loop(self):
         """
         内存倒计时循环，负责：
-        - 随机轮询：以"上次 AI 调用 + 随机间隔"为基准（可用 /poll 开关）
+        - 随机轮询：以"上次 AI 调用 + 随机间隔"为基准，静音时段内不触发
         - 睡前提醒（每晚 22:30-23:30 和 23:30-00:00 各一次，不受开关影响）
 
         notify_ai_call_done() 触发的 _timer_event 会唤醒 sleep，
-        让循环根据新的基准时间重算下次 poll；/poll 切换后也靠它即时生效。
+        让循环根据新的基准时间重算下次 poll。
         """
         while self._running:
             all_times = self._calc_checkin_times(datetime.now())
@@ -285,7 +293,7 @@ class Scheduler:
                         # 否则下一轮会被原样读回来再次丢弃，这个 check-in 就永久
                         # 卡住了。改为以当前时刻为基准重算。
                         next_time = now + timedelta(seconds=seconds)
-                    next_time = self._clamp_to_active_window(check_in, next_time)
+                    next_time = self._clamp_to_allowed_time(check_in, next_time)
                     self.db.set_check_in_last_scheduled(
                         check_in["id"], next_time.isoformat(timespec="seconds")
                     )
@@ -295,7 +303,7 @@ class Scheduler:
                     # 现在越界的时刻——它会原样读回来直接触发，把新设的时段绕过去。
                     # （实测：给「随手说一句」加上 09:00-22:00 之后，
                     #   它仍然按改之前存的 00:37 排队。）
-                    clamped = self._clamp_to_active_window(check_in, next_time)
+                    clamped = self._clamp_to_allowed_time(check_in, next_time)
                     if clamped != next_time:
                         next_time = clamped
                         self.db.set_check_in_last_scheduled(
@@ -309,6 +317,66 @@ class Scheduler:
                 if next_time is not None:
                     out.append((next_time, check_in))
         return out
+
+    def _quiet_hours(self) -> tuple[str, str] | None:
+        """当前生效的静音时段 (start, end)；关闭时返回 None。
+
+        默认值写在代码里；app_state 的 quiet_hours 留给以后 App / Admin 页面修改。
+        格式不对时退回默认值，而不是关闭——关闭会让夜里重新开始发消息。
+        """
+        raw = self.db.get_state(QUIET_HOURS_STATE_KEY)
+        if raw is None:
+            return DEFAULT_QUIET_HOURS
+        raw = raw.strip()
+        if raw.lower() == "off":
+            return None
+        try:
+            start, end = (part.strip() for part in raw.split("-", 1))
+            self._parse_hhmm(start)
+            self._parse_hhmm(end)
+        except ValueError:
+            logger.warning(f"⚠️ quiet_hours 格式无效: {raw!r}，使用默认 {DEFAULT_QUIET_HOURS}")
+            return DEFAULT_QUIET_HOURS
+        if start == end:
+            return None
+        return start, end
+
+    @staticmethod
+    def _push_out_of_quiet_hours(quiet: tuple[str, str], when: datetime) -> datetime:
+        """落在静音时段 [start, end) 内的时刻推到时段结束；时段外原样返回。
+
+        和 active window 相反，这里描述的是「不能响」的时段。
+        跨零点（例如 23:00-06:00）时，start 之后要推到次日的 end。
+        """
+        start_t = Scheduler._parse_hhmm(quiet[0])
+        end_t = Scheduler._parse_hhmm(quiet[1])
+        t = when.time()
+        if start_t < end_t:
+            if start_t <= t < end_t:
+                return datetime.combine(when.date(), end_t)
+            return when
+        # 跨零点
+        if t >= start_t:
+            return datetime.combine(when.date() + timedelta(days=1), end_t)
+        if t < end_t:
+            return datetime.combine(when.date(), end_t)
+        return when
+
+    def _clamp_to_allowed_time(self, check_in: dict, when: datetime) -> datetime:
+        """after_ai_call 的触发时刻：先满足 check-in 自己的时段，再避开静音时段。
+
+        两者可能互相推动（例如时段从 05:00 开始，被推到 05:00 后又落进静音时段），
+        所以反复调整直到结果不再变化。每一步只会往后推，几轮之内一定稳定。
+        """
+        quiet = self._quiet_hours()
+        for _ in range(4):
+            adjusted = self._clamp_to_active_window(check_in, when)
+            if quiet is not None:
+                adjusted = self._push_out_of_quiet_hours(quiet, adjusted)
+            if adjusted == when:
+                break
+            when = adjusted
+        return when
 
     def _clamp_to_active_window(self, check_in: dict, when: datetime) -> datetime:
         """把 after_ai_call 的触发时刻推进到允许的时段内。
