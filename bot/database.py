@@ -699,6 +699,57 @@ class Database:
             except sqlite3.OperationalError:
                 pass  # 列已存在
 
+        # 消息卡片（见 bot/cards.py）。AI 主动发的消息先放进一张 pending 卡片，
+        # 用户回复之后才连同回复一起写进 conversation_messages；没回复的卡片
+        # 过期后直接删除，不会作为杂音留在对话历史里。
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS conversation_cards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id TEXT NOT NULL,
+                source_type TEXT NOT NULL,          -- check_in / reminder / … / user（用户自己开的）
+                source_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'active')),
+                summary TEXT,                       -- 小模型生成的一句话概括，之后再接
+                created_at TEXT NOT NULL,
+                last_active_at TEXT NOT NULL,
+                -- pending：到期删除；active：到期只在界面上隐去，内容保留
+                expires_at TEXT NOT NULL,
+                UNIQUE(source_type, source_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_conversation_cards_status_expires
+                ON conversation_cards(status, expires_at);
+
+            -- pending 卡片里的消息。字段和 conversation_messages 对应，
+            -- 卡片被回复时原样搬过去。
+            CREATE TABLE IF NOT EXISTS card_pending_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                card_id INTEGER NOT NULL,
+                discord_message_id TEXT UNIQUE,
+                channel_id TEXT NOT NULL,
+                guild_id TEXT,
+                author_id TEXT,
+                author_name TEXT,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                reply_to_message_id TEXT,
+                metadata_json TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_card_pending_messages_card
+                ON card_pending_messages(card_id, id);
+        """)
+        try:
+            conn.execute("ALTER TABLE conversation_messages ADD COLUMN card_id INTEGER")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversation_messages_card "
+            "ON conversation_messages(card_id, id)"
+        )
+
         # 一次性兼容迁移：项目曾经只存在于 events.project_name。
         # 新版本改为用户手动项目表后，需要把已有历史项目注册进去，避免升级后 Project Overview 变空。
         conn.execute("""
@@ -1447,7 +1498,8 @@ class Database:
                                  author_id: str | None = None,
                                  author_name: str | None = None,
                                  reply_to_message_id: str | None = None,
-                                 metadata: dict | None = None) -> int | None:
+                                 metadata: dict | None = None,
+                                 card_id: int | None = None) -> int | None:
         """保存一条 Discord 会话消息。返回新行 id；重复 message id 会被忽略并返回 None。"""
         if role not in {"user", "assistant", "system"}:
             raise ValueError(f"invalid conversation role: {role}")
@@ -1460,8 +1512,9 @@ class Database:
             """
             INSERT OR IGNORE INTO conversation_messages (
                 discord_message_id, channel_id, guild_id, author_id, author_name,
-                role, content, created_at, reply_to_message_id, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                role, content, created_at, reply_to_message_id, metadata_json,
+                card_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(discord_message_id) if discord_message_id is not None else None,
@@ -1474,6 +1527,7 @@ class Database:
                 created_at,
                 str(reply_to_message_id) if reply_to_message_id is not None else None,
                 metadata_json,
+                int(card_id) if card_id is not None else None,
             )
         )
         conn.commit()
@@ -2279,6 +2333,187 @@ class Database:
         ).fetchall()
         conn.close()
         return [self._memo_row_to_dict(r) for r in rows]
+
+    # ============ 消息卡片 ============
+    # 规则和状态流转在 bot/cards.py；这里只负责读写。
+
+    def get_card(self, card_id: int) -> dict | None:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM conversation_cards WHERE id = ?", (int(card_id),)
+        ).fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def get_card_by_source(self, source_type: str, source_id: str) -> dict | None:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM conversation_cards WHERE source_type = ? AND source_id = ?",
+            (source_type, source_id),
+        ).fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def create_card(self, *, channel_id: str, source_type: str, source_id: str,
+                    status: str, now: str, expires_at: str) -> int:
+        """新建卡片；同一个 (source_type, source_id) 已存在时返回已有的 id。"""
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO conversation_cards (
+                    channel_id, source_type, source_id, status,
+                    created_at, last_active_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (str(channel_id), source_type, source_id, status, now, now, expires_at),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT id FROM conversation_cards WHERE source_type = ? AND source_id = ?",
+                (source_type, source_id),
+            ).fetchone()
+            return int(row["id"])
+        finally:
+            conn.close()
+
+    def touch_card(self, card_id: int, *, now: str, expires_at: str) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE conversation_cards SET last_active_at = ?, expires_at = ? WHERE id = ?",
+            (now, expires_at, int(card_id)),
+        )
+        conn.commit()
+        conn.close()
+
+    def add_card_pending_message(self, card_id: int, *,
+                                 discord_message_id: str | None,
+                                 channel_id: str,
+                                 role: str,
+                                 content: str,
+                                 created_at: str,
+                                 guild_id: str | None = None,
+                                 author_id: str | None = None,
+                                 author_name: str | None = None,
+                                 reply_to_message_id: str | None = None,
+                                 metadata: dict | None = None) -> None:
+        metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
+        conn = self._get_conn()
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO card_pending_messages (
+                card_id, discord_message_id, channel_id, guild_id, author_id,
+                author_name, role, content, created_at, reply_to_message_id,
+                metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(card_id),
+                str(discord_message_id) if discord_message_id is not None else None,
+                str(channel_id),
+                str(guild_id) if guild_id is not None else None,
+                str(author_id) if author_id is not None else None,
+                author_name,
+                role,
+                content or "",
+                created_at,
+                str(reply_to_message_id) if reply_to_message_id is not None else None,
+                metadata_json,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def find_card_id_by_discord_message(self, discord_message_id: str) -> int | None:
+        """某条 Discord 消息属于哪张卡片：先查 pending，再查已进入历史的消息。"""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT card_id FROM card_pending_messages WHERE discord_message_id = ?",
+                (str(discord_message_id),),
+            ).fetchone()
+            if row is not None:
+                return int(row["card_id"])
+            row = conn.execute(
+                "SELECT card_id FROM conversation_messages WHERE discord_message_id = ?",
+                (str(discord_message_id),),
+            ).fetchone()
+            if row is not None and row["card_id"] is not None:
+                return int(row["card_id"])
+            return None
+        finally:
+            conn.close()
+
+    def activate_card(self, card_id: int, *, now: str, expires_at: str) -> list[int]:
+        """把 pending 卡片转为 active：它的消息按原顺序搬进 conversation_messages。
+
+        在一个事务里完成，避免搬了一半、卡片状态却没改（或反过来）。
+        返回新写入的 conversation_messages 行 id。
+        """
+        conn = self._get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT * FROM card_pending_messages WHERE card_id = ? ORDER BY id",
+                (int(card_id),),
+            ).fetchall()
+            inserted: list[int] = []
+            for row in rows:
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO conversation_messages (
+                        discord_message_id, channel_id, guild_id, author_id, author_name,
+                        role, content, created_at, reply_to_message_id, metadata_json,
+                        card_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["discord_message_id"], row["channel_id"], row["guild_id"],
+                        row["author_id"], row["author_name"], row["role"], row["content"],
+                        row["created_at"], row["reply_to_message_id"], row["metadata_json"],
+                        int(card_id),
+                    ),
+                )
+                if cursor.rowcount > 0:
+                    inserted.append(int(cursor.lastrowid))
+            conn.execute(
+                "DELETE FROM card_pending_messages WHERE card_id = ?", (int(card_id),)
+            )
+            conn.execute(
+                "UPDATE conversation_cards SET status = 'active', last_active_at = ?, "
+                "expires_at = ? WHERE id = ?",
+                (now, expires_at, int(card_id)),
+            )
+            conn.commit()
+            return inserted
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def purge_expired_pending_cards(self, now: str) -> int:
+        """删除过期、从没被回复过的卡片和它们的消息。active 卡片不删。"""
+        conn = self._get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            ids = [int(r["id"]) for r in conn.execute(
+                "SELECT id FROM conversation_cards WHERE status = 'pending' AND expires_at <= ?",
+                (now,),
+            ).fetchall()]
+            if ids:
+                marks = ",".join("?" * len(ids))
+                conn.execute(
+                    f"DELETE FROM card_pending_messages WHERE card_id IN ({marks})", ids)
+                conn.execute(
+                    f"DELETE FROM conversation_cards WHERE id IN ({marks})", ids)
+            conn.commit()
+            return len(ids)
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     # ============ 应用状态 KV ============
 
