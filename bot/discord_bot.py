@@ -96,13 +96,9 @@ class LifeTrackerBot(commands.Bot):
 
     async def setup_hook(self):
         """注册斜杠命令并同步到 Discord"""
-        self.tree.add_command(_todo_group(self))
         self.tree.add_command(_calendar_group(self))
         self.tree.add_command(_weather_command(self))
-        self.tree.add_command(_model_command(self))
-        self.tree.add_command(_fallback_command(self))
         self.tree.add_command(_tz_command(self))
-        self.tree.add_command(_poll_command(self))
         await self.tree.sync()
         logger.info("✅ 斜杠命令已同步")
 
@@ -481,53 +477,6 @@ class LifeTrackerBot(commands.Bot):
         return True
 
 
-def _todo_group(bot: LifeTrackerBot) -> app_commands.Group:
-    """创建 /todo 命令组"""
-    group = app_commands.Group(name="todo", description="待办事项管理")
-
-    @group.command(name="add", description="添加一条待办")
-    @app_commands.describe(content="待办内容")
-    async def todo_add(interaction: discord.Interaction, content: str):
-        todo_id = bot.db.add_todo(content)
-        await interaction.response.send_message(f"📝 已添加 #{todo_id}：{content}")
-
-    @group.command(name="list", description="查看未完成的待办")
-    async def todo_list(interaction: discord.Interaction):
-        todos = bot.db.get_todos()
-        if not todos:
-            await interaction.response.send_message("📋 待办清空了！")
-            return
-        lines = [f"{'✅' if t['done'] else '⬜'} `{t['id']}` {t['content']}" for t in todos]
-        await interaction.response.send_message("📋 **待办列表**\n" + "\n".join(lines))
-
-    @group.command(name="all", description="查看全部待办（含已完成）")
-    async def todo_all(interaction: discord.Interaction):
-        todos = bot.db.get_todos(include_done=True)
-        if not todos:
-            await interaction.response.send_message("📋 没有任何待办")
-            return
-        lines = [f"{'✅' if t['done'] else '⬜'} `{t['id']}` {t['content']}" for t in todos]
-        await interaction.response.send_message("📋 **全部待办**\n" + "\n".join(lines))
-
-    @group.command(name="done", description="完成一条待办")
-    @app_commands.describe(id="待办 ID")
-    async def todo_done(interaction: discord.Interaction, id: int):
-        if bot.db.complete_todo(id):
-            await interaction.response.send_message(f"✅ 已完成 #{id}")
-        else:
-            await interaction.response.send_message(f"⚠️ 找不到未完成的 #{id}")
-
-    @group.command(name="del", description="删除一条待办")
-    @app_commands.describe(id="待办 ID")
-    async def todo_del(interaction: discord.Interaction, id: int):
-        if bot.db.delete_todo(id):
-            await interaction.response.send_message(f"🗑️ 已删除 #{id}")
-        else:
-            await interaction.response.send_message(f"⚠️ 找不到 #{id}")
-
-    return group
-
-
 def _calendar_group(bot: LifeTrackerBot) -> app_commands.Group:
     """创建 /calendar 命令组"""
     group = app_commands.Group(name="calendar", description="Google Calendar 授权与状态")
@@ -668,101 +617,6 @@ def _calendar_group(bot: LifeTrackerBot) -> app_commands.Group:
     return group
 
 
-async def _preset_autocomplete(
-    interaction: discord.Interaction, current: str
-) -> list[app_commands.Choice[str]]:
-    names = config.list_presets()
-    filtered = [n for n in names if current.lower() in n.lower()] or names
-    return [app_commands.Choice(name=n, value=n) for n in filtered[:25]]
-
-
-def _format_preset_status() -> str:
-    active = config.get_active()
-    fb = config.get_fallback()
-    lines = ["🧠 **AI Preset 当前状态**"]
-    lines.append(f"  主: `{active.name}` — {active.provider} / {active.model}")
-    if fb:
-        lines.append(f"  备: `{fb.name}` — {fb.provider} / {fb.model}")
-    else:
-        lines.append("  备: (未配置)")
-    lines.append("")
-    lines.append("📋 **可用 presets**")
-    for name in config.list_presets():
-        p = config.PRESETS[name]
-        tag = ""
-        if name == active.name:
-            tag = " ← 主"
-        elif fb and name == fb.name:
-            tag = " ← 备"
-        lines.append(f"  • `{name}` ({p.provider} / {p.model}){tag}")
-    return "\n".join(lines)
-
-
-def _model_command(bot: LifeTrackerBot) -> app_commands.Command:
-    """/model [name] — 无参列出状态；带 name 切换主 preset。"""
-
-    @app_commands.command(name="model", description="查看或切换主 preset（不传参数即列出所有可用）")
-    @app_commands.describe(name="preset 名称（留空则列出当前状态和所有可用）")
-    @app_commands.autocomplete(name=_preset_autocomplete)
-    async def model(interaction: discord.Interaction, name: str | None = None):
-        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
-            return
-        if name is None:
-            await interaction.response.send_message(_format_preset_status())
-            return
-        try:
-            config.set_active(name)
-        except ValueError:
-            await interaction.response.send_message(
-                f"⚠️ 未知 preset：`{name}`\n可用: {', '.join(config.list_presets())}"
-            )
-            return
-        p = config.get_active()
-        logger.info(f"🔀 切换主 preset → {p.name} ({p.provider}/{p.model})")
-        await interaction.response.send_message(
-            f"✅ 已切换主 preset → `{p.name}` ({p.provider} / {p.model})"
-        )
-
-    return model
-
-
-def _fallback_command(bot: LifeTrackerBot) -> app_commands.Command:
-    """/fallback <name|off> — 切换/关闭 fallback preset。"""
-
-    async def _fallback_autocomplete(
-        interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
-        names = ["off"] + config.list_presets()
-        filtered = [n for n in names if current.lower() in n.lower()] or names
-        return [app_commands.Choice(name=n, value=n) for n in filtered[:25]]
-
-    @app_commands.command(name="fallback", description="切换 fallback preset；传 off 关闭")
-    @app_commands.describe(name="preset 名称，或 'off' 关闭 fallback")
-    @app_commands.autocomplete(name=_fallback_autocomplete)
-    async def fallback(interaction: discord.Interaction, name: str):
-        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
-            return
-        if name.lower() == "off":
-            config.set_fallback(None)
-            logger.info("🔀 已关闭 fallback preset")
-            await interaction.response.send_message("✅ 已关闭 fallback")
-            return
-        try:
-            config.set_fallback(name)
-        except ValueError:
-            await interaction.response.send_message(
-                f"⚠️ 未知 preset：`{name}`\n可用: {', '.join(config.list_presets())}（或 'off'）"
-            )
-            return
-        p = config.get_fallback()
-        logger.info(f"🔀 切换 fallback preset → {p.name} ({p.provider}/{p.model})")
-        await interaction.response.send_message(
-            f"✅ 已切换 fallback preset → `{p.name}` ({p.provider} / {p.model})"
-        )
-
-    return fallback
-
-
 _COMMON_TZS = [
     "Australia/Sydney",
     "Asia/Tokyo",
@@ -820,49 +674,6 @@ def _tz_command(bot: LifeTrackerBot) -> app_commands.Command:
         )
 
     return tz
-
-
-def _poll_command(bot: LifeTrackerBot) -> app_commands.Command:
-    """/poll [on|off] — 无参显示状态；切换 random_poll check-in。"""
-
-    @app_commands.command(name="poll", description="查看或切换随机轮询（主动找你聊天）；睡前提醒和 reminder 不受影响")
-    @app_commands.describe(switch="on 打开 / off 关闭，留空显示当前状态")
-    @app_commands.choices(switch=[
-        app_commands.Choice(name="on", value="on"),
-        app_commands.Choice(name="off", value="off"),
-    ])
-    async def poll(interaction: discord.Interaction, switch: str | None = None):
-        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
-            return
-        check_in = bot.db.get_check_in("random_poll")
-        if check_in is None:
-            # random_poll 现在是可删除的默认项。被删掉之后这个命令没有可切换的
-            # 对象了，必须说清楚——不能像以前那样照样回复「已打开」。
-            await interaction.response.send_message(
-                "⚠️ `random_poll` check-in 不存在（可能已经在 Admin 页面被删掉），"
-                "这个命令没有可切换的对象。\n"
-                "去 Admin 页面新建一条 after_ai_call 类型的 check-in，"
-                "或者打开内置的 `ttl_followup`。"
-            )
-            return
-        enabled = bool(check_in.get("enabled"))
-        if switch is None:
-            state = "🔔 开启" if enabled else "🔕 关闭"
-            await interaction.response.send_message(f"`random_poll` check-in 当前状态: {state}")
-            return
-        turn_on = switch == "on"
-        bot.db.set_state("poll_enabled", "1" if turn_on else "0")
-        bot.db.update_check_in("random_poll", enabled=turn_on)
-        # 唤醒 timer 循环即时生效；打开时顺便把基准重置到现在（45-55min 后才第一次 poll）
-        if bot.on_ai_call_done:
-            bot.on_ai_call_done()
-        logger.info(f"🔀 随机轮询 → {'开' if turn_on else '关'}")
-        if turn_on:
-            await interaction.response.send_message("✅ `random_poll` check-in 已打开")
-        else:
-            await interaction.response.send_message("🔕 `random_poll` check-in 已关闭（其他 check-in 和 reminder 不受影响）")
-
-    return poll
 
 
 def _weather_command(bot: LifeTrackerBot) -> app_commands.Command:
