@@ -99,6 +99,45 @@ class CardService:
         logger.info(f"🗂️ 新卡片 #{card_id}（用户开启）")
         return card_id
 
+    # --- /conversation 指令用的入口 ------------------------------------------
+
+    def start_new_card(self, channel_id: str) -> int:
+        """开一张新的空卡片并切换过去。"""
+        self.purge_expired()
+        card_id = self._new_user_card(str(channel_id))
+        self._set_current(card_id)
+        return card_id
+
+    def switch_to(self, card_id: int) -> dict:
+        """切换当前卡片。卡片不存在、不是 active 或已经隐去时抛 ValueError。"""
+        self.purge_expired()
+        card = self.db.get_card(int(card_id))
+        if card is None:
+            raise ValueError(f"卡片 #{card_id} 不存在")
+        if card["status"] != "active":
+            raise ValueError(f"卡片 #{card_id} 还没有被回复过，不能切换过去")
+        if self._is_faded(card):
+            raise ValueError(f"卡片 #{card_id} 已经过期隐去了")
+        self._touch(int(card_id))
+        self._set_current(int(card_id))
+        return card
+
+    def list_active(self, channel_id: str, limit: int = 25) -> list[dict]:
+        """活跃卡片列表，附带卡片名和「是不是当前卡片」，最近的排在前面。"""
+        self.purge_expired()
+        cards = self.db.list_active_cards(str(channel_id), limit=limit)
+        labels = self.db.get_card_labels([c["id"] for c in cards])
+        current = self.current_card_id()
+        result = []
+        for card in cards:
+            if self._is_faded(card):
+                continue
+            item = dict(card)
+            item["label"] = labels.get(int(card["id"]), f"card{card['id']}")
+            item["is_current"] = int(card["id"]) == current
+            result.append(item)
+        return result
+
     def purge_expired(self) -> int:
         now, _ = self._times()
         removed = self.db.purge_expired_pending_cards(now)

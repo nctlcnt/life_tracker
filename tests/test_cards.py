@@ -267,3 +267,65 @@ def test_checkin_tool_batch_keeps_current_card_policy(db, cards):
         payload={'prompt': 'check in'}, execution_mode='apply')
     _send(db, cards, 30, 'check-in result', 'tool_batch', batch['id'])
     assert db.find_card_id_by_discord_message('30') == card_id
+
+
+# ── /conversation 指令用到的入口 ──────────────────────────────────────────
+
+def test_start_new_card_becomes_the_current_card(db, cards):
+    _send(db, cards, 1, "早上好", "check_in", "c1")
+    first = _user(db, cards, 10, "回 checkin1", reply_to="1")
+
+    fresh = cards.start_new_card(CHANNEL)
+
+    assert fresh != first
+    assert cards.current_card_id() == fresh
+    # 之后不 reply 直接说话，进的是新卡片
+    assert _user(db, cards, 11, "接着说") == fresh
+
+
+def test_switch_to_changes_the_current_card(db, cards):
+    _send(db, cards, 1, "checkin1", "check_in", "c1")
+    _send(db, cards, 2, "checkin2", "check_in", "c2")
+    first = _user(db, cards, 10, "回 checkin1", reply_to="1")
+    second = _user(db, cards, 11, "回 checkin2", reply_to="2")
+    assert cards.current_card_id() == second
+
+    cards.switch_to(first)
+
+    assert cards.current_card_id() == first
+    assert _user(db, cards, 12, "接着说") == first
+
+
+def test_switch_to_rejects_a_card_that_was_never_replied_to(db, cards):
+    _send(db, cards, 1, "checkin1", "check_in", "c1")
+    pending = db.get_card_by_source("check_in", "c1")["id"]
+
+    with pytest.raises(ValueError):
+        cards.switch_to(pending)
+
+
+def test_switch_to_rejects_a_missing_card(db, cards):
+    with pytest.raises(ValueError):
+        cards.switch_to(9999)
+
+
+def test_list_active_marks_the_current_card_and_hides_faded_ones(db, cards, clock):
+    _send(db, cards, 1, "checkin1", "check_in", "c1")
+    old = _user(db, cards, 10, "回 checkin1", reply_to="1")
+    clock.advance(CARD_TTL + timedelta(minutes=1))
+    _send(db, cards, 2, "checkin2", "check_in", "c2")
+    current = _user(db, cards, 11, "回 checkin2", reply_to="2")
+
+    listed = cards.list_active(CHANNEL)
+
+    ids = [c["id"] for c in listed]
+    assert current in ids
+    # 过期隐去的卡片不出现在列表里（内容仍然保留在历史中）
+    assert old not in ids
+    assert [c["is_current"] for c in listed if c["id"] == current] == [True]
+    assert [c["label"] for c in listed if c["id"] == current] == ["check_in2"]
+
+
+def test_list_active_is_empty_before_any_reply(db, cards):
+    _send(db, cards, 1, "checkin1", "check_in", "c1")
+    assert cards.list_active(CHANNEL) == []
