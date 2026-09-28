@@ -16,6 +16,7 @@ from bot.async_pipeline import (
     OutboundQueue,
 )
 from bot.ai_engine import chat, simple_completion
+from bot.cards import CardService, is_proactive, unique_source_id
 from bot.memory import MemoryService
 from bot.weather import get_weather_brief, get_weather_detailed, geocode_address
 from bot.prompts import get_prompt_template
@@ -51,6 +52,7 @@ class LifeTrackerBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.db = db
         self.memory = memory_service or MemoryService(db)
+        self.cards = CardService(db)
         self.generation_gate = generation_gate or NullGenerationGate()
         self.outbound_queue = outbound_queue
         self.batch_coordinator = batch_coordinator
@@ -169,6 +171,21 @@ class LifeTrackerBot(commands.Bot):
         # 当前用户消息（带时间戳前缀，和历史消息格式一致）
         current_content = f"[{timestamp}] {content_to_send}"
 
+        # 先确定这条消息属于哪张卡片。reply 的是一张 pending 卡片时，这一步会把
+        # 卡片里 AI 的消息先写进对话历史，所以必须在写入用户消息之前完成。
+        reply_to_id = (
+            str(message.reference.message_id)
+            if message.reference and message.reference.message_id
+            else None
+        )
+        card_kwargs = {}
+        try:
+            card_kwargs["card_id"] = self.cards.card_for_user_message(
+                str(message.channel.id), reply_to_id)
+        except Exception as e:
+            # 卡片出错不能挡住聊天本身：消息照常写入，只是不归属任何卡片
+            logger.exception(f"⚠️ 卡片归属失败，消息不带卡片写入: {e}")
+
         # 备份到 DB（messages 表只作备份，AI 上下文走 DB conversation log）
         self.db.add_message("user", current_content)
         row_id = await self.memory.ingest_message(
@@ -180,16 +197,13 @@ class LifeTrackerBot(commands.Bot):
             role="user",
             content=message.content or "",
             created_at=message.created_at.isoformat(),
-            reply_to_message_id=(
-                str(message.reference.message_id)
-                if message.reference and message.reference.message_id
-                else None
-            ),
+            reply_to_message_id=reply_to_id,
             metadata={
                 "content_to_send": content_to_send,
                 "current_content": current_content,
                 "message_type": str(message.type),
             },
+            **card_kwargs,
         )
         if row_id is not None and self.batch_coordinator is not None:
             self.batch_coordinator.notify_user_message(
@@ -350,6 +364,8 @@ class LifeTrackerBot(commands.Bot):
             db=self.db,
             memory_service=self.memory,
             role="assistant",
+            source_type=source_type,
+            source_id=source_id,
             use_typing=not self._is_typing_cooling_down(target.id),
             on_typing_rate_limited=lambda: self._mark_typing_cooldown(
                 target.id, "Discord typing 发送限流"
@@ -394,6 +410,8 @@ class LifeTrackerBot(commands.Bot):
                 db=self.db,
                 memory_service=self.memory,
                 role="assistant",
+                source_type=delivery.get("source_type"),
+                source_id=delivery.get("source_id"),
                 use_typing=not self._is_typing_cooling_down(channel.id),
                 on_typing_rate_limited=lambda: self._mark_typing_cooldown(
                     channel.id, "Discord typing OutboundQueue 限流"
@@ -730,6 +748,8 @@ async def _send_chat_chunks(target, text: str, *,
                             db: Database | None = None,
                             memory_service: MemoryService | None = None,
                             role: str = "assistant",
+                            source_type: str | None = None,
+                            source_id: str | None = None,
                             use_typing: bool = True,
                             on_typing_rate_limited=None) -> list[str]:
     """
@@ -744,6 +764,10 @@ async def _send_chat_chunks(target, text: str, *,
         return []
     limit = 2000
     chunks = [text[i:i + limit] for i in range(0, len(text), limit)]
+    # 同一次发送的所有分段必须落进同一张卡片，所以缺省的 source_id 在这里统一替换
+    if is_proactive(source_type):
+        source_id = unique_source_id(source_id)
+    card_source = {"source_type": source_type, "source_id": source_id}
     sent_ids: list[str] = []
     logger.info(f"📤 准备发送 {len(chunks)} 段消息到 {type(target).__name__}（{len(text)} 字符）")
     if use_typing:
@@ -759,7 +783,7 @@ async def _send_chat_chunks(target, text: str, *,
             try:
                 for chunk in chunks:
                     sent = await target.send(chunk)
-                    await _record_sent_chunk(db, sent, role, memory_service)
+                    await _record_sent_chunk(db, sent, role, memory_service, **card_source)
                     sent_ids.append(str(sent.id))
             finally:
                 await typing_cm.__aexit__(None, None, None)
@@ -768,20 +792,26 @@ async def _send_chat_chunks(target, text: str, *,
 
     for chunk in chunks:
         sent = await target.send(chunk)
-        await _record_sent_chunk(db, sent, role, memory_service)
+        await _record_sent_chunk(db, sent, role, memory_service, **card_source)
         sent_ids.append(str(sent.id))
     logger.info("✅ 消息发送完成")
     return sent_ids
 
 
 async def _record_sent_chunk(db: Database | None, sent: discord.Message, role: str,
-                             memory_service: MemoryService | None = None) -> None:
-    """Persist a sent Discord message when a DB is available."""
+                             memory_service: MemoryService | None = None, *,
+                             source_type: str | None = None,
+                             source_id: str | None = None) -> None:
+    """Persist a sent Discord message when a DB is available.
+
+    带 source_type 时交给卡片规则决定去向：主动消息先进 pending 卡片，
+    回复类消息进当前卡片。不带时保持原行为，直接写进对话历史。
+    """
     if db is None and memory_service is None:
         return
     try:
         service = memory_service or MemoryService(db)
-        await service.ingest_message(
+        message = dict(
             discord_message_id=str(sent.id),
             channel_id=str(sent.channel.id),
             guild_id=str(sent.guild.id) if sent.guild else None,
@@ -797,5 +827,13 @@ async def _record_sent_chunk(db: Database | None, sent: discord.Message, role: s
             ),
             metadata={"message_type": str(sent.type)},
         )
+        cards_db = db if db is not None else getattr(service, "repository", None)
+        if source_type is not None and hasattr(cards_db, "create_card"):
+            await CardService(cards_db).record_outbound(
+                message, source_type=source_type, source_id=source_id,
+                ingest=service.ingest_message,
+            )
+        else:
+            await service.ingest_message(**message)
     except Exception as e:
         logger.warning(f"⚠️ 写入 outbound conversation log 失败: {e}")
