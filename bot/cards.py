@@ -7,7 +7,8 @@
   conversation_messages，然后才写用户的回复。这张卡片成为「当前卡片」。
 - 用户直接发消息（不 reply）：进入当前卡片；没有当前卡片、或当前卡片已经
   过期隐去时，自动开一张新卡片。
-- AI 对用户的回复（chat、工具结果）进入当前卡片。
+- AI 对用户的回复归入触发消息的卡片；conversation 工具批次以最后一条
+  用户消息为准。发送前切卡不改变归属；无法解析来源时仍进入当前卡片。
 - 过期：pending 卡片到期直接删除；active 卡片到期只在界面上隐去，内容保留。
   每次有新消息都会把过期时间往后推。
 
@@ -167,11 +168,18 @@ class CardService:
             if card["status"] == "active":
                 # 同一次主动发送的后续分段到达前，用户已经回复了前面的分段
                 await _maybe_await(ingest(**message, card_id=card["id"]))
+                self._touch(card["id"])
                 return
             self.db.add_card_pending_message(card["id"], **message)
+            self._touch(card["id"])
             return
 
-        card_id = self.current_card_id() if source_type is not None else None
+        # 在途回答属于触发它的消息；用户切卡不应搬走旧问题的回答。
+        # conversation 工具批次以最后一条用户消息为归属。
+        # check-in 批次及无来源的旧消息保持现有分类/兼容行为。
+        card_id = self.db.find_reply_card_id(source_type, source_id)
+        if card_id is None and source_type is not None:
+            card_id = self.current_card_id()
         if card_id is None:
             await _maybe_await(ingest(**message))
             return

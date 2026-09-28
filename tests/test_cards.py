@@ -214,3 +214,56 @@ def test_record_sent_chunk_routes_check_ins_to_a_pending_card(db):
         db, Sent(), "assistant", source_type="check_in", source_id="morning:1"))
     assert _history(db) == []
     assert db.get_card_by_source("check_in", "morning:1")["status"] == "pending"
+
+
+@pytest.mark.parametrize('active', [False, True])
+def test_proactive_followup_chunks_extend_expiry(db, cards, clock, active):
+    _send(db, cards, 1, 'first', 'check_in', 'c1')
+    card_id = db.get_card_by_source('check_in', 'c1')['id']
+    if active:
+        _user(db, cards, 10, 'reply', reply_to='1')
+    clock.advance(timedelta(days=2))
+    _send(db, cards, 2, 'later chunk', 'check_in', 'c1')
+    card = db.get_card(card_id)
+    assert card['expires_at'] == (clock.now + CARD_TTL).isoformat(timespec='seconds')
+    assert card['last_active_at'] == clock.now.isoformat(timespec='seconds')
+    clock.advance(timedelta(days=2))
+    assert cards.purge_expired() == 0
+    assert db.get_card(card_id) is not None
+    if active:
+        assert _user(db, cards, 11, 'still here') == card_id
+
+
+@pytest.mark.parametrize('source_type', ['chat', 'chat_error', 'chat_tool_feedback', 'tool_batch'])
+def test_delayed_reply_keeps_source_card_after_switch_and_restart(db, cards, source_type):
+    from bot.async_pipeline.tool_batches import ToolBatchRepository
+
+    first = _user(db, cards, 10, 'question A')
+    source_id = '10'
+    if source_type == 'tool_batch':
+        conn = db._get_conn()
+        row_id = conn.execute(
+            "SELECT id FROM conversation_messages WHERE discord_message_id = '10'"
+        ).fetchone()[0]
+        conn.close()
+        batch, _ = ToolBatchRepository(db).create_conversation_batch(
+            channel_id=CHANNEL, after_message_id=0, through_message_id=row_id,
+            last_user_message_id=row_id, execution_mode='apply')
+        source_id = batch['id']
+    _send(db, cards, 1, 'other question', 'check_in', 'c1')
+    second = _user(db, cards, 20, 'answer B', reply_to='1')
+    restarted = CardService(db)
+    _send(db, restarted, 30, 'late answer A', source_type, source_id)
+    assert db.find_card_id_by_discord_message('30') == first
+    assert restarted.current_card_id() == second
+
+
+def test_checkin_tool_batch_keeps_current_card_policy(db, cards):
+    from bot.async_pipeline.tool_batches import ToolBatchRepository
+
+    card_id = _user(db, cards, 10, 'hello')
+    batch, _ = ToolBatchRepository(db).create_check_in_batch(
+        channel_id=CHANNEL, source_ref='check_in:c1',
+        payload={'prompt': 'check in'}, execution_mode='apply')
+    _send(db, cards, 30, 'check-in result', 'tool_batch', batch['id'])
+    assert db.find_card_id_by_discord_message('30') == card_id

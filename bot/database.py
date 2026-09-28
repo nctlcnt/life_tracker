@@ -2444,6 +2444,28 @@ class Database:
         finally:
             conn.close()
 
+    def find_reply_card_id(self, source_type: str | None,
+                           source_id: str | None) -> int | None:
+        """Resolve delayed replies from their durable source, not current UI state."""
+        if not source_id:
+            return None
+        if source_type in {"chat", "chat_error", "chat_tool_feedback"}:
+            return self.find_card_id_by_discord_message(source_id)
+        if source_type != "tool_batch":
+            return None
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                """SELECT message.card_id FROM tool_batches AS batch
+                   JOIN conversation_messages AS message
+                     ON message.id = batch.last_user_message_id
+                   WHERE batch.id = ? AND batch.source_kind = 'conversation'""",
+                (str(source_id),),
+            ).fetchone()
+            return int(row["card_id"]) if row and row["card_id"] is not None else None
+        finally:
+            conn.close()
+
     def activate_card(self, card_id: int, *, now: str, expires_at: str) -> list[int]:
         """把 pending 卡片转为 active：它的消息按原顺序搬进 conversation_messages。
 
