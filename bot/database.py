@@ -2573,14 +2573,58 @@ class Database:
         finally:
             conn.close()
 
-    def list_active_cards(self, channel_id: str, limit: int = 25) -> list[dict]:
-        """活跃卡片，最近有对话的排在前面。给 /conversation list 和 switch 用。"""
+    def list_active_cards(self, channel_id: str | None, limit: int = 25) -> list[dict]:
+        """活跃卡片，最近有对话的排在前面。
+
+        channel_id 传 None 表示不限频道：API 那边在没有配置 Discord 频道时会这样调。
+        """
+        where = "status = 'active'"
+        params: list = []
+        if channel_id is not None:
+            where += " AND channel_id = ?"
+            params.append(str(channel_id))
         conn = self._get_conn()
         try:
             rows = conn.execute(
-                "SELECT * FROM conversation_cards WHERE channel_id = ? "
-                "AND status = 'active' ORDER BY last_active_at DESC, id DESC LIMIT ?",
-                (str(channel_id), max(int(limit), 0)),
+                f"SELECT * FROM conversation_cards WHERE {where} "
+                "ORDER BY last_active_at DESC, id DESC LIMIT ?",
+                [*params, max(int(limit), 0)],
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def count_card_messages(self, card_ids) -> dict:
+        """一批卡片各自有多少条消息进了对话历史。一次查询，不按卡片逐条数。"""
+        ids = sorted({int(c) for c in card_ids if c is not None})
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                f"SELECT card_id, COUNT(*) AS n FROM conversation_messages "
+                f"WHERE card_id IN ({marks}) GROUP BY card_id",
+                ids,
+            ).fetchall()
+            return {int(r["card_id"]): int(r["n"]) for r in rows}
+        finally:
+            conn.close()
+
+    def list_card_messages(self, card_id: int, limit: int = 200) -> list[dict]:
+        """一张卡片里的消息原文，按 id 正序，给 App 显示用。
+
+        刻意不走 _to_ai_message：那条路径是为模型准备的，会加上时间前缀，并且
+        把用户消息换成 metadata.current_content（里面还带着 `[回复 …]` 引用块）。
+        界面要显示的是用户真正打出来的那句话，两种表示不能混用。
+        """
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT id, role, content, created_at, discord_message_id, "
+                "reply_to_message_id FROM conversation_messages "
+                "WHERE card_id = ? ORDER BY id ASC LIMIT ?",
+                (int(card_id), max(int(limit), 0)),
             ).fetchall()
             return [dict(r) for r in rows]
         finally:

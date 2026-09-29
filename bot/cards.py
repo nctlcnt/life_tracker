@@ -122,19 +122,27 @@ class CardService:
         self._set_current(int(card_id))
         return card
 
-    def list_active(self, channel_id: str, limit: int = 25) -> list[dict]:
-        """活跃卡片列表，附带卡片名和「是不是当前卡片」，最近的排在前面。"""
+    def list_active(self, channel_id: str | None, limit: int = 25,
+                    include_faded: bool = False) -> list[dict]:
+        """活跃卡片列表，附带卡片名和「是不是当前卡片」，最近的排在前面。
+
+        include_faded=True 时连已经过期隐去的卡片一起返回，并打上 faded 标记。
+        App 需要它们才能做渐隐效果；Discord 的 /conversation 不需要，所以默认不带。
+        """
         self.purge_expired()
-        cards = self.db.list_active_cards(str(channel_id), limit=limit)
+        cards = self.db.list_active_cards(
+            str(channel_id) if channel_id is not None else None, limit=limit)
         labels = self.db.get_card_labels([c["id"] for c in cards])
         current = self.current_card_id()
         result = []
         for card in cards:
-            if self._is_faded(card):
+            faded = self._is_faded(card)
+            if faded and not include_faded:
                 continue
             item = dict(card)
             item["label"] = labels.get(int(card["id"]), f"card{card['id']}")
             item["is_current"] = int(card["id"]) == current
+            item["faded"] = faded
             result.append(item)
         return result
 

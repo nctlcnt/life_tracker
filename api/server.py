@@ -24,6 +24,8 @@ from api.auth import (
     secure_compare,
     session_token,
 )
+import config
+from bot.cards import CardService
 from bot.database import Database, normalize_utc_iso
 from bot.memory import MemoryService
 from bot.merge import merge_events
@@ -624,6 +626,81 @@ async def test_check_in(check_in_id: str):
         "name": result.get("name"),
         "label": result.get("label"),
     }
+
+
+CARD_LIST_LIMIT_DEFAULT = 50
+CARD_LIST_LIMIT_MAX = 200
+CARD_MESSAGE_LIMIT_DEFAULT = 200
+CARD_MESSAGE_LIMIT_MAX = 500
+
+
+def _card_service() -> CardService:
+    return CardService(db)
+
+
+def _card_channel() -> str | None:
+    """卡片接口用哪个频道：没有配置 Discord 频道时不限频道。
+
+    这里刻意不做成查询参数。api/server.py 的其它接口都是隐式单用户的，
+    现在引入一个 channel 参数，App 以后就得一直带着它，而当下没有任何好处。
+    """
+    return str(config.CHANNEL_ID) if config.CHANNEL_ID else None
+
+
+def _card_payload(card: dict, counts: dict) -> dict:
+    return {
+        "id": int(card["id"]),
+        "label": card["label"],
+        "source_type": card["source_type"],
+        "summary": card.get("summary"),
+        "created_at": card["created_at"],
+        "last_active_at": card["last_active_at"],
+        # App 的渐隐效果按它算：到了这个时刻卡片就该淡出，内容仍保留在历史里
+        "expires_at": card["expires_at"],
+        "faded": bool(card["faded"]),
+        "is_current": bool(card["is_current"]),
+        "message_count": int(counts.get(int(card["id"]), 0)),
+    }
+
+
+@app.get("/api/cards")
+async def list_cards(limit: int = CARD_LIST_LIMIT_DEFAULT):
+    """对话卡片列表，最近有对话的排在前面。
+
+    只返回被回复过（active）的卡片。没被回复过的 pending 卡片不在这里：它们还没有
+    进入对话历史，过期就整张删掉，要不要在界面上露出来属于 roadmap 里还没定的问题。
+    """
+    limit = max(1, min(limit, CARD_LIST_LIMIT_MAX))
+    cards = _card_service().list_active(
+        _card_channel(), limit=limit, include_faded=True)
+    counts = db.count_card_messages([c["id"] for c in cards])
+    current = next((int(c["id"]) for c in cards if c["is_current"]), None)
+    return {
+        "items": [_card_payload(c, counts) for c in cards],
+        "current_card_id": current,
+    }
+
+
+@app.get("/api/cards/{card_id}")
+async def get_card(card_id: int):
+    cards = _card_service().list_active(
+        _card_channel(), limit=CARD_LIST_LIMIT_MAX, include_faded=True)
+    card = next((c for c in cards if int(c["id"]) == card_id), None)
+    if card is None:
+        raise HTTPException(status_code=404, detail=f"card not found: {card_id}")
+    counts = db.count_card_messages([card_id])
+    return _card_payload(card, counts)
+
+
+@app.get("/api/cards/{card_id}/messages")
+async def get_card_messages(card_id: int,
+                            limit: int = CARD_MESSAGE_LIMIT_DEFAULT):
+    """一张卡片里的消息原文，按时间正序。"""
+    limit = max(1, min(limit, CARD_MESSAGE_LIMIT_MAX))
+    card = db.get_card(card_id)
+    if card is None or card["status"] != "active":
+        raise HTTPException(status_code=404, detail=f"card not found: {card_id}")
+    return {"items": db.list_card_messages(card_id, limit=limit)}
 
 
 @app.get("/api/todos")

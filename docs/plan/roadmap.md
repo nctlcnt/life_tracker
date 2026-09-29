@@ -49,9 +49,19 @@
   以后 App 走自己的写入路径时，需要在那条路径上补同样的触发。
 - `switch` 会把卡片的过期时间往后推 3 天。roadmap 原文只写了「有新消息时往后推」，
   切换算不算「新消息」没有写，这里按「算」处理。
-- 测试：`tests/test_context_window.py` 新增 10 个、`tests/test_cards.py` 新增 6 个、
-  新文件 `tests/test_card_summary.py` 9 个；全量 605 项通过。
-- 后端到此为止。App 侧的卡片界面接下来单独做，它需要的读取 API 还没有写。
+- 读取 API（给 App 的卡片界面用）：
+  - `GET /api/cards` 列表，`GET /api/cards/{id}` 单张，`GET /api/cards/{id}/messages` 卡片里的消息。
+  - 只读，不含新建和切换。Discord 侧的 `/conversation` 已经覆盖那两件事。
+  - 只返回被回复过（active）的卡片。没被回复过的 pending 卡片不在里面：它们还没进对话历史，
+    过期就整张删掉，要不要在界面上露出来属于下面"待定问题"里还没定的那条。
+  - 过期隐去的卡片照样返回，带 `faded` 标记和 `expires_at`，渐隐效果由 App 自己做。
+  - 消息返回的是原文，不是给模型的那份表示（那一份带 `[时间]` 前缀，用户消息还会被换成
+    `current_content`，里面含 `[回复 …]` 引用块）。界面和模型两种表示不能混用。
+  - 不接受 channel 参数：`api/server.py` 其它接口都是隐式单用户的，频道取 `config.CHANNEL_ID`，
+    没配置就不限频道。
+- 测试：`tests/test_context_window.py` 新增 10 个、`tests/test_cards.py` 新增 6 个，
+  新文件 `tests/test_card_summary.py` 9 个、`tests/test_cards_api.py` 10 个；全量 615 项通过。
+- 后端到此为止，App 侧的界面单独做。
 
 ---
 
@@ -136,7 +146,7 @@
 
 1. 更新外层 LifeMemo 的 submodule 指针（在本仓库之外，还没有确认是否已经做过）。
 2. compact 改为每天凌晨 4 点、compact prompt 补上过期信息的取舍规则。（暂缓，先不动 compact。）
-3. App 的聊天卡片界面和对应的 API。
+3. App 的聊天卡片界面。对应的读取 API 已经做完，见上面那一节。
 4. 标签（不计时）。
 5. 上周 reflection。
 6. 计时标签。
