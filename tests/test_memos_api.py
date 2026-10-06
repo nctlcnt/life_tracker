@@ -5,6 +5,7 @@
 """
 import os
 import re
+import sqlite3
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta
@@ -95,6 +96,123 @@ def test_list_memos_between_excludes_deleted(tmp_path):
 
     rows = db.list_memos_between("2026-09-18T04:00:00.000Z", "2026-09-19T04:00:00.000Z")
     assert [r["id"] for r in rows] == [kept["id"]]
+
+
+def test_soft_delete_tag_cascades_to_memos(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    ticks = count()
+    monkeypatch.setattr(
+        database_module, "utc_now_iso",
+        lambda: f"2026-09-18T04:20:{next(ticks):02d}.000Z",
+    )
+    t = db.upsert_tag(client_id="t-del", name="将删除的标签")
+    tag_id = int(t["id"])
+    m_with_tag = db.upsert_memo(
+        client_id="m-tag-1", content="挂了标签的", occurred_at="2026-09-18T04:00:00.000Z",
+        tag_ids=[tag_id],
+    )
+    m_without_tag = db.upsert_memo(
+        client_id="m-tag-2", content="没挂标签的", occurred_at="2026-09-18T04:00:00.000Z",
+    )
+    old_updated_at_with = m_with_tag["updated_at"]
+    old_updated_at_without = m_without_tag["updated_at"]
+
+    assert db.soft_delete_tag("t-del") is True
+    # 重复删除返回 False、不报错
+    assert db.soft_delete_tag("t-del") is False
+
+    # 标签 deleted_at 有值
+    t_row = db.get_tag_by_client_id("t-del")
+    assert t_row["deleted_at"] is not None
+
+    # 挂了它的 memo updated_at 变大，tag_client_ids 里不再有它
+    m_with_after = db.get_memo(int(m_with_tag["id"]))
+    assert m_with_after["updated_at"] > old_updated_at_with
+    assert m_with_after["tag_client_ids"] == []
+
+    # 没挂它的 memo updated_at 不变
+    m_without_after = db.get_memo(int(m_without_tag["id"]))
+    assert m_without_after["updated_at"] == old_updated_at_without
+
+
+def test_upsert_memo_with_tag_ids_and_idempotence(tmp_path):
+    db = _db(tmp_path)
+    t1 = db.upsert_tag(client_id="t-idemp-1", name="标签1")
+    t2 = db.upsert_tag(client_id="t-idemp-2", name="标签2")
+    m1 = db.upsert_memo(
+        client_id="m-idemp", content="测试", occurred_at="2026-09-18T04:00:00.000Z",
+        tag_ids=[int(t1["id"])],
+    )
+    assert m1["tag_client_ids"] == ["t-idemp-1"]
+
+    # client_id 重复、tag_ids 不同时，标签保持第一次的
+    m2 = db.upsert_memo(
+        client_id="m-idemp", content="新测试", occurred_at="2026-09-18T04:00:00.000Z",
+        tag_ids=[int(t2["id"])],
+    )
+    assert m2["tag_client_ids"] == ["t-idemp-1"]
+
+
+def test_update_memo_tags_only_replaces_tags_and_bumps_updated_at(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    ticks = count()
+    monkeypatch.setattr(
+        database_module, "utc_now_iso",
+        lambda: f"2026-09-18T04:20:{next(ticks):02d}.000Z",
+    )
+    t1 = db.upsert_tag(client_id="t-u1", name="旧标签")
+    t2 = db.upsert_tag(client_id="t-u2", name="新标签")
+    m = db.upsert_memo(
+        client_id="m-u", content="内容", occurred_at="2026-09-18T04:00:00.000Z",
+        tag_ids=[int(t1["id"])],
+    )
+    old_updated = m["updated_at"]
+
+    # 只传 tag_ids：整体替换，updated_at 变大
+    updated = db.update_memo(int(m["id"]), tag_ids=[int(t2["id"])])
+    assert updated["tag_client_ids"] == ["t-u2"]
+    assert updated["updated_at"] > old_updated
+
+
+def test_legacy_database_without_tags_table_compatibility(tmp_path):
+    # 旧库兼容：用一个已有 memos 表、没有 tags 表的库打开 Database(path)，
+    # 新表被建好，旧 memo 返回 tag_client_ids == []；再打开一次也不报错
+    db_file = str(tmp_path / "legacy.db")
+    conn = sqlite3.connect(db_file)
+    conn.execute("""
+        CREATE TABLE memos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id TEXT NOT NULL UNIQUE,
+            content TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            images_json TEXT NOT NULL DEFAULT '[]',
+            source TEXT NOT NULL DEFAULT 'app',
+            latitude REAL,
+            longitude REAL,
+            place_name TEXT
+        )
+    """)
+    conn.execute(
+        "INSERT INTO memos (client_id, content, occurred_at, created_at, updated_at) "
+        "VALUES ('old-1', '旧数据', '2026-09-18T04:00:00.000Z', '2026-09-18T04:00:00.000Z', '2026-09-18T04:00:00.000Z')"
+    )
+    conn.commit()
+    conn.close()
+
+    # 打开 Database(path)
+    db1 = Database(db_file)
+    memo = db1.get_memo(1)
+    assert memo is not None
+    assert memo["tag_client_ids"] == []
+
+    # 再打开一次也不报错
+    db2 = Database(db_file)
+    memo2 = db2.get_memo(1)
+    assert memo2 is not None
+    assert memo2["tag_client_ids"] == []
 
 
 def test_list_memos_after_pagination_with_equal_updated_at_is_gapless(tmp_path, monkeypatch):
@@ -325,6 +443,21 @@ def test_get_today_memos_for_prompt_omits_location_fields(tmp_path, monkeypatch)
     assert "longitude" not in memos[0]
     assert "place_name" not in memos[0]
     assert memos[0]["content"] == "在公园散步"
+
+
+def test_get_today_memos_for_prompt_omits_tag_client_ids(tmp_path, monkeypatch):
+    monkeypatch.setattr(timezone_state, "get_timezone", lambda: "UTC")
+    db = _db(tmp_path)
+    t = db.upsert_tag(client_id="t-prompt", name="日记")
+    db.upsert_memo(
+        client_id="m-tag", content="写了一篇日记", occurred_at="2026-09-18T05:30:00.000Z",
+        tag_ids=[int(t["id"])],
+    )
+    now = datetime(2026, 9, 18, 10, 0, 0)
+    memos = get_today_memos_for_prompt(db, now=now)
+    assert len(memos) == 1
+    assert "tag_client_ids" not in memos[0]
+    assert memos[0]["content"] == "写了一篇日记"
 
 
 # ────────────────────────────────────────────────────────────────
@@ -593,6 +726,150 @@ class MemosApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(match["latitude"], -33.9173)
         self.assertEqual(match["longitude"], 151.2313)
         self.assertEqual(match["place_name"], "Kensington")
+
+    async def test_post_memo_with_and_without_tags(self):
+        # 先建一个标签
+        await self.client.post(
+            "/api/tags",
+            json={"client_id": "tag-http-1", "name": "标签1"},
+            headers={"X-API-Key": TEST_KEY},
+        )
+        # 带 tag_client_ids 新建
+        res1 = await self._post_memo(client_id="m-tag-http", tag_client_ids=["tag-http-1"])
+        self.assertEqual(res1.status_code, 200)
+        self.assertEqual(res1.json()["tag_client_ids"], ["tag-http-1"])
+
+        # 不带 tag_client_ids 新建
+        res2 = await self._post_memo(client_id="m-no-tag")
+        self.assertEqual(res2.status_code, 200)
+        self.assertEqual(res2.json()["tag_client_ids"], [])
+
+    async def test_post_memo_with_nonexistent_tag_returns_400(self):
+        res = await self._post_memo(client_id="m-bad-tag", tag_client_ids=["nonexistent-tag"])
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("nonexistent-tag", res.json()["detail"])
+
+    async def test_post_memo_ignores_deleted_tag(self):
+        for cid, name in (("tag-live", "还在"), ("tag-to-del", "将被删")):
+            await self.client.post(
+                "/api/tags", json={"client_id": cid, "name": name},
+                headers={"X-API-Key": TEST_KEY},
+            )
+        await self.client.delete("/api/tags/tag-to-del", headers={"X-API-Key": TEST_KEY})
+        res = await self._post_memo(client_id="m-del-tag", tag_client_ids=["tag-live", "tag-to-del"])
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["tag_client_ids"], ["tag-live"])
+
+    async def test_retry_post_after_tag_deleted_returns_existing_memo(self):
+        """首次 POST 已写入但响应丢失，重试前标签在别处被删：重试必须成功，不能卡住同步队列。"""
+        await self.client.post(
+            "/api/tags", json={"client_id": "tag-retry", "name": "重试"},
+            headers={"X-API-Key": TEST_KEY},
+        )
+        first = (await self._post_memo(client_id="m-retry", tag_client_ids=["tag-retry"])).json()
+        await self.client.delete("/api/tags/tag-retry", headers={"X-API-Key": TEST_KEY})
+
+        retry = await self._post_memo(client_id="m-retry", tag_client_ids=["tag-retry"])
+        self.assertEqual(retry.status_code, 200)
+        self.assertEqual(retry.json()["id"], first["id"])
+        self.assertEqual(retry.json()["tag_client_ids"], [])
+
+    async def test_patch_memo_ignores_deleted_tag(self):
+        await self.client.post(
+            "/api/tags", json={"client_id": "tag-patch-del", "name": "离线时被删"},
+            headers={"X-API-Key": TEST_KEY},
+        )
+        await self.client.delete("/api/tags/tag-patch-del", headers={"X-API-Key": TEST_KEY})
+        created = (await self._post_memo(client_id="m-patch-del")).json()
+        res = await self.client.patch(
+            f"/api/memos/{created['id']}",
+            json={"tag_client_ids": ["tag-patch-del"]},
+            headers={"X-API-Key": TEST_KEY},
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["tag_client_ids"], [])
+
+    async def test_tag_client_ids_shape_validation(self):
+        for bad in (None, "tag-a", [1], ["ok", None]):
+            res = await self._post_memo(client_id="m-shape", tag_client_ids=bad)
+            self.assertEqual(res.status_code, 400, bad)
+        too_many = [f"t{i}" for i in range(21)]
+        res = await self._post_memo(client_id="m-too-many", tag_client_ids=too_many)
+        self.assertEqual(res.status_code, 400)
+
+    async def test_patch_memo_clear_tags_only(self):
+        await self.client.post(
+            "/api/tags",
+            json={"client_id": "tag-clear", "name": "待清空"},
+            headers={"X-API-Key": TEST_KEY},
+        )
+        created = (await self._post_memo(client_id="m-clear-tags", tag_client_ids=["tag-clear"])).json()
+        self.assertEqual(created["tag_client_ids"], ["tag-clear"])
+
+        # 只发送 {"tag_client_ids": []} → 200，标签被清空，updated_at 变大
+        response = await self.client.patch(
+            f"/api/memos/{created['id']}",
+            json={"tag_client_ids": []},
+            headers={"X-API-Key": TEST_KEY},
+        )
+        self.assertEqual(response.status_code, 200)
+        patched = response.json()
+        self.assertEqual(patched["tag_client_ids"], [])
+        self.assertGreater(patched["updated_at"], created["updated_at"])
+
+    async def test_patch_memo_content_only_preserves_tags(self):
+        await self.client.post(
+            "/api/tags",
+            json={"client_id": "tag-keep", "name": "保持"},
+            headers={"X-API-Key": TEST_KEY},
+        )
+        created = (await self._post_memo(client_id="m-keep-tags", tag_client_ids=["tag-keep"])).json()
+
+        response = await self.client.patch(
+            f"/api/memos/{created['id']}",
+            json={"content": "改内容"},
+            headers={"X-API-Key": TEST_KEY},
+        )
+        self.assertEqual(response.status_code, 200)
+        patched = response.json()
+        self.assertEqual(patched["content"], "改内容")
+        self.assertEqual(patched["tag_client_ids"], ["tag-keep"])
+
+    async def test_get_memos_incremental_includes_tag_client_ids(self):
+        await self.client.post(
+            "/api/tags",
+            json={"client_id": "tag-inc", "name": "增量"},
+            headers={"X-API-Key": TEST_KEY},
+        )
+        await self._post_memo(client_id="m-inc-tag", tag_client_ids=["tag-inc"])
+        response = await self.client.get("/api/memos", headers={"X-API-Key": TEST_KEY})
+        self.assertEqual(response.status_code, 200)
+        items = response.json()["items"]
+        match = next(item for item in items if item["client_id"] == "m-inc-tag")
+        self.assertEqual(match["tag_client_ids"], ["tag-inc"])
+
+    async def test_incremental_sync_after_tag_soft_deleted(self):
+        # 删除一个标签之后，用删除前的 cursor 增量拉取，能拉到挂过这个标签的 memo，而且里面已经没有这个标签
+        await self.client.post(
+            "/api/tags",
+            json={"client_id": "tag-sync-del", "name": "拉取删标签"},
+            headers={"X-API-Key": TEST_KEY},
+        )
+        await self._post_memo(client_id="m-sync-del", tag_client_ids=["tag-sync-del"])
+        # 获取当前的 cursor
+        res_before = await self.client.get("/api/memos", headers={"X-API-Key": TEST_KEY})
+        cursor_before = res_before.json()["next_cursor"]
+
+        # 删除标签
+        await self.client.delete("/api/tags/tag-sync-del", headers={"X-API-Key": TEST_KEY})
+
+        # 用删除前的 cursor 增量拉取
+        res_after = await self.client.get(f"/api/memos?cursor={cursor_before}", headers={"X-API-Key": TEST_KEY})
+        self.assertEqual(res_after.status_code, 200)
+        items_after = res_after.json()["items"]
+        match = next((item for item in items_after if item["client_id"] == "m-sync-del"), None)
+        self.assertIsNotNone(match)
+        self.assertEqual(match["tag_client_ids"], [])
 
 
 if __name__ == "__main__":

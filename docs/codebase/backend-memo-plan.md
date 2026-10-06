@@ -48,6 +48,27 @@ CREATE TABLE IF NOT EXISTS memos (
 
 CREATE INDEX IF NOT EXISTS idx_memos_sync ON memos(updated_at, id);
 CREATE INDEX IF NOT EXISTS idx_memos_occurred ON memos(occurred_at) WHERE deleted_at IS NULL;
+
+-- 结构化 memo 标签。对外一律用 client_id 关联，内部用自增 id。最多两层。
+CREATE TABLE IF NOT EXISTS tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id TEXT NOT NULL UNIQUE,       -- App 生成的 UUID
+    name TEXT NOT NULL,
+    parent_id INTEGER,                    -- tags.id；NULL = 一级标签。最多两层
+    color TEXT,                           -- "#RRGGBB"；NULL = App 自己从调色板选
+    is_timed INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT,                      -- 计时起点，UTC 固定格式；非计时标签为 NULL
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,             -- 任何修改（含软删除）都要更新
+    deleted_at TEXT                       -- 软删除；NULL = 未删除
+);
+
+CREATE TABLE IF NOT EXISTS memo_tags (
+    memo_id INTEGER NOT NULL,             -- memos.id
+    tag_id INTEGER NOT NULL,              -- tags.id
+    PRIMARY KEY (memo_id, tag_id)
+);
+CREATE INDEX IF NOT EXISTS idx_memo_tags_tag ON memo_tags(tag_id);
 ```
 
 ## 2. 时间约定
@@ -108,12 +129,14 @@ def _fmt(dt: datetime) -> str:
   "updated_at": "2026-09-18T04:21:03.120Z",
   "deleted_at": null,
   "images": [],
-  "source": "app"
+  "source": "app",
+  "tag_client_ids": ["6F1C..."]
 }
 ```
 
 - `id` 以**字符串**返回（`str(row["id"])`），因为 App 的 `MemoDTO.id` 是 `String`，返回整数会解码失败。路径参数仍按 `int` 接收。
 - `images` 由 `images_json` 反序列化。
+- `tag_client_ids` 包含所有关联且未删除标签的 `client_id`。
 
 ### `GET /api/memos?cursor=<opaque>&limit=200`
 
@@ -136,20 +159,22 @@ def _fmt(dt: datetime) -> str:
 
 ### `POST /api/memos`
 
-body：`{client_id?, content, occurred_at, images?, source?, latitude?, longitude?, place_name?}`
+body：`{client_id?, content, occurred_at, images?, source?, latitude?, longitude?, place_name?, tag_client_ids?}`
 
 - `content` 去掉首尾空白后为空 → 400
 - `occurred_at` 缺失或不带时区 → 400
 - `client_id` 缺失 → 后端生成 uuid4
 - 地点字段（`latitude`, `longitude`, `place_name`）作为整体处理，不注入 AI；经纬度为 null 时 `place_name` 强制为 null
+- `tag_client_ids` 可选，字符串数组（最多 20 个，去重）；引用不存在的标签 → 400；引用已软删除的标签静默忽略（App 的 pushPending() 遇错会中断整轮同步，离线期间或重试时标签可能已在别处被删，不能让这条 memo 卡住）；重复 client_id 时保持首次写入不变
 - 返回完整 Memo（200）。重复的 `client_id` 返回已有那条，**不**覆盖内容。
 
 ### `PATCH /api/memos/{id}`
 
-body：`{content?, occurred_at?, images?, latitude?, longitude?, place_name?}`，只更新出现的字段。
+body：`{content?, occurred_at?, images?, latitude?, longitude?, place_name?, tag_client_ids?}`，只更新出现的字段。
 
 - 行不存在或已软删除 → 404
 - 地点三个字段作为整体处理；传 null 表示清空；不注入 AI
+- `tag_client_ids` 传空数组表示清空标签；传标签 client_id 数组整体替换（校验规则同 POST，已软删除的标签被忽略）；未传表示不修改
 - 返回更新后的完整 Memo，`updated_at` 已更新
 
 ### `DELETE /api/memos/{id}`
