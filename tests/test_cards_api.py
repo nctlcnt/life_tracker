@@ -25,8 +25,10 @@ CHANNEL = "123"
 
 
 class Clock:
+    # 接口自己构造 CardService，用的是真实时间。测试里写数据的这一侧也从真实时间
+    # 出发，否则写进去的过期时刻会落在过去，卡片一进列表就是 faded。
     def __init__(self):
-        self.now = datetime(2026, 9, 27, 10, 0, tzinfo=timezone.utc)
+        self.now = datetime.now(timezone.utc)
 
     def __call__(self):
         return self.now
