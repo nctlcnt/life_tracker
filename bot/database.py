@@ -1638,6 +1638,9 @@ class Database:
             if msg:
                 msg["id"] = item["id"]
                 msg["created_at"] = item["created_at"]
+                # 卡片归属和被回复的消息：窗口装配用它们加卡片名和末尾引用。
+                msg["card_id"] = item.get("card_id")
+                msg["reply_to_message_id"] = item.get("reply_to_message_id")
                 messages.append(msg)
         return messages
 
@@ -2536,6 +2539,151 @@ class Database:
             raise
         finally:
             conn.close()
+
+    def get_card_labels(self, card_ids) -> dict:
+        """卡片在上下文里的名字：来源类型 + 同类型内的序号，例如 `check_in3`。
+
+        排序只在 active 卡片里做。pending 卡片会被 purge_expired_pending_cards
+        整行删掉，如果把它们也算进序号，那么删掉一张早期未回复的 check_in
+        之后，后面每一张卡片的名字都会往前挪一位，同一张卡片今天叫 check_in3、
+        明天就变成 check_in2。而 active 卡片不会被删除，并且只有 active 卡片
+        的消息才会进入 conversation_messages，正好是需要名字的那一批。
+        """
+        ids = sorted({int(c) for c in card_ids if c is not None})
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                f"""
+                WITH ranked AS (
+                    SELECT id, source_type,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY source_type ORDER BY id
+                           ) AS seq
+                    FROM conversation_cards
+                    WHERE status = 'active'
+                )
+                SELECT id, source_type, seq FROM ranked WHERE id IN ({marks})
+                """,
+                ids,
+            ).fetchall()
+            return {int(r["id"]): f"{r['source_type']}{int(r['seq'])}" for r in rows}
+        finally:
+            conn.close()
+
+    def list_active_cards(self, channel_id: str | None, limit: int = 25) -> list[dict]:
+        """活跃卡片，最近有对话的排在前面。
+
+        channel_id 传 None 表示不限频道：API 那边在没有配置 Discord 频道时会这样调。
+        """
+        where = "status = 'active'"
+        params: list = []
+        if channel_id is not None:
+            where += " AND channel_id = ?"
+            params.append(str(channel_id))
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                f"SELECT * FROM conversation_cards WHERE {where} "
+                "ORDER BY last_active_at DESC, id DESC LIMIT ?",
+                [*params, max(int(limit), 0)],
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def count_card_messages(self, card_ids) -> dict:
+        """一批卡片各自有多少条消息进了对话历史。一次查询，不按卡片逐条数。"""
+        ids = sorted({int(c) for c in card_ids if c is not None})
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                f"SELECT card_id, COUNT(*) AS n FROM conversation_messages "
+                f"WHERE card_id IN ({marks}) GROUP BY card_id",
+                ids,
+            ).fetchall()
+            return {int(r["card_id"]): int(r["n"]) for r in rows}
+        finally:
+            conn.close()
+
+    def list_card_messages(self, card_id: int, limit: int = 200) -> list[dict]:
+        """一张卡片里的消息原文，按 id 正序，给 App 显示用。
+
+        刻意不走 _to_ai_message：那条路径是为模型准备的，会加上时间前缀，并且
+        把用户消息换成 metadata.current_content（里面还带着 `[回复 …]` 引用块）。
+        界面要显示的是用户真正打出来的那句话，两种表示不能混用。
+        """
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT id, role, content, created_at, discord_message_id, "
+                "reply_to_message_id FROM conversation_messages "
+                "WHERE card_id = ? ORDER BY id ASC LIMIT ?",
+                (int(card_id), max(int(limit), 0)),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def set_card_summary(self, card_id: int, summary: str) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE conversation_cards SET summary = ? WHERE id = ?",
+            (summary, int(card_id)),
+        )
+        conn.commit()
+        conn.close()
+
+    def find_conversation_message_by_discord_id(self, discord_message_id: str) -> dict | None:
+        """按 Discord 消息 id 取一条已经进入对话历史的消息（含它的卡片归属）。"""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT id, card_id, role, content, created_at, metadata_json "
+                "FROM conversation_messages WHERE discord_message_id = ?",
+                (str(discord_message_id),),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def get_card_tail_messages(self, card_id: int, limit: int = 4,
+                               upto_id: int | None = None) -> list[dict]:
+        """某张卡片最后几条已进入历史的消息，按 id 正序返回，给末尾引用用。"""
+        conn = self._get_conn()
+        where = "card_id = ?"
+        params: list = [int(card_id)]
+        if upto_id is not None:
+            where += " AND id <= ?"
+            params.append(int(upto_id))
+        try:
+            rows = conn.execute(
+                f"SELECT * FROM conversation_messages WHERE {where} "
+                "ORDER BY id DESC LIMIT ?",
+                [*params, max(int(limit), 0)],
+            ).fetchall()
+        finally:
+            conn.close()
+        messages = []
+        for row in reversed(rows):
+            item = dict(row)
+            if item.get("metadata_json"):
+                try:
+                    item["metadata"] = json.loads(item["metadata_json"])
+                except json.JSONDecodeError:
+                    item["metadata"] = None
+            else:
+                item["metadata"] = None
+            msg = self._to_ai_message(item)
+            if msg:
+                msg["id"] = item["id"]
+                messages.append(msg)
+        return messages
 
     # ============ 应用状态 KV ============
 
