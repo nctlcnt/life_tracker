@@ -1,8 +1,8 @@
 """卡片一句话总结。
 
-/conversation list 和 switch 要在 Discord autocomplete 里显示每张卡片在聊什么，
-而 autocomplete 必须在 3 秒内返回，来不及现场调模型。所以总结在卡片有新对话之后
-在后台生成，写进 conversation_cards.summary，打开列表时只读这一列。
+App 的卡片列表要显示每张卡片在聊什么，check-in thread 第一次有总结时也会用它改名。
+打开列表时不能现场调模型，所以总结在卡片有新对话之后在后台生成，写进
+conversation_cards.summary，读的时候只读这一列。
 
 和 bot/memory/compact.py 的分工一样：规则和读写在 bot/cards.py，这里只负责
 「调模型生成一句话」这件事，失败永远不影响聊天本身。
@@ -19,6 +19,10 @@ SUMMARY_MAX_CHARS = 60
 SUMMARY_REQUEST_TIMEOUT_SECONDS = 20
 # 生成总结时最多读卡片里的多少条消息（一句话总结不需要读全）
 SUMMARY_MESSAGE_LIMIT = 12
+
+# 总结写入之后要通知的回调：async fn(card_id, summary, previous_summary)。
+# Discord bot 用它给 thread 改名；回调失败只记日志。
+_listeners: list = []
 
 # card_id → 进行中的生成任务，避免同一张卡片连发几条消息时重复调用模型
 _inflight: dict[int, asyncio.Task] = {}
@@ -41,6 +45,20 @@ def _build_prompt(messages: list[dict]) -> str:
         "如果内容太少看不出主题，就直接概括已经出现的那句话。\n\n"
         f"{transcript}"
     )
+
+
+def add_summary_listener(listener) -> None:
+    """注册「总结更新之后」的回调。同一个回调只注册一次（bot 重连会再调 setup_hook）。"""
+    if listener not in _listeners:
+        _listeners.append(listener)
+
+
+async def _notify(card_id: int, summary: str, previous: str | None) -> None:
+    for listener in list(_listeners):
+        try:
+            await listener(card_id, summary, previous)
+        except Exception as e:
+            logger.warning(f"⚠️ 卡片 #{card_id} 总结回调失败: {type(e).__name__}: {e}")
 
 
 async def refresh_card_summary(db, card_id: int) -> bool:
@@ -71,8 +89,11 @@ async def refresh_card_summary(db, card_id: int) -> bool:
         return False
     if len(summary) > SUMMARY_MAX_CHARS:
         summary = summary[:SUMMARY_MAX_CHARS]
+    card = db.get_card(card_id)
+    previous = card.get("summary") if card else None
     db.set_card_summary(card_id, summary)
     logger.info(f"🗂️ 卡片 #{card_id} 总结已更新：{summary}")
+    await _notify(card_id, summary, previous)
     return True
 
 

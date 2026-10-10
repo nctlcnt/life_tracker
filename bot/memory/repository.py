@@ -22,7 +22,8 @@ class MemoryRepository(Protocol):
 
     def get_ai_messages_after(self, channel_id: str, after_id: int,
                               limit: int | None = None,
-                              upto_id: int | None = None) -> list[dict]: ...
+                              upto_id: int | None = None,
+                              card_id: int | None = None) -> list[dict]: ...
 
     def get_state(self, key: str) -> str | None: ...
 

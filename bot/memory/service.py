@@ -109,6 +109,13 @@ class MemoryService:
             schedule_compact(self.repository, str(channel_id), window)
         return window
 
+    def card_window(self, channel_id: str, card_id: int, *,
+                    max_tokens: int | None = None):
+        """check-in thread 的窗口：频道摘要 + 卡片自己的消息，见 assemble_card_window。"""
+        from bot.memory.context_window import assemble_card_window
+        return assemble_card_window(self.repository, str(channel_id), int(card_id),
+                                    max_tokens=max_tokens)
+
     # Semantic recall
     async def recall(self, query: str, channel_id: str, *, limit: int = 5,
                      exclude_recent: int = 20) -> list[dict]:

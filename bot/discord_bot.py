@@ -3,6 +3,7 @@ Discord 机器人模块
 负责接收和发送 Discord 消息，注册斜杠命令
 """
 import hashlib
+import json
 import re
 import discord
 from dataclasses import dataclass
@@ -16,8 +17,14 @@ from bot.async_pipeline import (
     OutboundQueue,
 )
 from bot.ai_engine import chat, simple_completion
-from bot.card_summary import schedule_summary
-from bot.cards import CardService, is_proactive, unique_source_id
+from bot.card_summary import add_summary_listener, schedule_summary
+from bot.cards import (
+    REPLY_SOURCE_TYPES,
+    CardService,
+    is_proactive,
+    opens_thread,
+    unique_source_id,
+)
 from bot.memory import MemoryService
 from bot.weather import get_weather_brief, get_weather_detailed, geocode_address
 from bot.prompts import get_prompt_template
@@ -34,6 +41,61 @@ _LOCALHOST_CALLBACK_RE = re.compile(r"https?://localhost:\d+/\?\S*")
 class _CalendarAuthSession:
     flow: object
     created_at: datetime
+
+
+# check-in thread 的自动归档时长（分钟，Discord 只接受 60/1440/4320/10080）。
+# 没人回的 check-in 第二天就收起来，回复过的保持 3 天，和卡片过期时间一致。
+PENDING_THREAD_ARCHIVE_MINUTES = 1440
+ACTIVE_THREAD_ARCHIVE_MINUTES = 4320
+THREAD_NAME_MAX_CHARS = 40
+THREAD_NAME_FALLBACK = "check-in"
+
+
+def _home_channel_id(channel) -> int:
+    """消息在 DB 里记在哪个频道下：thread 里的消息归到它所在的频道。
+
+    compact、工具批次、长期记忆和语义检索都按频道工作，thread 里的消息记在主频道
+    下面，它们才看得到；thread 只靠 card_id 区分，见 bot/cards.py。
+    """
+    if isinstance(channel, discord.Thread):
+        return channel.parent_id
+    return channel.id
+
+
+def _discord_channel_metadata(channel) -> dict:
+    """消息实际所在的 Discord 频道和记录的频道不同时（thread），把真实的 id 记下来。
+
+    投递 reaction 时要靠它找到消息真正所在的 thread。
+    """
+    if isinstance(channel, discord.Thread):
+        return {"discord_channel_id": str(channel.id)}
+    return {}
+
+
+def _thread_name(text: str | None) -> str:
+    """thread 的名字：第一行非空文字，截到 THREAD_NAME_MAX_CHARS。Discord 不接受空名字。"""
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line:
+            if len(line) > THREAD_NAME_MAX_CHARS:
+                line = line[:THREAD_NAME_MAX_CHARS] + "…"
+            return line
+    return THREAD_NAME_FALLBACK
+
+
+async def _fetch_thread(anchor, thread_id: str | int):
+    """按 id 取 thread。缓存里没有（比如已经归档）时去 API 取；取不到返回 None。"""
+    guild = getattr(anchor, "guild", None)
+    if guild is None:
+        return None
+    thread = guild.get_thread(int(thread_id))
+    if thread is None:
+        try:
+            thread = await guild.fetch_channel(int(thread_id))
+        except discord.HTTPException as e:
+            logger.warning(f"⚠️ 取不到 thread {thread_id}: {e}")
+            return None
+    return thread if isinstance(thread, discord.Thread) else None
 
 
 def _is_rate_limited_error(exc: Exception) -> bool:
@@ -100,18 +162,18 @@ class LifeTrackerBot(commands.Bot):
     async def setup_hook(self):
         """注册斜杠命令并同步到 Discord"""
         self.tree.add_command(_calendar_group(self))
-        self.tree.add_command(_conversation_group(self))
         self.tree.add_command(_weather_command(self))
         self.tree.add_command(_tz_command(self))
         await self.tree.sync()
         logger.info("✅ 斜杠命令已同步")
+        add_summary_listener(self._rename_thread_after_summary)
 
     async def on_ready(self):
         logger.info(f"✅ Discord Bot 已上线: {self.user} → channel {config.CHANNEL_ID}")
 
     async def on_typing(self, channel, user, when):
-        """记录目标用户在目标频道的 typing 时刻，供随机轮询判断是否让路。"""
-        if channel.id != config.CHANNEL_ID:
+        """记录目标用户在目标频道（含其中的 thread）的 typing 时刻，供随机轮询判断是否让路。"""
+        if _home_channel_id(channel) != config.CHANNEL_ID:
             return
         if config.ALLOWED_USER_ID and user.id != config.ALLOWED_USER_ID:
             return
@@ -129,16 +191,20 @@ class LifeTrackerBot(commands.Bot):
         if message.author == self.user:
             return
 
+        # check-in thread 里的消息按它所在的频道判断
+        thread = message.channel if isinstance(message.channel, discord.Thread) else None
+        home_id = _home_channel_id(message.channel)
+
         # 只响应指定用户
         if config.ALLOWED_USER_ID and message.author.id != config.ALLOWED_USER_ID:
-            if message.channel.id == config.CHANNEL_ID:
+            if home_id == config.CHANNEL_ID:
                 logger.info(
                     f"⏭️ 忽略消息：author_id={message.author.id} != allowed_user_id={config.ALLOWED_USER_ID}"
                 )
             return
 
         # 只响应配置里指定的 channel（prod / staging 各自配置不同 id，多 bot 共存不会串台）
-        if message.channel.id != config.CHANNEL_ID:
+        if home_id != config.CHANNEL_ID:
             logger.info(
                 f"⏭️ 忽略消息：channel_id={message.channel.id} != configured_channel_id={config.CHANNEL_ID}"
             )
@@ -173,26 +239,45 @@ class LifeTrackerBot(commands.Bot):
         # 当前用户消息（带时间戳前缀，和历史消息格式一致）
         current_content = f"[{timestamp}] {content_to_send}"
 
-        # 先确定这条消息属于哪张卡片。reply 的是一张 pending 卡片时，这一步会把
-        # 卡片里 AI 的消息先写进对话历史，所以必须在写入用户消息之前完成。
+        # 先确定这条消息属于哪张卡片。reply 的是一张 pending 卡片、或者在 check-in
+        # thread 里第一次说话时，这一步会把卡片里 AI 的消息先写进对话历史，所以
+        # 必须在写入用户消息之前完成。主频道的普通聊天不归属任何卡片。
         reply_to_id = (
             str(message.reference.message_id)
             if message.reference and message.reference.message_id
             else None
         )
-        card_kwargs = {}
+        assignment = None
         try:
-            card_kwargs["card_id"] = self.cards.card_for_user_message(
-                str(message.channel.id), reply_to_id)
+            assignment = self.cards.assign_user_message(
+                str(home_id), reply_to_id,
+                thread_id=str(thread.id) if thread is not None else None)
         except Exception as e:
             # 卡片出错不能挡住聊天本身：消息照常写入，只是不归属任何卡片
             logger.exception(f"⚠️ 卡片归属失败，消息不带卡片写入: {e}")
+        card_kwargs = {"card_id": assignment.card_id} if assignment else {}
+
+        # 卡片有 thread 时，回应发在 thread 里：在 thread 里说话自然如此；在主频道
+        # reply 一条 check-in 时，bot 也去它的 thread 里接着聊。
+        reply_target = message.channel
+        thread_card_id = None
+        if assignment is not None and assignment.thread_id is not None:
+            thread_card_id = assignment.card_id
+            if thread is not None and str(thread.id) == assignment.thread_id:
+                reply_target = thread
+            else:
+                reply_target = (
+                    await _fetch_thread(message.channel, assignment.thread_id)
+                    or message.channel)
+            await self._keep_thread_open(reply_target)
+            if assignment.created and thread is not None:
+                await self._ingest_thread_starter(thread, assignment.card_id)
 
         # 备份到 DB（messages 表只作备份，AI 上下文走 DB conversation log）
         self.db.add_message("user", current_content)
         row_id = await self.memory.ingest_message(
             discord_message_id=str(message.id),
-            channel_id=str(message.channel.id),
+            channel_id=str(home_id),
             guild_id=str(message.guild.id) if message.guild else None,
             author_id=str(message.author.id),
             author_name=str(message.author),
@@ -204,6 +289,7 @@ class LifeTrackerBot(commands.Bot):
                 "content_to_send": content_to_send,
                 "current_content": current_content,
                 "message_type": str(message.type),
+                **_discord_channel_metadata(message.channel),
             },
             **card_kwargs,
         )
@@ -214,19 +300,20 @@ class LifeTrackerBot(commands.Bot):
 
         if row_id is not None and self.batch_coordinator is not None:
             self.batch_coordinator.notify_user_message(
-                str(message.channel.id), row_id
+                str(home_id), row_id
             )
         try:
             # 当前消息先持久化，再进入共享 gate 读取快照并生成。主动消息必须
             # 等这段结束后才能读取自己的上下文，因此不能抢在聊天回复前入队。
             async with self.generation_gate:
                 try:
-                    await self._generate_chat_response(message)
+                    await self._generate_chat_response(
+                        message, target=reply_target, card_id=thread_card_id)
                 except Exception as e:
                     error_msg = f"❌ {type(e).__name__}: {e}"
                     logger.exception(error_msg)
                     await self._send_or_enqueue_message(
-                        message.channel,
+                        reply_target,
                         error_msg[:2000],
                         source_type="chat_error",
                         source_id=str(message.id),
@@ -237,10 +324,21 @@ class LifeTrackerBot(commands.Bot):
             if self.on_ai_call_done:
                 self.on_ai_call_done()
 
-    async def _generate_chat_response(self, message) -> None:
-        """Generate one user-message response while the caller holds the gate."""
+    async def _generate_chat_response(self, message, *, target=None,
+                                      card_id: int | None = None) -> None:
+        """Generate one user-message response while the caller holds the gate.
+
+        target：回应发到哪里，缺省是消息所在的频道。
+        card_id：在 check-in thread 里聊时传入，上下文换成「频道摘要 + 这张卡片」，
+          不带主频道的聊天原文。
+        """
+        target = target if target is not None else message.channel
+        home_id = str(_home_channel_id(message.channel))
         # AI 上下文走 token 窗口（LT-135）：摘要 + 明文尾巴。
-        window = self.memory.context_window(str(message.channel.id))
+        if card_id is not None:
+            window = self.memory.card_window(home_id, card_id)
+        else:
+            window = self.memory.context_window(home_id)
         ai_messages = window.messages
         delivery_index = 0
 
@@ -248,9 +346,7 @@ class LifeTrackerBot(commands.Bot):
             nonlocal delivery_index
             if "[SILENT]" in text:
                 if self.batch_coordinator is not None:
-                    outcome = self.batch_coordinator.force(
-                        str(message.channel.id)
-                    )
+                    outcome = self.batch_coordinator.force(home_id)
                     logger.info(
                         "🔇 chat [SILENT] 强制工具批次: %s",
                         outcome.get("action"),
@@ -258,7 +354,7 @@ class LifeTrackerBot(commands.Bot):
                 return
             delivery_index += 1
             await self._send_or_enqueue_message(
-                message.channel,
+                target,
                 text,
                 source_type="chat",
                 source_id=str(message.id),
@@ -284,7 +380,7 @@ class LifeTrackerBot(commands.Bot):
             except Exception as react_err:
                 logger.warning(f"⚠️ 无法添加反馈 emoji: {react_err}")
 
-        if self._is_typing_cooling_down(message.channel.id):
+        if self._is_typing_cooling_down(target.id):
             # typing 限流冷却期，跳过 typing 直接 chat
             await chat(
                 self.db, ai_messages, send_callback=send_reply,
@@ -294,14 +390,14 @@ class LifeTrackerBot(commands.Bot):
             )
             return
 
-        typing_cm = message.channel.typing()
+        typing_cm = target.typing()
         try:
             await typing_cm.__aenter__()
         except (discord.HTTPException, discord.RateLimited) as e:
             if not _is_rate_limited_error(e):
                 raise
             self._mark_typing_cooldown(
-                message.channel.id, f"Discord typing 入口限流: {e}")
+                target.id, f"Discord typing 入口限流: {e}")
             await chat(
                 self.db, ai_messages, send_callback=send_reply,
                 tool_callback=on_tool_call, memory_service=self.memory,
@@ -426,6 +522,10 @@ class LifeTrackerBot(commands.Bot):
             )
         if delivery["kind"] == "reaction":
             target_id = int(delivery["target_discord_message_id"])
+            # 工具批次按频道投递，但被加反应的消息可能在 check-in thread 里
+            actual = self._actual_discord_channel_id(str(target_id))
+            if actual is not None and actual != str(channel.id):
+                channel = await self._resolve_channel(actual)
             if hasattr(channel, "get_partial_message"):
                 target = channel.get_partial_message(target_id)
             else:
@@ -456,6 +556,88 @@ class LifeTrackerBot(commands.Bot):
             )
         except Exception as e:
             logger.warning(f"⚠️ 写入 outbound conversation log 失败: {e}")
+
+    def _actual_discord_channel_id(self, discord_message_id: str) -> str | None:
+        """一条已记录的消息实际在哪个 Discord 频道（thread）里；记录里没写就返回 None。"""
+        try:
+            row = self.db.find_conversation_message_by_discord_id(discord_message_id)
+        except Exception:
+            return None
+        if not row or not row.get("metadata_json"):
+            return None
+        try:
+            metadata = json.loads(row["metadata_json"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        value = metadata.get("discord_channel_id") if isinstance(metadata, dict) else None
+        return str(value) if value else None
+
+    async def _keep_thread_open(self, target) -> None:
+        """有人在 check-in thread 里说话之后，把自动归档时长延长到 3 天。"""
+        if not isinstance(target, discord.Thread):
+            return
+        if (target.auto_archive_duration or 0) >= ACTIVE_THREAD_ARCHIVE_MINUTES:
+            return
+        try:
+            await target.edit(auto_archive_duration=ACTIVE_THREAD_ARCHIVE_MINUTES)
+        except discord.HTTPException as e:
+            logger.warning(f"⚠️ 延长 thread {target.id} 的归档时长失败: {e}")
+
+    async def _ingest_thread_starter(self, thread, card_id: int) -> None:
+        """给新开的 thread 卡片补上起始消息，让 thread 的上下文里有「在聊哪句话」。
+
+        走到这里通常是 pending 卡片已经过期删除，或者 thread 是从别的消息上手动
+        开的。起始消息已经在对话历史里时（INSERT OR IGNORE）不会重复写入。
+        """
+        try:
+            starter = thread.starter_message
+            if starter is None and thread.parent is not None:
+                starter = await thread.parent.fetch_message(thread.id)
+        except discord.HTTPException as e:
+            logger.info(f"ℹ️ 取不到 thread {thread.id} 的起始消息: {e}")
+            return
+        if starter is None or not (starter.content or "").strip():
+            return
+        try:
+            await self.memory.ingest_message(
+                discord_message_id=str(starter.id),
+                channel_id=str(thread.parent_id),
+                guild_id=str(starter.guild.id) if starter.guild else None,
+                author_id=str(starter.author.id) if starter.author else None,
+                author_name=str(starter.author) if starter.author else None,
+                role="assistant" if starter.author == self.user else "user",
+                content=starter.content,
+                created_at=starter.created_at.isoformat(),
+                metadata={"message_type": str(starter.type), "thread_starter": True},
+                card_id=card_id,
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ 写入 thread 起始消息失败: {e}")
+
+    async def _rename_thread_after_summary(self, card_id: int, summary: str,
+                                           previous: str | None) -> None:
+        """卡片第一次有总结时，用它替换 thread 的名字（起初是 check-in 的第一句话）。
+
+        只在第一次改：Discord 对频道改名有很紧的限流（每 10 分钟 2 次），而总结
+        每来一条消息就会重新生成。
+        """
+        if previous:
+            return
+        card = self.db.get_card(card_id)
+        # 只改 bot 自己为 check-in 开的 thread；她自己开的 thread 名字是她起的
+        if card is None or not opens_thread(card["source_type"]):
+            return
+        thread_id = card.get("thread_id")
+        if not thread_id:
+            return
+        channel = self.get_channel(int(config.CHANNEL_ID)) if config.CHANNEL_ID else None
+        thread = await _fetch_thread(channel, thread_id) if channel else None
+        if thread is None:
+            return
+        try:
+            await thread.edit(name=_thread_name(summary))
+        except discord.HTTPException as e:
+            logger.warning(f"⚠️ thread {thread_id} 改名失败: {e}")
 
     async def _maybe_finish_calendar_auth(self, message: discord.Message) -> bool:
         """Consume a pasted Google OAuth localhost callback URL before it reaches AI."""
@@ -642,100 +824,6 @@ def _calendar_group(bot: LifeTrackerBot) -> app_commands.Group:
     return group
 
 
-def _card_choice_label(card: dict) -> str:
-    """autocomplete 选项的文字。Discord 限制 100 字符，超出会整条被拒。"""
-    marker = "▶ " if card.get("is_current") else ""
-    summary = (card.get("summary") or "还没有总结").strip()
-    text = f"{marker}{card['label']} · {summary}"
-    return text[:100]
-
-
-def _conversation_group(bot: LifeTrackerBot) -> app_commands.Group:
-    """/conversation — 手动管理消息卡片（开新卡片、看列表、切换）。"""
-    group = app_commands.Group(name="conversation", description="管理对话卡片")
-
-    async def card_autocomplete(
-        interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
-        # 这里不能调模型：autocomplete 必须 3 秒内返回，总结是后台预先写好的。
-        try:
-            cards = bot.cards.list_active(str(interaction.channel_id))
-        except Exception as e:
-            logger.warning(f"⚠️ 卡片 autocomplete 读取失败: {type(e).__name__}: {e}")
-            return []
-        keyword = current.lower()
-        if keyword:
-            cards = [
-                c for c in cards
-                if keyword in c["label"].lower()
-                or keyword in (c.get("summary") or "").lower()
-            ]
-        return [
-            app_commands.Choice(name=_card_choice_label(c), value=str(c["id"]))
-            for c in cards[:25]
-        ]
-
-    @group.command(name="new", description="开一张新的对话卡片，之后的消息都归到它下面")
-    async def conversation_new(interaction: discord.Interaction):
-        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
-            return
-        try:
-            card_id = bot.cards.start_new_card(str(interaction.channel_id))
-        except Exception as e:
-            await interaction.response.send_message(
-                f"⚠️ 开新卡片失败：{type(e).__name__}: {e}", ephemeral=True)
-            return
-        await interaction.response.send_message(
-            f"✅ 已经开了一张新卡片（#{card_id}），接下来的消息都记在它下面。",
-            ephemeral=True,
-        )
-
-    @group.command(name="list", description="看看现在有哪些活跃的对话卡片")
-    async def conversation_list(interaction: discord.Interaction):
-        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
-            return
-        try:
-            cards = bot.cards.list_active(str(interaction.channel_id))
-        except Exception as e:
-            await interaction.response.send_message(
-                f"⚠️ 卡片列表读取失败：{type(e).__name__}: {e}", ephemeral=True)
-            return
-        if not cards:
-            await interaction.response.send_message(
-                "现在没有活跃的卡片。直接说话或者用 `/conversation new` 开一张。",
-                ephemeral=True,
-            )
-            return
-        lines = []
-        for card in cards:
-            marker = "▶" if card["is_current"] else "　"
-            summary = (card.get("summary") or "还没有总结").strip()
-            lines.append(f"{marker} `{card['label']}` (#{card['id']}) — {summary}")
-        text = "活跃的对话卡片（▶ 是当前卡片）\n" + "\n".join(lines)
-        await interaction.response.send_message(text[:2000], ephemeral=True)
-
-    @group.command(name="switch", description="切换到另一张对话卡片")
-    @app_commands.describe(card="从列表里选一张卡片")
-    @app_commands.autocomplete(card=card_autocomplete)
-    async def conversation_switch(interaction: discord.Interaction, card: str):
-        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
-            return
-        try:
-            switched = bot.cards.switch_to(int(card))
-        except ValueError as e:
-            await interaction.response.send_message(f"⚠️ {e}", ephemeral=True)
-            return
-        except Exception as e:
-            await interaction.response.send_message(
-                f"⚠️ 切换失败：{type(e).__name__}: {e}", ephemeral=True)
-            return
-        summary = (switched.get("summary") or "还没有总结").strip()
-        await interaction.response.send_message(
-            f"✅ 已经切换到卡片 #{switched['id']} — {summary}", ephemeral=True)
-
-    return group
-
-
 _COMMON_TZS = [
     "Australia/Sydney",
     "Asia/Tokyo",
@@ -857,6 +945,9 @@ async def _send_chat_chunks(target, text: str, *,
     一次性发送整段 AI 回复，仅在超过 Discord 2000 字符上限时按长度兜底切分。
     发送期间保留 typing indicator。
     target: 任何支持 .send() 和 .typing() 的 Discord 通道对象
+
+    check-in 卡片的消息会去它的 thread：卡片已经有 thread 时直接发进去；check-in
+    的第一条消息发在频道里，然后从这条消息上开 thread，剩下的分段发进 thread。
     """
     if "[SILENT]" in text:
         return []
@@ -869,8 +960,26 @@ async def _send_chat_chunks(target, text: str, *,
     if is_proactive(source_type):
         source_id = unique_source_id(source_id)
     card_source = {"source_type": source_type, "source_id": source_id}
+    target = await _card_thread_target(target, db, source_type, source_id)
+    open_thread = (
+        opens_thread(source_type) and db is not None
+        and not isinstance(target, discord.Thread))
     sent_ids: list[str] = []
     logger.info(f"📤 准备发送 {len(chunks)} 段消息到 {type(target).__name__}（{len(text)} 字符）")
+
+    async def send_all():
+        nonlocal open_thread
+        destination = target
+        for chunk in chunks:
+            sent = await destination.send(chunk)
+            await _record_sent_chunk(db, sent, role, memory_service, **card_source)
+            sent_ids.append(str(sent.id))
+            if open_thread:
+                open_thread = False
+                thread = await _open_card_thread(sent, db, source_type, source_id)
+                if thread is not None:
+                    destination = thread
+
     if use_typing:
         typing_cm = target.typing()
         try:
@@ -882,21 +991,60 @@ async def _send_chat_chunks(target, text: str, *,
                 on_typing_rate_limited()
         else:
             try:
-                for chunk in chunks:
-                    sent = await target.send(chunk)
-                    await _record_sent_chunk(db, sent, role, memory_service, **card_source)
-                    sent_ids.append(str(sent.id))
+                await send_all()
             finally:
                 await typing_cm.__aexit__(None, None, None)
             logger.info("✅ 消息发送完成")
             return sent_ids
 
-    for chunk in chunks:
-        sent = await target.send(chunk)
-        await _record_sent_chunk(db, sent, role, memory_service, **card_source)
-        sent_ids.append(str(sent.id))
+    await send_all()
     logger.info("✅ 消息发送完成")
     return sent_ids
+
+
+async def _card_thread_target(target, db, source_type: str | None,
+                              source_id: str | None):
+    """这条消息所属的卡片已经有 thread 时，改为发进 thread；否则原样返回 target。
+
+    覆盖两类消息：同一次 check-in 的后续消息（按来源找卡片），以及对 thread 里
+    用户消息的回答、工具批次的反馈（按触发它的消息找卡片）。
+    """
+    if db is None or source_type is None or not hasattr(db, "get_card_by_source"):
+        return target
+    card = None
+    if opens_thread(source_type) and source_id:
+        card = db.get_card_by_source(source_type, source_id)
+    elif source_type in REPLY_SOURCE_TYPES:
+        card_id = db.find_reply_card_id(source_type, source_id)
+        card = db.get_card(card_id) if card_id is not None else None
+    thread_id = card.get("thread_id") if card else None
+    if not thread_id:
+        return target
+    if isinstance(target, discord.Thread) and str(target.id) == str(thread_id):
+        return target
+    return await _fetch_thread(target, thread_id) or target
+
+
+async def _open_card_thread(sent, db, source_type: str, source_id: str):
+    """从刚发出的 check-in 消息上开 thread，并记到卡片上。失败只记日志，消息照常留在频道里。"""
+    try:
+        card = db.get_card_by_source(source_type, source_id)
+    except Exception as e:
+        logger.warning(f"⚠️ 开 thread 前读取卡片失败: {e}")
+        return None
+    if card is None or card.get("thread_id"):
+        return None
+    try:
+        thread = await sent.create_thread(
+            name=_thread_name(sent.content),
+            auto_archive_duration=PENDING_THREAD_ARCHIVE_MINUTES,
+        )
+    except (discord.HTTPException, AttributeError, ValueError) as e:
+        logger.warning(f"⚠️ 给卡片 #{card['id']} 开 thread 失败，消息留在频道里: {e}")
+        return None
+    db.set_card_thread(int(card["id"]), str(thread.id))
+    logger.info(f"🧵 卡片 #{card['id']} 开了 thread {thread.id}")
+    return thread
 
 
 async def _record_sent_chunk(db: Database | None, sent: discord.Message, role: str,
@@ -906,7 +1054,7 @@ async def _record_sent_chunk(db: Database | None, sent: discord.Message, role: s
     """Persist a sent Discord message when a DB is available.
 
     带 source_type 时交给卡片规则决定去向：主动消息先进 pending 卡片，
-    回复类消息进当前卡片。不带时保持原行为，直接写进对话历史。
+    回复类消息进触发它的那条消息所在的卡片。不带时保持原行为，直接写进对话历史。
     """
     if db is None and memory_service is None:
         return
@@ -914,7 +1062,7 @@ async def _record_sent_chunk(db: Database | None, sent: discord.Message, role: s
         service = memory_service or MemoryService(db)
         message = dict(
             discord_message_id=str(sent.id),
-            channel_id=str(sent.channel.id),
+            channel_id=str(_home_channel_id(sent.channel)),
             guild_id=str(sent.guild.id) if sent.guild else None,
             author_id=str(sent.author.id) if sent.author else None,
             author_name=str(sent.author) if sent.author else None,
@@ -926,7 +1074,10 @@ async def _record_sent_chunk(db: Database | None, sent: discord.Message, role: s
                 if sent.reference and sent.reference.message_id
                 else None
             ),
-            metadata={"message_type": str(sent.type)},
+            metadata={
+                "message_type": str(sent.type),
+                **_discord_channel_metadata(sent.channel),
+            },
         )
         cards_db = db if db is not None else getattr(service, "repository", None)
         if source_type is not None and hasattr(cards_db, "create_card"):

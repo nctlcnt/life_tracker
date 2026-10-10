@@ -264,3 +264,60 @@ def assemble_window(db, channel_id: str, *,
         fold_upto_id=fold_upto_id,
         hard_trimmed=trimmed,
     )
+
+
+def assemble_card_window(db, channel_id: str, card_id: int, *,
+                         max_tokens: int | None = None) -> ContextWindow:
+    """check-in thread 的上下文：频道的 compact 摘要 + 这张卡片自己的消息。
+
+    主频道的聊天原文不进来，thread 里只拿已经整理过的那部分（摘要；记忆和
+    timeline 由 prompt 的其它段落提供）。卡片里的消息全部按原文给，即使它们
+    在主频道那边已经被折进摘要：thread 里聊的就是这件事，原话最重要。
+
+    compact 只为主频道服务，所以这里永远不标记 needs_compact，也没有末尾引用：
+    整个窗口都是同一张卡片，不需要再说明「在回复哪张卡片」。
+    """
+    channel_id = str(channel_id)
+    threshold = config.CONTEXT_COMPACT_THRESHOLD_TOKENS
+    cap = max_tokens if max_tokens else int(threshold * HARD_CAP_RATIO)
+
+    state = load_summary_state(db, channel_id)
+    summary_text = state["summary"] if state else ""
+    upto = int(state.get("upto_message_id", 0)) if state else 0
+    summary_msg = None
+    summary_tokens = 0
+    if summary_text:
+        summary_msg = {"role": "user",
+                       "content": f"{SUMMARY_LABEL}\n{summary_text}"}
+        summary_tokens = message_tokens(summary_msg["content"])
+
+    tail = db.get_ai_messages_after(channel_id, 0, card_id=int(card_id))
+    tail_tokens_each = [message_tokens(m["content"]) for m in tail]
+
+    trimmed = 0
+    total = summary_tokens + sum(tail_tokens_each)
+    start = 0
+    while start < len(tail) - 1 and total > cap:
+        total -= tail_tokens_each[start]
+        start += 1
+        trimmed += 1
+    visible_tail = tail[start:]
+    visible_tail_tokens = sum(tail_tokens_each[start:])
+
+    messages: list[dict] = []
+    if summary_msg:
+        messages.append(dict(summary_msg))
+    messages.extend({"role": m["role"], "content": m["content"]}
+                    for m in visible_tail)
+
+    return ContextWindow(
+        messages=messages,
+        summary_present=bool(summary_msg),
+        summary_tokens=summary_tokens,
+        tail_count=len(visible_tail),
+        tail_tokens=visible_tail_tokens,
+        total_tokens=summary_tokens + visible_tail_tokens,
+        upto_message_id=upto,
+        last_message_id=visible_tail[-1]["id"] if visible_tail else 0,
+        hard_trimmed=trimmed,
+    )

@@ -749,6 +749,17 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_conversation_messages_card "
             "ON conversation_messages(card_id, id)"
         )
+        # check-in 卡片对应的 Discord thread。thread 从 check-in 消息上开出来，
+        # 所以它的 id 和那条消息的 id 相同；这里单独存一列，查询时不用绕道
+        # card_pending_messages / conversation_messages。
+        try:
+            conn.execute("ALTER TABLE conversation_cards ADD COLUMN thread_id TEXT")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_cards_thread "
+            "ON conversation_cards(thread_id) WHERE thread_id IS NOT NULL"
+        )
 
         # 一次性兼容迁移：项目曾经只存在于 events.project_name。
         # 新版本改为用户手动项目表后，需要把已有历史项目注册进去，避免升级后 Project Overview 变空。
@@ -1604,13 +1615,16 @@ class Database:
 
     def get_ai_messages_after(self, channel_id: str, after_id: int,
                               limit: int | None = None,
-                              upto_id: int | None = None) -> list[dict]:
+                              upto_id: int | None = None,
+                              card_id: int | None = None) -> list[dict]:
         """取连续的 ``(after_id, upto_id]`` 会话消息，按 id 正序返回。
 
         返回元素带 id（compact 游标/冻结切片用），content 格式与
         get_recent_ai_messages 一致。缺省不截断；显式 limit 时从最老的
         未处理消息开始取，确保调用方永远拿到连续前缀，不能越过未读消息
         推进 compact cursor。
+
+        card_id 给定时只取这张卡片里的消息（check-in thread 的上下文用）。
         """
         conn = self._get_conn()
         where = "channel_id = ? AND id > ?"
@@ -1618,6 +1632,9 @@ class Database:
         if upto_id is not None:
             where += " AND id <= ?"
             params.append(int(upto_id))
+        if card_id is not None:
+            where += " AND card_id = ?"
+            params.append(int(card_id))
         sql = f"SELECT * FROM conversation_messages WHERE {where} ORDER BY id ASC"
         if limit is not None:
             sql += " LIMIT ?"
@@ -2358,7 +2375,8 @@ class Database:
         return dict(row) if row else None
 
     def create_card(self, *, channel_id: str, source_type: str, source_id: str,
-                    status: str, now: str, expires_at: str) -> int:
+                    status: str, now: str, expires_at: str,
+                    thread_id: str | None = None) -> int:
         """新建卡片；同一个 (source_type, source_id) 已存在时返回已有的 id。"""
         conn = self._get_conn()
         try:
@@ -2366,10 +2384,11 @@ class Database:
                 """
                 INSERT OR IGNORE INTO conversation_cards (
                     channel_id, source_type, source_id, status,
-                    created_at, last_active_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    created_at, last_active_at, expires_at, thread_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (str(channel_id), source_type, source_id, status, now, now, expires_at),
+                (str(channel_id), source_type, source_id, status, now, now,
+                 expires_at, str(thread_id) if thread_id is not None else None),
             )
             conn.commit()
             row = conn.execute(
@@ -2377,6 +2396,28 @@ class Database:
                 (source_type, source_id),
             ).fetchone()
             return int(row["id"])
+        finally:
+            conn.close()
+
+    def get_card_by_thread(self, thread_id: str) -> dict | None:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM conversation_cards WHERE thread_id = ?",
+                (str(thread_id),),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def set_card_thread(self, card_id: int, thread_id: str) -> None:
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                "UPDATE conversation_cards SET thread_id = ? WHERE id = ?",
+                (str(thread_id), int(card_id)),
+            )
+            conn.commit()
         finally:
             conn.close()
 

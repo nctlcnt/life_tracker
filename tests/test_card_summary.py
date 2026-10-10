@@ -1,13 +1,14 @@
 """卡片一句话总结（bot/card_summary.py）。
 
-总结必须是后台预先写好的：Discord autocomplete 要求 3 秒内返回，
-打开 /conversation list 的时候来不及现场调模型。
+总结必须是后台预先写好的：打开卡片列表的时候来不及现场调模型。
+check-in thread 第一次有总结时会用它改名，所以写入之后要通知监听者。
 """
 import asyncio
 
 import pytest
 
 import bot.ai_engine_openai_compat as ai_compat
+import bot.card_summary as card_summary
 from bot.card_summary import (
     SUMMARY_MAX_CHARS, refresh_card_summary, schedule_summary,
 )
@@ -65,6 +66,27 @@ def test_summary_is_written_from_the_card_conversation(db, card, monkeypatch):
     # 两侧的话都要进 prompt，否则总结只反映 AI 的单方面发言
     assert "今天打算做什么？" in seen["prompt"]
     assert "下午去爬山" in seen["prompt"]
+
+
+def test_listeners_hear_the_new_and_previous_summary(db, card, monkeypatch):
+    _stub_completion(monkeypatch, "下午要去爬山")
+    heard = []
+
+    async def listener(card_id, summary, previous):
+        heard.append((card_id, summary, previous))
+
+    async def broken(*_args):
+        raise RuntimeError("改名失败")
+
+    monkeypatch.setattr(card_summary, "_listeners", [broken, listener])
+
+    asyncio.run(refresh_card_summary(db, card))
+    asyncio.run(refresh_card_summary(db, card))
+
+    # 一个监听者出错不影响别的监听者，也不影响总结本身
+    assert heard == [(card, "下午要去爬山", None),
+                     (card, "下午要去爬山", "下午要去爬山")]
+    assert db.get_card(card)["summary"] == "下午要去爬山"
 
 
 def test_empty_card_does_not_call_the_model(db, monkeypatch):

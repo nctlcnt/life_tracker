@@ -49,7 +49,7 @@ def test_on_message_notifies_batcher_only_after_durable_insert(
 
     generated = []
 
-    async def fake_generate(message):
+    async def fake_generate(message, **_kwargs):
         generated.append(message.id)
 
     monkeypatch.setattr(bot, "_generate_chat_response", fake_generate)

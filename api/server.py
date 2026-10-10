@@ -658,7 +658,8 @@ def _card_payload(card: dict, counts: dict) -> dict:
         # App 的渐隐效果按它算：到了这个时刻卡片就该淡出，内容仍保留在历史里
         "expires_at": card["expires_at"],
         "faded": bool(card["faded"]),
-        "is_current": bool(card["is_current"]),
+        # check-in 卡片对应的 Discord thread；没有 thread 的卡片（主频道里回复的提醒等）为 null
+        "thread_id": card.get("thread_id"),
         "message_count": int(counts.get(int(card["id"]), 0)),
     }
 
@@ -674,11 +675,7 @@ async def list_cards(limit: int = CARD_LIST_LIMIT_DEFAULT):
     cards = _card_service().list_active(
         _card_channel(), limit=limit, include_faded=True)
     counts = db.count_card_messages([c["id"] for c in cards])
-    current = next((int(c["id"]) for c in cards if c["is_current"]), None)
-    return {
-        "items": [_card_payload(c, counts) for c in cards],
-        "current_card_id": current,
-    }
+    return {"items": [_card_payload(c, counts) for c in cards]}
 
 
 @app.get("/api/cards/{card_id}")
