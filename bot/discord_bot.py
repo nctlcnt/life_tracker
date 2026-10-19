@@ -867,7 +867,12 @@ def _weather_command(bot: LifeTrackerBot) -> app_commands.Command:
     return weather
 
 
-_RE_TS_PREFIX = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]\s*")
+# 模型有时照抄上下文里的前缀：[时间]、[卡片名 · 时间]，或者把 check-in 指令开头的
+# [check_in:名字] 和卡片名混在一起写成 [check_in:morning · 时间]。发出去之前去掉。
+_RE_TS_PREFIX = re.compile(
+    r"^(?:\[check_in:[^\[\]\n]{0,60}\]\s*)?"
+    r"(?:\[[^\[\]\n]{0,60}?\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?\]\s*)?"
+)
 
 
 async def _send_chat_chunks(target, text: str, *,

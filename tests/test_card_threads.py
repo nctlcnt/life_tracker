@@ -315,3 +315,28 @@ def test_typing_in_a_card_thread_counts_as_typing(env):
     asyncio.run(env.bot.on_typing(
         env.channel.threads[0], SimpleNamespace(id=USER), now))
     assert env.bot.is_user_typing()
+
+
+@pytest.mark.parametrize("raw", [
+    "[check_in:morning · 2026-10-19 17:12] 早上好",
+    "[check_in3 · 2026-10-19 17:12] 早上好",
+    "[2026-10-19 17:12] 早上好",
+    "[check_in:morning]\n早上好",
+])
+def test_echoed_context_prefix_is_not_sent(db, env, raw):
+    """模型照抄上下文里的前缀时，发出去和存进卡片的都是去掉前缀的正文。"""
+    _deliver(env, 1, raw, "check_in", "morning:t1")
+    assert env.channel.threads[0].sent == ["早上好"]
+    card = db.get_card_by_source("check_in", "morning:t1")
+    env.bot.cards.enter_card(card["id"])
+    assert [c for c, _, _ in _history(db)] == ["早上好"]
+
+
+@pytest.mark.parametrize("text", [
+    "[1] 先把文档打开",
+    "[链接](https://example.com) 在这里",
+    "今天是 [2026-10-19 17:12] 那条",
+])
+def test_ordinary_brackets_are_kept(env, text):
+    _deliver(env, 1, text, "check_in", "morning:t1")
+    assert env.channel.threads[0].sent == [text]
