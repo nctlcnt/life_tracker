@@ -23,7 +23,6 @@ from bot.async_pipeline import BatchCoordinator, GenerationGate
 from bot.ai_engine import scheduled_action
 from bot.database import Database
 from bot.memory import MemoryService
-from bot.memory import scene_state
 from bot.memory.curator import CURATOR_NAME
 from bot.prompts import get_prompt_template, render_check_in_prompt
 from bot.logger import get_logger
@@ -527,14 +526,8 @@ class Scheduler:
         prompt = self._render_check_in_prompt(check_in, timestamp)
 
         async with self.generation_gate:
-            # Clear before the tool batch is made runnable.  Doing both under
-            # the shared generation gate avoids clearing a scene while an
-            # ordinary chat is still snapshotting it.  A fast set_scene may
-            # then run alongside this check-in's chat generation; that side is
-            # told not to clear the newly written scene again.
             if self.batch_coordinator is not None:
                 try:
-                    scene_state.clear(self.db, str(config.CHANNEL_ID))
                     self.batch_coordinator.create_check_in(
                         channel_id=str(config.CHANNEL_ID),
                         source_ref=f"check_in:{check_in['id']}:{scheduled_for}",
@@ -572,16 +565,10 @@ class Scheduler:
                     ),
                     check_in_name=name,
                     context_config=check_in.get("context_config") or {},
-                    track_scene=(
-                        bool(check_in.get("track_scene"))
-                        and not self.tool_worker_apply
-                    ),
+                    # 场景属于这次 check-in 的卡片，只有工具 worker 知道卡片
+                    # （批次输入里的 card_source_id），所以这条路径不写场景
+                    track_scene=False,
                     window=window,
-                    **(
-                        {"clear_scene": False}
-                        if self.batch_coordinator is not None
-                        else {}
-                    ),
                 )
                 should_mark_fired = True
                 result["ok"] = True

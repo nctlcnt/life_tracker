@@ -276,6 +276,11 @@ class LifeTrackerBot(commands.Bot):
         window = self.memory.context_window(_logical_channel_id(message.channel))
         ai_messages = window.messages
         delivery_index = 0
+        # 在卡片的 thread 里说话时，AI 要知道是哪张卡片，并读取这张卡片的场景
+        card_id = (
+            self.db.find_card_id_by_thread(str(message.channel.id))
+            if isinstance(message.channel, discord.Thread) else None
+        )
 
         async def send_reply(text):
             nonlocal delivery_index
@@ -324,6 +329,7 @@ class LifeTrackerBot(commands.Bot):
                 tool_callback=on_tool_call, memory_service=self.memory,
                 window=window,
                 tool_names=set() if self.tool_worker_apply else None,
+                card_id=card_id,
             )
             return
 
@@ -340,6 +346,7 @@ class LifeTrackerBot(commands.Bot):
                 tool_callback=on_tool_call, memory_service=self.memory,
                 window=window,
                 tool_names=set() if self.tool_worker_apply else None,
+                card_id=card_id,
             )
         else:
             try:
@@ -348,6 +355,7 @@ class LifeTrackerBot(commands.Bot):
                     tool_callback=on_tool_call, memory_service=self.memory,
                     window=window,
                     tool_names=set() if self.tool_worker_apply else None,
+                    card_id=card_id,
                 )
             finally:
                 await typing_cm.__aexit__(None, None, None)

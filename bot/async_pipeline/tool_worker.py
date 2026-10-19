@@ -16,7 +16,7 @@ from bot.ai_engine_base import (
 )
 from bot.database import Database
 from bot.logger import get_logger
-from bot.memory import MemoryService
+from bot.memory import MemoryService, scene_state
 from bot.tools import POLL_TOOL_NAMES, REMINDER_TOOL_NAMES, TOOLS
 
 from .outbound import NullGenerationGate
@@ -470,9 +470,14 @@ class ToolWorker:
 
         execution_args = dict(arguments)
         if tool_name == "set_scene":
+            payload = batch.get("input") or {}
             execution_args["_check_in_name"] = (
-                (batch.get("input") or {}).get("check_in_name") or "unknown"
+                payload.get("check_in_name") or "unknown"
             )
+            # 场景写进这次 check-in 的卡片；之前建的批次没有 card_source_id
+            if payload.get("card_source_id"):
+                execution_args["_scene_scope"] = scene_state.card_scope(
+                    "check_in", str(payload["card_source_id"]))
 
         if batch["execution_mode"] == "shadow":
             result: Any = {

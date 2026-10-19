@@ -101,6 +101,7 @@ class ContextWindow:
     needs_compact: bool = False
     fold_upto_id: int = 0        # compact 应折叠到的消息 id（含）；0 = 不适用
     hard_trimmed: int = 0        # 被硬裁掉的明文条数（>0 说明 compact 落后了）
+    has_card_messages: bool = False  # 明文里有没有带卡片名的消息（决定要不要解释前缀）
 
     def trace_info(self) -> dict:
         """给 trace 的窗口组成摘要。"""
@@ -203,4 +204,7 @@ def assemble_window(db, channel_id: str, *,
         needs_compact=needs_compact,
         fold_upto_id=fold_upto_id,
         hard_trimmed=trimmed,
+        has_card_messages=any(
+            m.get("card_id") is not None and int(m["card_id"]) in card_labels
+            for m in visible_tail),
     )

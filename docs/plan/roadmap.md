@@ -90,6 +90,16 @@
 - 测试：新文件 `tests/test_card_threads.py`（用替身模拟 Discord 的频道和 thread）。
 - 还没有在真实的 Discord 上跑过，staging 验证留到第 4 步之后一起做。
 
+### 卡片改为 thread：第 4 步（同一分支）
+
+- 上下文里出现卡片消息时，system 末尾追加一段卡片前缀的说明（`CARD_PREFIX_NOTE`）；在 thread 里聊天时，
+  再说明当前是哪张卡片。主 prompt 在数据库里，所以这两段和场景一样由代码以 suffix 追加。
+- 场景状态按卡片来源存（`scene:card:<source_type>:<source_id>`），只在这张卡片的 thread 里注入，
+  check-in 不再清除场景，`clear_scene` 参数删除。
+- 限制：场景只能由工具 worker 写入，因为只有它从批次输入里知道卡片。`tool_worker_apply` 关闭时
+  （shadow 模式或不开工具 worker），check-in 不再提供 `set_scene`。生产和 staging 目前都是 apply 模式。
+- 主频道上旧的 `scene:<频道 id>` 状态不再被读取，留在 `app_state` 里不影响运行。
+
 ---
 
 ## 设计记录
@@ -192,8 +202,7 @@
 ## 接下来
 
 1. 卡片改为 thread（分支 `feat/card-threads`，第 2–4 步必须和第 1 步一起上线）：
-   - 第 2、3 步（已完成，见上面"已完成"）：卡片对应 Discord thread；回复、工具结果、表情回应发回对应的 thread。
-   - 第 4 步：thread 里聊天时标明当前卡片；场景状态按卡片分开。
+   - 第 2–4 步代码已完成（见上面"已完成"），还没有在真实的 Discord 上验证。
    - 上线前在 staging 确认机器人有创建公开 thread、在 thread 里发消息的权限。
 2. 更新外层 LifeMemo 的 submodule 指针（在本仓库之外，还没有确认是否已经做过）。
 3. compact 改为每天凌晨 4 点、compact prompt 补上过期信息的取舍规则。（暂缓，先不动 compact。）

@@ -37,6 +37,20 @@ CHAT_WITHOUT_BUSINESS_TOOLS = (
     "to give yet, return exactly [SILENT]."
 )
 
+# 卡片前缀的说明。主 prompt 存在数据库里（见 bot/prompt_store.py），这里和场景
+# 状态一样以 suffix 的方式追加，只在上下文里真的出现卡片消息时才加。
+CARD_PREFIX_NOTE = (
+    "【对话里的卡片】（系统标记，不是她说的话）\n"
+    "前缀形如 [check_in3 · 时间] 的消息属于一张卡片：check-in、提醒这类你主动发起的"
+    "消息，每次各开一个单独的 Discord thread，她在 thread 里回复之后，那段对话才会"
+    "出现在这里。没有卡片名的消息是频道里的主线聊天。"
+)
+
+
+def current_card_block(label: str) -> str:
+    return ("【当前卡片】（系统标记，不是她说的话）\n"
+            f"她现在是在卡片 {label} 的 thread 里说话，你的回复也会发在这个 thread 里。")
+
 _PSEUDO_TOOL_CALL = re.compile(r"(?im)^\s*<\s*tool_call(?:\s[^>]*)?>")
 
 
@@ -293,12 +307,16 @@ def _execute_tool(db: Database, tool_name: str, args: dict,
                   conn=None) -> dict:
     """执行具体的工具调用，返回结果"""
     if tool_name == "set_scene":
-        # 场景摘要写进会话状态，持续到下一个 check-in 触发。
+        # 场景摘要写进这次 check-in 的卡片，只在它的 thread 里生效。
+        # _scene_scope 由工具 worker 根据批次输入注入，见 ToolWorker。
         description = str(args.get("description") or "").strip()
         if not description:
             return {"success": False, "message": "description 不能为空"}
+        scope = args.get("_scene_scope")
+        if not scope:
+            return {"success": False, "message": "这次 check-in 没有对应的卡片，场景无处记录"}
         scene_state.start(
-            db, str(config.CHANNEL_ID),
+            db, str(scope),
             check_in_name=str(args.get("_check_in_name") or "unknown"),
             description=description,
             now=datetime.now(),
@@ -515,7 +533,8 @@ async def chat(db: Database, messages: list[dict],
                call_with_tools_fn, preset: Preset,
                send_callback=None, tool_callback=None,
                memory_service: MemoryService | None = None,
-               window=None, tool_names: set[str] | None = None) -> str:
+               window=None, tool_names: set[str] | None = None,
+               card_id: int | None = None) -> str:
     """
     处理用户消息的完整流程。
     messages: 调用方（discord_bot）已经装配好的 token 窗口消息列表，
@@ -524,6 +543,7 @@ async def chat(db: Database, messages: list[dict],
     window: 装配窗口的 ContextWindow（LT-135）。用于语义检索去重范围
             （exclude_recent = 实际明文条数）与 trace 窗口可见性；
             None 时退回固定 20 条语义（兼容旧调用方/测试）。
+    card_id: 当前用户消息所在的卡片（在卡片的 thread 里说话时）；None 表示主线。
 
     DB 只作为备份：调用方在进入这里之前应已把当前用户消息写入 messages 表；
     这里只负责把 AI 回复写回 DB 做备份。
@@ -565,15 +585,23 @@ async def chat(db: Database, messages: list[dict],
     if tool_names is not None and not tool_names:
         prompt = prompt.with_suffix(CHAT_WITHOUT_BUSINESS_TOOLS)
 
-    # 场景状态：让"我们正在做什么"在用户回复之后仍然存在。
-    #
-    # check-in 的模板是作为最后一条 user 消息追加的，用户一回复它就被推远，
-    # 语气随之掉回去。这里把 check-in 时记下的那句场景摘要接到 system 末尾，
-    # 每轮都在，不必重发整份模板。
-    #
-    scene = scene_state.load(db, str(config.CHANNEL_ID), datetime.now())
-    if scene is not None:
-        prompt = prompt.with_suffix(scene.as_prompt_block())
+    if window is not None and window.has_card_messages:
+        prompt = prompt.with_suffix(CARD_PREFIX_NOTE)
+    card = db.get_card(card_id) if card_id is not None else None
+    if card is not None:
+        label = db.get_card_labels([card["id"]]).get(int(card["id"]))
+        if label:
+            prompt = prompt.with_suffix(current_card_block(label))
+        # 场景状态：让"我们正在做什么"在用户回复之后仍然存在。
+        #
+        # check-in 的模板是作为最后一条 user 消息追加的，用户一回复它就被推远，
+        # 语气随之掉回去。这里把 check-in 时记下的那句场景摘要接到 system 末尾，
+        # 每轮都在，不必重发整份模板。场景属于卡片，主线聊天不注入。
+        scene = scene_state.load(
+            db, scene_state.card_scope(card["source_type"], card["source_id"]),
+            datetime.now())
+        if scene is not None:
+            prompt = prompt.with_suffix(scene.as_prompt_block())
 
     trace.start(trigger="chat", model=preset.model, provider=preset.provider,
                 prompt_parts=prompt, messages=messages,
@@ -619,8 +647,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            context_config: dict | None = None,
                            memory_service: MemoryService | None = None,
                            window=None,
-                           track_scene: bool = False,
-                           clear_scene: bool = True) -> str | None:
+                           track_scene: bool = False) -> str | None:
     """
     统一的调度入口：处理主动聊天、提醒触发、睡前提醒等所有非用户消息的 AI 调用。
 
@@ -638,11 +665,6 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     if check_in_name:
         label = f"{label} [{check_in_name}]"
     logger.info(f"{label} ▸ scheduled_action 开始 [{timestamp}]")
-
-    # 任何新的 check-in 都是旧场景唯一的终止条件。启用 track_scene 的
-    # check-in 可在随后的工具轮重新写入；reminder 不属于 check-in。
-    if clear_scene and trigger in {"poll", "bedtime", "check_in"}:
-        scene_state.clear(db, str(config.CHANNEL_ID))
 
     # 注：历史为空不代表"没聊过"——也可能是 bot 刚重启或 Discord 历史拉取失败。
     # 此时仍然继续调用 AI，让它基于 memory / 待触发提醒 / 当前时间 / 天气等
@@ -683,6 +705,8 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
     )
     if tool_names is not None and not tool_names:
         prompt_parts = prompt_parts.with_suffix(CHAT_WITHOUT_BUSINESS_TOOLS)
+    if window is not None and window.has_card_messages:
+        prompt_parts = prompt_parts.with_suffix(CARD_PREFIX_NOTE)
 
     if check_in_name:
         prompt = f"[check_in:{check_in_name}]\n{prompt}"

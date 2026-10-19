@@ -270,7 +270,9 @@ def test_card_label_joins_the_existing_timestamp_prefix(db):
 def test_messages_without_card_keep_the_plain_prefix(db):
     """卡片上线之前的历史没有归属，前缀必须原样不动。"""
     _add(db, "user", "在吗", 1)
-    assert assemble_window(db, CHANNEL).messages[-1]["content"] == "[2026-07-17 10:00] 在吗"
+    w = assemble_window(db, CHANNEL)
+    assert w.messages[-1]["content"] == "[2026-07-17 10:00] 在吗"
+    assert w.has_card_messages is False
 
 
 def test_card_ordinal_skips_pending_cards(db):
@@ -305,6 +307,7 @@ def test_card_messages_mix_linearly_with_the_main_line(db):
     _add_in_card(db, "user", "写代码", 3, card_id)
     _add(db, "user", "主线又一句", 4)
 
+    assert assemble_window(db, CHANNEL).has_card_messages is True
     w = assemble_window(db, CHANNEL)
     assert len(w.messages) == w.tail_count == 4
     assert [m["content"].startswith("[check_in1 · ") for m in w.messages] == [

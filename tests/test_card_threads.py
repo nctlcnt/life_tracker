@@ -155,6 +155,10 @@ def _user_message(env, channel, content):
     )
 
 
+def messages_have_card_label(window):
+    return window.has_card_messages and window.messages[-1]["content"].startswith("[check_in1 · ")
+
+
 def _history(db):
     conn = db._get_conn()
     try:
@@ -203,13 +207,19 @@ def test_replying_in_the_thread_activates_the_card(db, env, monkeypatch):
     _deliver(env, 1, "早上好", "check_in", "morning:t1")
     thread = env.channel.threads[0]
 
-    async def fake_chat(_db, messages, *, send_callback, **_kwargs):
+    seen = {}
+
+    async def fake_chat(_db, messages, *, send_callback, **kwargs):
+        seen.update(kwargs)
         await send_callback("那就去吧")
 
     monkeypatch.setattr(discord_bot_module, "chat", fake_chat)
     asyncio.run(env.bot.on_message(_user_message(env, thread, "下午去爬山")))
 
     card_id = db.get_card_by_source("check_in", "morning:t1")["id"]
+    # AI 知道这是在哪张卡片里说话
+    assert seen["card_id"] == card_id
+    assert messages_have_card_label(seen["window"])
     assert db.get_card(card_id)["status"] == "active"
     assert _history(db) == [
         ("早上好", card_id, str(CHANNEL)),
@@ -221,12 +231,16 @@ def test_replying_in_the_thread_activates_the_card(db, env, monkeypatch):
 
 
 def test_main_line_chat_stays_out_of_cards(db, env, monkeypatch):
-    async def fake_chat(_db, messages, *, send_callback, **_kwargs):
+    seen = {}
+
+    async def fake_chat(_db, messages, *, send_callback, **kwargs):
+        seen.update(kwargs)
         await send_callback("嗯嗯")
 
     monkeypatch.setattr(discord_bot_module, "chat", fake_chat)
     asyncio.run(env.bot.on_message(_user_message(env, env.channel, "在吗")))
 
+    assert seen["card_id"] is None
     assert _history(db) == [("在吗", None, str(CHANNEL)), ("嗯嗯", None, str(CHANNEL))]
     assert env.channel.sent == ["嗯嗯"]
     assert env.channel.threads == []
