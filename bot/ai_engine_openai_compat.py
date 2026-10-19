@@ -42,11 +42,12 @@ def _endpoint_url(preset: Preset) -> str:
 
 async def chat(db: Database, messages: list[dict], preset: Preset,
                send_callback=None, tool_callback=None, memory_service=None,
-               window=None, tool_names: set[str] | None = None) -> str:
+               window=None, tool_names: set[str] | None = None,
+               card_id: int | None = None) -> str:
     return await _base_chat(db, messages, _call_with_tools, preset,
                             send_callback=send_callback, tool_callback=tool_callback,
                             memory_service=memory_service, window=window,
-                            tool_names=tool_names)
+                            tool_names=tool_names, card_id=card_id)
 
 
 async def scheduled_action(db: Database, prompt: str, timestamp: str,
@@ -57,8 +58,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                            check_in_name: str | None = None,
                            context_config: dict | None = None,
                            memory_service=None, window=None,
-                           track_scene: bool = False,
-                           clear_scene: bool = True) -> str | None:
+                           track_scene: bool = False) -> str | None:
     return await _base_scheduled_action(db, prompt, timestamp, history, _call_with_tools,
                                         preset,
                                         send_callback=send_callback,
@@ -68,8 +68,7 @@ async def scheduled_action(db: Database, prompt: str, timestamp: str,
                                         context_config=context_config,
                                         memory_service=memory_service,
                                         window=window,
-                                        track_scene=track_scene,
-                                        clear_scene=clear_scene)
+                                        track_scene=track_scene)
 
 
 async def simple_completion(prompt: str, preset: Preset,

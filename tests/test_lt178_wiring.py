@@ -194,7 +194,8 @@ def test_check_in_creates_tool_batch_and_chat_side_uses_no_tools(
         tool_profile="poll",
         track_scene=True,
     )
-    scene_state.start(
+    # 主线上残留的旧场景：check-in 不再清除它（场景跟着卡片走）
+    old_scene = scene_state.start(
         db,
         "123",
         check_in_name="old",
@@ -219,14 +220,15 @@ def test_check_in_creates_tool_batch_and_chat_side_uses_no_tools(
 
     assert result["ok"] is True
     assert captured["tool_profile"] == "none"
-    assert captured["clear_scene"] is False
+    assert "clear_scene" not in captured
     assert captured["track_scene"] is False
-    assert scene_state.load(db, "123", datetime.now()) is None
+    assert scene_state.load(db, "123", datetime.now()) == old_scene
     assert len(ready) == 1
     batch = repository.get(ready[0])
     assert batch["source_kind"] == "check_in"
     assert batch["execution_mode"] == "apply"
     assert batch["input"]["track_scene"] is True
+    assert batch["input"]["card_source_id"].startswith("interview:")
 
 
 def test_apply_reminder_expression_also_has_no_business_tools(

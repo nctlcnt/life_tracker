@@ -1,8 +1,8 @@
 """卡片一句话总结。
 
-/conversation list 和 switch 要在 Discord autocomplete 里显示每张卡片在聊什么，
-而 autocomplete 必须在 3 秒内返回，来不及现场调模型。所以总结在卡片有新对话之后
-在后台生成，写进 conversation_cards.summary，打开列表时只读这一列。
+卡片列表（/api/cards）要显示每张卡片在聊什么，打开列表时不能现场调模型。
+所以总结在卡片有新对话之后在后台生成，写进 conversation_cards.summary，
+列表只读这一列。
 
 和 bot/memory/compact.py 的分工一样：规则和读写在 bot/cards.py，这里只负责
 「调模型生成一句话」这件事，失败永远不影响聊天本身。

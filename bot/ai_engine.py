@@ -52,7 +52,8 @@ async def _run_with_fallback(method_name: str, *args, **kwargs):
 
 async def chat(db, messages: list[dict],
                send_callback=None, tool_callback=None, memory_service=None,
-               window=None, tool_names: set[str] | None = None) -> str:
+               window=None, tool_names: set[str] | None = None,
+               card_id: int | None = None) -> str:
     kwargs = {
         "send_callback": send_callback,
         "tool_callback": tool_callback,
@@ -61,6 +62,8 @@ async def chat(db, messages: list[dict],
     }
     if tool_names is not None:
         kwargs["tool_names"] = tool_names
+    if card_id is not None:
+        kwargs["card_id"] = card_id
     return await _run_with_fallback(
         "chat", db, messages, **kwargs,
     )
@@ -74,8 +77,7 @@ async def scheduled_action(db, prompt: str, timestamp: str,
                            check_in_name: str | None = None,
                            context_config: dict | None = None,
                            memory_service=None, window=None,
-                           track_scene: bool = False,
-                           clear_scene: bool = True) -> str | None:
+                           track_scene: bool = False) -> str | None:
     return await _run_with_fallback(
         "scheduled_action", db, prompt, timestamp, history,
         send_callback=send_callback, allow_silent=allow_silent, trigger=trigger,
@@ -83,7 +85,6 @@ async def scheduled_action(db, prompt: str, timestamp: str,
         context_config=context_config,
         memory_service=memory_service, window=window,
         track_scene=track_scene,
-        clear_scene=clear_scene,
     )
 
 

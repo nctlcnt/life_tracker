@@ -82,8 +82,10 @@ class CardsApiTests(unittest.IsolatedAsyncioTestCase):
             source_id=source_id, ingest=self.memory.ingest_message,
         )
 
-    def _reply(self, discord_id, content, reply_to=None, current_content=None):
-        card_id = self.cards.card_for_user_message(CHANNEL, reply_to)
+    def _reply(self, discord_id, content, reply_to, current_content=None):
+        """用户在 reply_to 这条消息所在的卡片里说话。"""
+        card_id = self.cards.enter_card(
+            self.db.find_card_id_by_discord_message(reply_to))
         metadata = {"current_content": current_content} if current_content else None
         self.db.add_conversation_message(
             **self._msg(discord_id, content, "user", reply_to),
@@ -103,7 +105,6 @@ class CardsApiTests(unittest.IsolatedAsyncioTestCase):
         body = (await self._get("/api/cards")).json()
 
         self.assertEqual(body["items"], [])
-        self.assertIsNone(body["current_card_id"])
 
     async def test_replied_card_is_listed_with_label_and_counts(self):
         await self._send(1, "今天打算做什么？", "check_in", "c1")
@@ -119,8 +120,6 @@ class CardsApiTests(unittest.IsolatedAsyncioTestCase):
         # AI 的开场白在卡片被回复时一起进了历史，所以是两条
         self.assertEqual(item["message_count"], 2)
         self.assertFalse(item["faded"])
-        self.assertTrue(item["is_current"])
-        self.assertEqual(body["current_card_id"], card_id)
 
     async def test_faded_card_is_returned_with_a_flag(self):
         """过期隐去的卡片仍要返回，App 靠 faded 做渐隐，不是直接不给。

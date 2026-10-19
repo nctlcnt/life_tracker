@@ -1,4 +1,4 @@
-"""场景状态进入 prompt、并由下一个 check-in 终止的契约。"""
+"""场景状态进入 prompt 的契约：场景属于卡片，只在卡片的 thread 里注入。"""
 import asyncio
 from datetime import datetime
 from types import SimpleNamespace
@@ -69,13 +69,8 @@ def test_no_scene_means_no_suffix(db):
     assert "当前场景" not in text
 
 
-def test_chat_reads_scene_without_mutating_it(db, monkeypatch):
-    """普通对话应注入场景，但不能推进计数或改写持久状态。"""
-    channel = str(ai_engine_base.config.CHANNEL_ID)
-    original = scene_state.start(
-        db, channel, check_in_name="interview", description="采访场景", now=T0
-    )
-    raw = db.get_state(f"scene:{channel}")
+def _run_chat(db, monkeypatch, *, card_id=None, window=None):
+    """运行一次无外部 I/O 的 chat，返回模型看到的 system prompt。"""
     seen = {}
 
     class FakeMemory:
@@ -110,13 +105,75 @@ def test_chat_reads_scene_without_mutating_it(db, monkeypatch):
         fake_call,
         preset,
         memory_service=FakeMemory(),
+        window=window,
+        card_id=card_id,
     ))
-
     assert result == "正常回复"
-    assert "【当前场景】" in seen["prompt"]
-    assert "采访场景" in seen["prompt"]
-    assert scene_state.load(db, channel, T0) == original
-    assert db.get_state(f"scene:{channel}") == raw
+    return seen["prompt"]
+
+
+def _interview_card(db):
+    """一张被回复过的采访 check-in 卡片，带着它自己的场景。"""
+    card_id = db.create_card(
+        channel_id="123", source_type="check_in", source_id="interview:t1",
+        status="active", now="2026-08-24T10:00:00+00:00",
+        expires_at="2099-01-01T00:00:00+00:00",
+    )
+    scope = scene_state.card_scope("check_in", "interview:t1")
+    scene = scene_state.start(
+        db, scope, check_in_name="interview", description="采访场景", now=T0
+    )
+    return card_id, scope, scene
+
+
+def test_chat_in_a_card_thread_reads_its_scene_without_mutating_it(db, monkeypatch):
+    """在卡片的 thread 里聊天应注入这张卡片的场景，但不能改写持久状态。"""
+    card_id, scope, original = _interview_card(db)
+    raw = db.get_state(f"scene:{scope}")
+
+    prompt = _run_chat(db, monkeypatch, card_id=card_id)
+
+    assert "【当前场景】" in prompt and "采访场景" in prompt
+    assert "【当前卡片】" in prompt and "check_in1" in prompt
+    assert scene_state.load(db, scope, T0) == original
+    assert db.get_state(f"scene:{scope}") == raw
+
+
+def test_main_line_chat_does_not_see_card_scenes(db, monkeypatch):
+    _interview_card(db)
+
+    prompt = _run_chat(db, monkeypatch)
+
+    assert "当前场景" not in prompt
+    assert "当前卡片" not in prompt
+
+
+def test_card_prefix_is_explained_only_when_card_messages_are_visible(db, monkeypatch):
+    with_cards = SimpleNamespace(has_card_messages=True, tail_count=1,
+                                 trace_info=lambda: {})
+    without = SimpleNamespace(has_card_messages=False, tail_count=1,
+                              trace_info=lambda: {})
+
+    assert "【对话里的卡片】" in _run_chat(db, monkeypatch, window=with_cards)
+    assert "【对话里的卡片】" not in _run_chat(db, monkeypatch, window=without)
+
+
+def test_set_scene_writes_into_the_card_scope(db):
+    scope = scene_state.card_scope("check_in", "interview:t1")
+    result = ai_engine_base._execute_tool(
+        db, "set_scene",
+        {"description": "晚间采访，刚问了晚饭", "_check_in_name": "interview",
+         "_scene_scope": scope})
+
+    assert result["success"] is True
+    assert scene_state.load(db, scope, T0).description == "晚间采访，刚问了晚饭"
+    assert scene_state.load(db, str(ai_engine_base.config.CHANNEL_ID), T0) is None
+
+
+def test_set_scene_without_a_card_is_refused(db):
+    result = ai_engine_base._execute_tool(
+        db, "set_scene", {"description": "采访", "_check_in_name": "interview"})
+    assert result["success"] is False
 
 
 def _run_scheduled(db, monkeypatch, *, trigger, track_scene=False):
@@ -158,17 +215,17 @@ def _run_scheduled(db, monkeypatch, *, trigger, track_scene=False):
     return seen
 
 
-def test_check_in_clears_old_scene_before_model_call(db, monkeypatch):
-    channel = str(ai_engine_base.config.CHANNEL_ID)
-    scene_state.start(
-        db, channel, check_in_name="old", description="旧场景", now=T0
+def test_check_in_leaves_other_card_scenes_alone(db, monkeypatch):
+    """场景属于各自的卡片，新的 check-in 不再清除旧场景。"""
+    scope = scene_state.card_scope("check_in", "interview:t1")
+    original = scene_state.start(
+        db, scope, check_in_name="interview", description="旧场景", now=T0
     )
 
     seen = _run_scheduled(db, monkeypatch, trigger="check_in", track_scene=True)
 
-    assert seen["scene"] is None
     assert "set_scene" in seen["tool_names"]
-    assert scene_state.load(db, channel, T0) is None
+    assert scene_state.load(db, scope, T0) == original
 
 
 def test_reminder_does_not_end_the_scene(db, monkeypatch):

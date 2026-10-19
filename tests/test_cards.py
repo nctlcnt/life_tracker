@@ -1,4 +1,4 @@
-"""消息卡片：没被回复的主动消息不进对话历史。
+"""消息卡片：没被回复的主动消息不进对话历史，主线聊天不属于任何卡片。
 
 背景：AI 的 check-in 很多时候没人回，以前每一条都写进 conversation_messages，
 之后 memory 和 reflection 读到的大多是 AI 的单方面发言。
@@ -59,9 +59,13 @@ def _send(db, cards, discord_id, content, source_type, source_id):
     ))
 
 
-def _user(db, cards, discord_id, content, reply_to=None):
-    card_id = cards.card_for_user_message(CHANNEL, reply_to)
-    db.add_conversation_message(**_msg(discord_id, content, "user", reply_to),
+def _user(db, cards, discord_id, content, in_card_of=None):
+    """模拟一条用户消息。in_card_of 是卡片里某条消息的 Discord id：给了就表示
+    在那张卡片里说话，不给就是主线消息。返回这条消息归属的卡片 id。"""
+    card_id = None
+    if in_card_of is not None:
+        card_id = cards.enter_card(db.find_card_id_by_discord_message(in_card_of))
+    db.add_conversation_message(**_msg(discord_id, content, "user"),
                                 card_id=card_id)
     return card_id
 
@@ -86,50 +90,45 @@ def test_reply_moves_the_card_into_history_before_the_reply(db, cards):
     _send(db, cards, 2, "checkin2", "check_in", "c2")
     _send(db, cards, 3, "checkin3", "check_in", "c3")
 
-    card_id = _user(db, cards, 10, "回 checkin2", reply_to="2")
+    card_id = _user(db, cards, 10, "回 checkin2", in_card_of="2")
 
     assert _history(db) == [("checkin2", card_id), ("回 checkin2", card_id)]
-    assert cards.current_card_id() == card_id
+    assert db.get_card(card_id)["status"] == "active"
 
 
-def test_ai_reply_and_follow_up_messages_join_the_current_card(db, cards):
-    _send(db, cards, 1, "checkin1", "check_in", "c1")
-    card_id = _user(db, cards, 10, "回复", reply_to="1")
+def test_main_line_messages_do_not_belong_to_any_card(db, cards):
+    """主线聊天是一整条线：直接发消息不开卡片，AI 的回答也留在主线。"""
+    assert _user(db, cards, 10, "hi") is None
     _send(db, cards, 11, "AI 的回答", "chat", "10")
-    # 新 check-in 来了，但没有 reply 它
+
+    assert _history(db) == [("hi", None), ("AI 的回答", None)]
+    conn = db._get_conn()
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM conversation_cards").fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 0
+
+
+def test_ai_reply_follows_the_card_of_the_triggering_message(db, cards):
+    _send(db, cards, 1, "checkin1", "check_in", "c1")
+    card_id = _user(db, cards, 10, "回复", in_card_of="1")
+    _send(db, cards, 11, "AI 的回答", "chat", "10")
+    # 新 check-in 来了，但没有在它里面说话：它留在 pending，主线消息不受影响
     _send(db, cards, 12, "checkin2", "check_in", "c2")
-    # 直接发消息：仍然留在当前卡片
-    assert _user(db, cards, 13, "接着说") == card_id
+    assert _user(db, cards, 13, "主线上说一句") is None
 
     assert _history(db) == [
         ("checkin1", card_id), ("回复", card_id),
-        ("AI 的回答", card_id), ("接着说", card_id),
+        ("AI 的回答", card_id), ("主线上说一句", None),
     ]
 
 
 def test_all_chunks_of_one_proactive_send_share_a_card(db, cards):
     _send(db, cards, 1, "part 1", "check_in", "c1")
     _send(db, cards, 2, "part 2", "check_in", "c1")
-    card_id = _user(db, cards, 10, "ok", reply_to="1")
+    card_id = _user(db, cards, 10, "ok", in_card_of="1")
     assert _history(db) == [("part 1", card_id), ("part 2", card_id), ("ok", card_id)]
-
-
-def test_plain_message_without_current_card_opens_a_user_card(db, cards):
-    card_id = _user(db, cards, 10, "hi")
-    assert db.get_card(card_id)["source_type"] == "user"
-    assert db.get_card(card_id)["status"] == "active"
-    assert cards.current_card_id() == card_id
-
-
-def test_switching_back_to_an_earlier_card(db, cards):
-    _send(db, cards, 1, "poll3", "check_in", "p3")
-    poll = _user(db, cards, 10, "回 poll3", reply_to="1")
-    _send(db, cards, 2, "checkin4", "check_in", "c4")
-    checkin = _user(db, cards, 11, "回 checkin4", reply_to="2")
-    back = _user(db, cards, 12, "回到 poll3", reply_to="10")
-
-    assert back == poll != checkin
-    assert cards.current_card_id() == poll
 
 
 def test_pending_cards_are_deleted_after_three_days(db, cards, clock):
@@ -139,33 +138,60 @@ def test_pending_cards_are_deleted_after_three_days(db, cards, clock):
     assert db.get_card_by_source("check_in", "c1") is None
 
 
-def test_reply_to_a_purged_card_opens_a_new_card(db, cards, clock):
+def test_pending_cards_with_a_thread_survive_expiry(db, cards, clock):
+    """thread 在 Discord 里还在，几天后在里面回复仍然要能找到卡片。"""
     _send(db, cards, 1, "没人回", "check_in", "c1")
+    card_id = db.get_card_by_source("check_in", "c1")["id"]
+    db.set_card_thread(card_id, "777")
+    clock.advance(CARD_TTL + timedelta(days=2))
+
+    assert cards.purge_expired() == 0
+    assert db.find_card_id_by_thread("777") == card_id
+    assert _user(db, cards, 10, "晚了几天才回", in_card_of="1") == card_id
+    assert _history(db) == [("没人回", card_id), ("晚了几天才回", card_id)]
+
+
+def test_destination_card(db, cards):
+    """主动消息新建自己的卡片；回复类消息找触发消息的卡片，主线上的找不到。"""
+    created = cards.destination_card(CHANNEL, source_type="check_in", source_id="c1")
+    assert created["status"] == "pending"
+    assert cards.destination_card(
+        CHANNEL, source_type="check_in", source_id="c1")["id"] == created["id"]
+
+    _user(db, cards, 10, "主线")
+    assert cards.destination_card(CHANNEL, source_type="chat", source_id="10") is None
+    assert cards.destination_card(
+        CHANNEL, source_type="chat_tool_feedback", source_id="10",
+        target_discord_message_id="10") is None
+
+
+def test_entering_a_purged_card_falls_back_to_the_main_line(db, cards, clock):
+    _send(db, cards, 1, "没人回", "check_in", "c1")
+    card_id = db.get_card_by_source("check_in", "c1")["id"]
     clock.advance(CARD_TTL + timedelta(minutes=1))
-    card_id = _user(db, cards, 10, "晚了一点才回", reply_to="1")
-    assert db.get_card(card_id)["source_type"] == "user"
-    assert _history(db) == [("晚了一点才回", card_id)]
+
+    assert cards.enter_card(card_id) is None
+    assert _history(db) == []
 
 
 def test_active_cards_fade_but_keep_their_history(db, cards, clock):
     _send(db, cards, 1, "checkin1", "check_in", "c1")
-    first = _user(db, cards, 10, "回复", reply_to="1")
+    first = _user(db, cards, 10, "回复", in_card_of="1")
     clock.advance(CARD_TTL + timedelta(minutes=1))
     cards.purge_expired()
 
     assert db.get_card(first) is not None
-    # 当前卡片已经隐去：直接发消息会开新卡片
-    second = _user(db, cards, 11, "新的一天")
-    assert second != first
-    assert [content for content, _ in _history(db)] == ["checkin1", "回复", "新的一天"]
+    assert [content for content, _ in _history(db)] == ["checkin1", "回复"]
 
 
 def test_activity_pushes_the_expiry_back(db, cards, clock):
-    card_id = _user(db, cards, 10, "hi")
+    _send(db, cards, 1, "checkin1", "check_in", "c1")
+    card_id = _user(db, cards, 10, "hi", in_card_of="1")
     clock.advance(timedelta(days=2))
-    assert _user(db, cards, 11, "还在聊") == card_id
+    assert _user(db, cards, 11, "还在聊", in_card_of="1") == card_id
     clock.advance(timedelta(days=2))
-    assert _user(db, cards, 12, "还是这张") == card_id
+    assert _user(db, cards, 12, "还是这张", in_card_of="1") == card_id
+    assert not cards.list_active(CHANNEL)[0]["faded"]
 
 
 def test_default_source_id_does_not_merge_unrelated_sends(db, cards):
@@ -221,7 +247,7 @@ def test_proactive_followup_chunks_extend_expiry(db, cards, clock, active):
     _send(db, cards, 1, 'first', 'check_in', 'c1')
     card_id = db.get_card_by_source('check_in', 'c1')['id']
     if active:
-        _user(db, cards, 10, 'reply', reply_to='1')
+        _user(db, cards, 10, 'reply', in_card_of='1')
     clock.advance(timedelta(days=2))
     _send(db, cards, 2, 'later chunk', 'check_in', 'c1')
     card = db.get_card(card_id)
@@ -231,14 +257,15 @@ def test_proactive_followup_chunks_extend_expiry(db, cards, clock, active):
     assert cards.purge_expired() == 0
     assert db.get_card(card_id) is not None
     if active:
-        assert _user(db, cards, 11, 'still here') == card_id
+        assert _user(db, cards, 11, 'still here', in_card_of='1') == card_id
 
 
 @pytest.mark.parametrize('source_type', ['chat', 'chat_error', 'chat_tool_feedback', 'tool_batch'])
-def test_delayed_reply_keeps_source_card_after_switch_and_restart(db, cards, source_type):
+def test_delayed_reply_keeps_source_card_across_other_cards_and_restart(db, cards, source_type):
     from bot.async_pipeline.tool_batches import ToolBatchRepository
 
-    first = _user(db, cards, 10, 'question A')
+    _send(db, cards, 1, 'question', 'check_in', 'c1')
+    first = _user(db, cards, 10, 'question A', in_card_of='1')
     source_id = '10'
     if source_type == 'tool_batch':
         conn = db._get_conn()
@@ -250,80 +277,50 @@ def test_delayed_reply_keeps_source_card_after_switch_and_restart(db, cards, sou
             channel_id=CHANNEL, after_message_id=0, through_message_id=row_id,
             last_user_message_id=row_id, execution_mode='apply')
         source_id = batch['id']
-    _send(db, cards, 1, 'other question', 'check_in', 'c1')
-    second = _user(db, cards, 20, 'answer B', reply_to='1')
+    # 回答送达之前，用户先去另一张卡片和主线上说了话，进程也重启过
+    _send(db, cards, 2, 'other question', 'check_in', 'c2')
+    second = _user(db, cards, 20, 'answer B', in_card_of='2')
+    _user(db, cards, 21, 'main line')
     restarted = CardService(db)
     _send(db, restarted, 30, 'late answer A', source_type, source_id)
+    assert second != first
     assert db.find_card_id_by_discord_message('30') == first
-    assert restarted.current_card_id() == second
 
 
-def test_checkin_tool_batch_keeps_current_card_policy(db, cards):
+def test_main_line_reply_stays_on_the_main_line_after_entering_a_card(db, cards):
+    """主线消息的回答晚到时，用户已经在某张卡片里说过话，回答也不能被卡片吸走。"""
+    _user(db, cards, 10, 'main line question')
+    _send(db, cards, 1, 'checkin1', 'check_in', 'c1')
+    _user(db, cards, 11, 'in card', in_card_of='1')
+    _send(db, cards, 30, 'late main line answer', 'chat', '10')
+    assert db.find_card_id_by_discord_message('30') is None
+
+
+def test_checkin_tool_batch_result_stays_on_the_main_line(db, cards):
     from bot.async_pipeline.tool_batches import ToolBatchRepository
 
-    card_id = _user(db, cards, 10, 'hello')
     batch, _ = ToolBatchRepository(db).create_check_in_batch(
         channel_id=CHANNEL, source_ref='check_in:c1',
         payload={'prompt': 'check in'}, execution_mode='apply')
     _send(db, cards, 30, 'check-in result', 'tool_batch', batch['id'])
-    assert db.find_card_id_by_discord_message('30') == card_id
+    assert _history(db) == [('check-in result', None)]
 
 
-# ── /conversation 指令用到的入口 ──────────────────────────────────────────
-
-def test_start_new_card_becomes_the_current_card(db, cards):
-    _send(db, cards, 1, "早上好", "check_in", "c1")
-    first = _user(db, cards, 10, "回 checkin1", reply_to="1")
-
-    fresh = cards.start_new_card(CHANNEL)
-
-    assert fresh != first
-    assert cards.current_card_id() == fresh
-    # 之后不 reply 直接说话，进的是新卡片
-    assert _user(db, cards, 11, "接着说") == fresh
-
-
-def test_switch_to_changes_the_current_card(db, cards):
+def test_list_active_hides_faded_cards(db, cards, clock):
     _send(db, cards, 1, "checkin1", "check_in", "c1")
-    _send(db, cards, 2, "checkin2", "check_in", "c2")
-    first = _user(db, cards, 10, "回 checkin1", reply_to="1")
-    second = _user(db, cards, 11, "回 checkin2", reply_to="2")
-    assert cards.current_card_id() == second
-
-    cards.switch_to(first)
-
-    assert cards.current_card_id() == first
-    assert _user(db, cards, 12, "接着说") == first
-
-
-def test_switch_to_rejects_a_card_that_was_never_replied_to(db, cards):
-    _send(db, cards, 1, "checkin1", "check_in", "c1")
-    pending = db.get_card_by_source("check_in", "c1")["id"]
-
-    with pytest.raises(ValueError):
-        cards.switch_to(pending)
-
-
-def test_switch_to_rejects_a_missing_card(db, cards):
-    with pytest.raises(ValueError):
-        cards.switch_to(9999)
-
-
-def test_list_active_marks_the_current_card_and_hides_faded_ones(db, cards, clock):
-    _send(db, cards, 1, "checkin1", "check_in", "c1")
-    old = _user(db, cards, 10, "回 checkin1", reply_to="1")
+    old = _user(db, cards, 10, "回 checkin1", in_card_of="1")
     clock.advance(CARD_TTL + timedelta(minutes=1))
     _send(db, cards, 2, "checkin2", "check_in", "c2")
-    current = _user(db, cards, 11, "回 checkin2", reply_to="2")
+    recent = _user(db, cards, 11, "回 checkin2", in_card_of="2")
 
     listed = cards.list_active(CHANNEL)
 
     ids = [c["id"] for c in listed]
-    assert current in ids
+    assert recent in ids
     # 过期隐去的卡片不出现在列表里（内容仍然保留在历史中）
     assert old not in ids
-    assert [c["is_current"] for c in listed if c["id"] == current] == [True]
-    assert [c["label"] for c in listed if c["id"] == current] == ["check_in2"]
+    assert [c["label"] for c in listed if c["id"] == recent] == ["check_in2"]
+    assert old in [c["id"] for c in cards.list_active(CHANNEL, include_faded=True)]
 
 
 def test_list_active_is_empty_before_any_reply(db, cards):

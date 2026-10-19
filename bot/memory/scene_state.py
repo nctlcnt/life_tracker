@@ -18,8 +18,13 @@ check-in 的模板（例如采访那份 2985 字）是作为**最后一条 user 
 第三轮的描述是对第二轮描述的转述。宁可稍微过时，不要漂。因此
 `start()` 覆盖式写入；普通聊天只读取，不重新生成也不改文本。
 
-**三、唯一终止条件是下一个 check-in。** 新 check-in 先清除旧场景；如果它
-启用了 `track_scene`，工具轮再写入新场景。不按静默时间或来回数清除。
+**三、场景跟着卡片走。** 每个 check-in 是一张卡片、一个 Discord thread，
+启用了 `track_scene` 的 check-in 由工具轮写入这张卡片自己的场景，只在这个
+thread 里聊天时注入。主线聊天和其他卡片看不到它，所以也不需要被下一个
+check-in 清除。不按静默时间或来回数清除。
+
+场景按卡片的来源（source_type + source_id）存，而不是卡片 id：工具轮写入
+场景时，这次 check-in 的消息可能还没发出去，卡片还没建出来。
 """
 from __future__ import annotations
 
@@ -49,17 +54,20 @@ class Scene:
                 f"{self.description}")
 
 
-def _key(channel_id: str) -> str:
-    return f"{_STATE_KEY_PREFIX}{channel_id}"
+def _key(scope: str) -> str:
+    return f"{_STATE_KEY_PREFIX}{scope}"
 
 
-def start(db, channel_id: str, *, check_in_name: str, description: str,
+def card_scope(source_type: str, source_id: str) -> str:
+    """一张卡片的场景存在哪里。"""
+    return f"card:{source_type}:{source_id}"
+
+
+def start(db, scope: str, *, check_in_name: str, description: str,
           now: datetime, conn=None) -> Scene:
     """开始一个新场景，覆盖旧的。
 
-    覆盖是有意的：现有 check-in 互相就是彼此的终止条件（采访 15:59 触发，
-    下一个 21:23，中间还夹着几次轻量 check-in），新的盖掉旧的即可，
-    不需要谁去判断上一个结束了没有。
+    同一张卡片里再写一次时直接覆盖。
     """
     stamp = now.isoformat(timespec="seconds")
     scene = Scene(
@@ -68,15 +76,15 @@ def start(db, channel_id: str, *, check_in_name: str, description: str,
         started_at=stamp,
     )
     db.set_state(
-        _key(channel_id), json.dumps(scene.__dict__, ensure_ascii=False),
+        _key(scope), json.dumps(scene.__dict__, ensure_ascii=False),
         conn=conn,
     )
     return scene
 
 
-def load(db, channel_id: str, now: datetime | None = None) -> Scene | None:
-    """读取当前场景；``now`` 仅为兼容旧调用签名，不参与过期判断。"""
-    raw = db.get_state(_key(channel_id))
+def load(db, scope: str, now: datetime | None = None) -> Scene | None:
+    """读取场景；``now`` 仅为兼容旧调用签名，不参与过期判断。"""
+    raw = db.get_state(_key(scope))
     if not raw:
         return None
     try:
@@ -98,5 +106,5 @@ def load(db, channel_id: str, now: datetime | None = None) -> Scene | None:
         return None
 
 
-def clear(db, channel_id: str) -> None:
-    db.set_state(_key(channel_id), "")
+def clear(db, scope: str) -> None:
+    db.set_state(_key(scope), "")
