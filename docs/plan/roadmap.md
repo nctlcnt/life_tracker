@@ -1,6 +1,6 @@
 # LifeMemo / life_tracker 路线图
 
-> 最后更新：2026-09-28。记录方向、已经定下来的设计和进度。
+> 最后更新：2026-10-19。记录方向、已经定下来的设计和进度。
 > 具体实现细节看各自的 plan 文件（`backend-memo-plan.md` 等）。
 
 ## 优先级
@@ -31,8 +31,14 @@
 - 过期卡片的清理由 `CardService.purge_expired` 在收发消息的路径上顺带完成，没有单独的定时任务。
 - 测试：`tests/test_cards.py`，共 16 个。
 - 2026-09-28 在 staging 测试通过，合并之后已经部署到生产。
+- **2026-10-06 之后生产上已经没有卡片功能**：那天部署的是 memo 标签分支（`5cd7ac2`），
+  它从 PR #24 分出来，不包含 PR #25 和 #27。生产库里最后一张卡片创建于 10-06，
+  从 10-10 起所有消息的 `card_id` 都是空的。
 
-### 卡片名、末尾引用、`/conversation`（分支 `feat/card-context-and-conversation`，待合并）
+### 卡片名、末尾引用、`/conversation`（PR #27，已合并到 main `dde10b4`）
+
+> 2026-10-19：这一节里的末尾引用和 `/conversation` 已经删除，卡片名前缀保留。
+> 原因见下面"消息卡片"一节：Discord 主线不再按卡片划分，也不再靠 reply 切换卡片。
 
 - 上下文里每条消息的时间前缀扩展成 `[卡片名 · 时间]`，卡片名是「来源类型 + 同类型内的序号」，
   例如 `check_in3`。序号只在 active 卡片里排，因为 pending 卡片会被过期清理删掉，
@@ -63,44 +69,76 @@
   新文件 `tests/test_card_summary.py` 9 个、`tests/test_cards_api.py` 10 个；全量 615 项通过。
 - 后端到此为止，App 侧的界面单独做。
 
+### 结构化 memo 标签（`5cd7ac2`）
+
+- 提交 `5cd7ac2`「Add structured memo tags and tag API」，2026-10-06 部署到生产。
+- 这个提交一直没有合并进 main。2026-10-19 在本地分支 `chore/merge-memo-tags` 合并（`464fe6f`，
+  未推送），冲突只有 `bot/database.py` 一处，两边都在 `Database` 类末尾追加了方法，两边都保留。
+
+### 卡片改为 thread：第 1 步（本地分支 `feat/card-threads`，`3d940cc`，未推送）
+
+- 删除 user 卡片、`current_card_id`、按 reply 切换卡片、`/conversation`、末尾引用，
+  以及 `/api/cards` 返回里的 `is_current` / `current_card_id`。
+- 新增 `CardService.enter_card(card_id)`：用户在卡片里说话之前调用，pending 卡片转为 active。
+- 这一步单独部署会让 check-in 一直停在 pending，必须和第 2 步一起上线。
+
 ---
 
 ## 设计记录
 
 ### 消息卡片
 
+> 2026-10-19 改版。旧规则是「每条消息都属于某张卡片，reply 某条消息就切换到它所在的卡片」，
+> 已经放弃。
+
 **目的**：很多 check-in 没有回复，以前全都写进对话历史，memory 和 reflection 读到的大多是 AI 的单方面发言。
 
 **规则**
 
-- AI 主动发的每条消息（check-in、poll、reminder、系统通知）都是一张卡片。回复之前是 pending，**不进入** `conversation_messages`。
-- 回复某张卡片时，AI 的开场白和你的回复一起写进对话历史，这张卡片成为当前卡片。
-- 直接发消息（不 reply）→ 进入当前卡片。没有当前卡片、或当前卡片已经隐去时，自动开一张新卡片。
-- 新的 check-in 到来不会切换当前卡片，只有 reply 它才会切换。
-- 过期时间 3 天：
-  - pending 卡片到期直接删除。
-  - 回复过的卡片到期只在界面上隐去，内容保留在历史里。
-  - 有新消息时，过期时间往后推。App 里做成渐隐效果。
+- **Discord 主线是一整条线**：直接在频道里聊天的消息不属于任何卡片（`card_id` 为空），
+  照常进入对话历史和记忆。不再有「当前卡片」，也不靠 reply 切换卡片。
+- **卡片只放 AI 主动发的消息**：check-in、reminder、DDL 提醒、curator 通知、系统告警，每一次发送都是一张卡片。
+- **卡片 = thread**：在 App 的卡片界面做出来之前，先用 Discord thread 显示卡片。之后 App 读取的是同一套卡片数据。
+- 回复之前是 pending，消息只存在 `card_pending_messages`，**不进入**对话历史。
+- 在 thread 里说话时，卡片转为 active，AI 的开场白和你的回复一起写进对话历史，并带上 `card_id` 记录来源。
+- AI 的回答跟着触发它的消息走：触发消息在卡片里就进这张卡片，在主线上就留在主线。
+- 过期时间 3 天，有新消息时往后推：
+  - active 卡片到期只在界面上隐去，内容保留在历史里。App 里做成渐隐效果。
+  - pending 卡片：已经开了 thread 的，到期后保留卡片这一行，因为 thread 在 Discord 里还在，
+    几天后在里面回复仍然要能找到卡片；没有 thread 的（旧数据、AI 选择不说话的空卡片）到期直接删除。
 - 没回复的空档不需要保留在对话里，"发过什么"在 `outbound_deliveries` 里有记录。
+
+**Discord thread 的做法**
+
+- 卡片第一次发消息时创建 thread，不带起始消息，主线里只会出现 Discord 的「开启了 thread」系统提示。
+- thread 名：来源的显示名加上时间，例如 `Morning check-in · 10/19 08:43`。check-in 用 `check_ins.label`。
+- 自动归档时间设为 3 天（Discord 的 4320 分钟档），和卡片过期时间一致。归档的 thread 里发消息会自动恢复。
+- 创建后把用户加进 thread，否则收不到通知。
+- `conversation_cards` 增加 `discord_thread_id` 列。
+- thread 里的消息写进历史时，`channel_id` 仍然写主频道的 id。所以上下文窗口、compact、工具轨的游标都不需要知道 thread 的存在。
+- `outbound_deliveries.channel_id` 也保持主频道。实际发到哪个 Discord 频道，在发送时根据卡片决定：
+  主动消息 → 它自己的卡片的 thread；回复类消息和表情回应 → 触发消息所在卡片的 thread；不属于卡片 → 主频道。
+- check-in 工具批次的结果（例如工具执行失败的提示）发到这次 check-in 的 thread 里。卡片还是 pending 时，它和开场白一样先存在卡片里。
+- 不是由卡片开出来的 thread（例如手动建的）当作主线处理，回复仍然发在那个 thread 里。
 
 **发给 AI 的上下文**
 
-- 整体按消息进入历史的顺序（id）线性排列，每条带卡片名和时间，例如 `[poll3 · 9/27 09:00]`。
-- 末尾引用：说明这条消息在回复哪张卡片的哪一句。被引用的消息保留在原位置，末尾只引用一小段。
-- 如果被回复的卡片早于 compact 分界线，末尾多引用几轮。
-- 例子：checkin1、2、4 已回复，checkin3 没回复，在 poll3 里说话 → AI 看到 checkin1、2、poll3、4 按时间排列，末尾是"回复 poll3 的某一句"和新消息。checkin3 不出现。
+- 整体按消息进入历史的顺序（id）线性排列，主线和卡片里的消息混在一起，卡片里的消息带卡片名，例如 `[check_in3 · 2026-09-27 09:00]`。
+- 在 thread 里聊天时，额外告诉 AI 现在是在哪张卡片里说话。
+- 场景状态（`scene_state`）按卡片分开：采访类 check-in 写入的场景只在它自己的 thread 里生效，不影响主线聊天，也不会被其他 check-in 清掉。
 
 **compact**
 
 - 默认每天一次，只压缩昨天之前的消息。"一天"按凌晨 4 点切分，和 memo、reflection 一致。
 - compact prompt 里写明：DDL、天气、提醒类对话只保留你回复中的事实，过期信息可以丢掉。
 
-**Discord 作为代用通道**
+**卡片总结**
 
-- 先保留 Discord 入口，等 App 聊天和多端支持成熟后逐步淘汰。
-- 在 Discord 里规则相同：reply 某条消息 = 开启 / 切换卡片，之后的消息都进入这张卡片。
-- `/conversation` 指令：`new`（开新卡片）、`list`（看活跃卡片）、`switch`（切换卡片）。
-- 每张卡片用小模型生成一句话总结。因为 Discord autocomplete 要求 3 秒内返回，总结要在卡片有新对话后在后台更新、存进 `summary` 字段，不能在打开列表时现场生成。
+- 每张卡片用小模型生成一句话总结，存在 `summary` 字段，给卡片列表（`/api/cards`）用。thread 里有新的用户消息后在后台更新。
+
+**以后接 App**
+
+- App 的卡片界面读取同一套卡片数据。到那时再加一条投递到 App 的通道和推送；Discord thread 是否保留，到时再定。
 
 ### 标签
 
@@ -136,7 +174,6 @@
 
 ## 待定问题
 
-- **哪些来源算"回复"**：现在只有 `chat`、`chat_error`、`chat_tool_feedback`、`tool_batch` 进入当前卡片，其余（包括 reminder、`system_alert`、curator 通知）都会变成 pending 卡片。reminder 送达这件事要不要留在历史里？
 - **标签**：已有 memo 正文里的 `#xxx` 怎么迁移到标签表。（父标签计数、删除父标签的语义、斜杠指令怎么处理标签，都已经定下来，见上面"标签"一节。）
 - **上周 reflection**：一周的起止时间（暂定上周一 4:00 到这周一 4:00）。
 
@@ -144,10 +181,15 @@
 
 ## 接下来
 
-1. 更新外层 LifeMemo 的 submodule 指针（在本仓库之外，还没有确认是否已经做过）。
-2. compact 改为每天凌晨 4 点、compact prompt 补上过期信息的取舍规则。（暂缓，先不动 compact。）
-3. App 的聊天卡片界面。对应的读取 API 已经做完，见上面那一节。
-4. 标签（不计时）。
-5. 上周 reflection。
-6. 计时标签。
-7. 昨日 reflection。
+1. 卡片改为 thread（分支 `feat/card-threads`，第 2–4 步必须和第 1 步一起上线）：
+   - 第 2 步：卡片对应 Discord thread，thread 里的消息接收进来并归属卡片。
+   - 第 3 步：回复、工具结果、表情回应发回对应的 thread。
+   - 第 4 步：thread 里聊天时标明当前卡片；场景状态按卡片分开。
+   - 上线前在 staging 确认机器人有创建公开 thread、在 thread 里发消息的权限。
+2. 更新外层 LifeMemo 的 submodule 指针（在本仓库之外，还没有确认是否已经做过）。
+3. compact 改为每天凌晨 4 点、compact prompt 补上过期信息的取舍规则。（暂缓，先不动 compact。）
+4. App 的聊天卡片界面。对应的读取 API 已经做完，见上面那一节。
+5. 标签（不计时）。后端的标签 API 见 `5cd7ac2`。
+6. 上周 reflection。
+7. 计时标签。
+8. 昨日 reflection。
