@@ -396,11 +396,49 @@ def _memo_location_from_body(body: dict) -> dict | None:
     }
 
 
+def _memo_tag_ids_from_body(body: dict) -> list[int] | None:
+    """从请求 body 里解析 tag_client_ids。
+
+    - 没有 tag_client_ids 这个 key：返回 None（POST 时表示没有标签，PATCH 时表示不修改）
+    - 有这个 key：必须是字符串数组（可以是空数组，表示清空），去重，最多 20 个
+    - 不存在的 client_id 抛 HTTPException(400)，并在 detail 里写出是哪一个
+    - 已软删除的标签直接忽略、不报错：App 的 pushPending() 一旦某条抛错就会中断整轮同步。
+      memo 推送前（离线、或重试一条服务器已写入但响应丢失的 memo）标签可能已在别的设备上被删，
+      如果这里返回 400，这条 memo 会一直卡在队列里。标签从不硬删除，所以「不存在」只可能是 App 的 bug。
+    - 返回对应的整数 tags.id 列表（不含被忽略的已删除标签）
+    """
+    if "tag_client_ids" not in body:
+        return None
+    raw = body.get("tag_client_ids")
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="tag_client_ids must be a list of strings")
+    client_ids: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            raise HTTPException(status_code=400, detail="tag_client_ids must be a list of strings")
+        if item not in seen:
+            seen.add(item)
+            client_ids.append(item)
+    if len(client_ids) > 20:
+        raise HTTPException(status_code=400, detail="at most 20 tag_client_ids allowed")
+
+    tag_ids: list[int] = []
+    for cid in client_ids:
+        tag = db.get_tag_by_client_id(cid)
+        if not tag:
+            raise HTTPException(status_code=400, detail=f"tag not found: {cid}")
+        if tag.get("deleted_at") is not None:
+            continue
+        tag_ids.append(int(tag["id"]))
+    return tag_ids
+
+
 @app.post("/api/memos")
 async def create_memo(body: dict):
     """App / 快捷指令等入口新建一条 memo；重复 client_id 幂等，返回已有内容而不覆盖。
 
-    body: {client_id?, content, occurred_at, images?, source?, latitude?, longitude?, place_name?}
+    body: {client_id?, content, occurred_at, images?, source?, latitude?, longitude?, place_name?, tag_client_ids?}
     """
     content = (body.get("content") or "").strip()
     if not content:
@@ -414,19 +452,21 @@ async def create_memo(body: dict):
         raise HTTPException(status_code=400, detail="occurred_at must include a timezone")
     client_id = (body.get("client_id") or "").strip() or str(uuid.uuid4())
     location = _memo_location_from_body(body) or {}
+    tag_ids = _memo_tag_ids_from_body(body)
     return db.upsert_memo(
         client_id=client_id,
         content=content,
         occurred_at=occurred_at,
         images=body.get("images") or [],
         source=body.get("source") or "app",
+        tag_ids=tag_ids,
         **location,
     )
 
 
 @app.patch("/api/memos/{memo_id}")
 async def update_memo(memo_id: int, body: dict):
-    """只更新 body 里出现的字段：content / occurred_at / images / latitude / longitude / place_name。"""
+    """只更新 body 里出现的字段：content / occurred_at / images / latitude / longitude / place_name / tag_client_ids。"""
     fields = {}
     if "content" in body:
         content = (body.get("content") or "").strip()
@@ -443,9 +483,10 @@ async def update_memo(memo_id: int, body: dict):
     location = _memo_location_from_body(body)
     if location is not None:
         fields.update(location)
-    if not fields:
+    tag_ids = _memo_tag_ids_from_body(body)
+    if not fields and tag_ids is None:
         raise HTTPException(status_code=400, detail="no fields to update")
-    memo = db.update_memo(memo_id, **fields)
+    memo = db.update_memo(memo_id, tag_ids=tag_ids, **fields)
     if memo is None:
         raise HTTPException(status_code=404, detail="memo not found")
     return memo
@@ -456,6 +497,179 @@ async def delete_memo(memo_id: int):
     """删除一条 memo。不存在或已删除也返回 204：App 的 pushPending() 一旦某条
     抛错就会中断整轮同步，重复删除必须幂等，否则这条删除会一直卡在队列里。"""
     db.soft_delete_memo(memo_id)
+    return Response(status_code=204)
+
+
+# ============ Tags API ============
+
+def _tag_fields_from_body(body: dict, existing: dict | None = None) -> dict:
+    """校验并提取标签字段（POST 和 PATCH 共用；PATCH 时用已有值与本次修改合并）。"""
+    # 1. name
+    if existing is None:
+        raw_name = body.get("name")
+    else:
+        raw_name = body.get("name", existing.get("name"))
+    if not isinstance(raw_name, str):
+        raise HTTPException(status_code=400, detail="name required and must be a string")
+    name = raw_name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    if len(name) > 30:
+        raise HTTPException(status_code=400, detail="name must be at most 30 characters")
+    if "/" in name:
+        raise HTTPException(status_code=400, detail="name cannot contain '/'")
+
+    # 2. color
+    if existing is None:
+        color = body.get("color")
+    else:
+        color = body.get("color") if "color" in body else existing.get("color")
+    if color is not None:
+        if not isinstance(color, str) or not re.match(r"^#[0-9A-Fa-f]{6}$", color):
+            raise HTTPException(status_code=400, detail="color must be in #RRGGBB format or null")
+
+    # 3. is_timed
+    if existing is None:
+        is_timed = body.get("is_timed", False)
+    else:
+        is_timed = body.get("is_timed") if "is_timed" in body else existing.get("is_timed", False)
+    if not isinstance(is_timed, bool):
+        raise HTTPException(status_code=400, detail="is_timed must be a boolean")
+
+    # 4. started_at
+    if existing is None:
+        started_at = body.get("started_at")
+    else:
+        started_at = body.get("started_at") if "started_at" in body else existing.get("started_at")
+    if is_timed:
+        if not started_at:
+            raise HTTPException(status_code=400, detail="started_at required when is_timed is true")
+        try:
+            started_at = normalize_utc_iso(started_at)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="started_at must include a timezone")
+    else:
+        started_at = None
+
+    # 5. parent_client_id
+    if existing is None:
+        parent_client_id = body.get("parent_client_id")
+    else:
+        parent_client_id = body.get("parent_client_id") if "parent_client_id" in body else existing.get("parent_client_id")
+
+    parent_id = None
+    if parent_client_id is not None:
+        if not isinstance(parent_client_id, str):
+            raise HTTPException(status_code=400, detail="parent_client_id must be a string or null")
+        parent_client_id = parent_client_id.strip() or None
+
+    if parent_client_id is not None:
+        if existing and existing.get("client_id") == parent_client_id:
+            raise HTTPException(status_code=400, detail="parent_client_id cannot be self")
+        parent_tag = db.get_tag_by_client_id(parent_client_id)
+        if not parent_tag or parent_tag.get("deleted_at") is not None:
+            raise HTTPException(status_code=400, detail="parent tag not found or deleted")
+        if parent_tag.get("parent_client_id") is not None:
+            raise HTTPException(status_code=400, detail="parent tag must be a top-level tag")
+        if existing:
+            all_tags = db.list_tags()
+            has_children = any(
+                t.get("parent_client_id") == existing.get("client_id") and t.get("deleted_at") is None
+                for t in all_tags
+            )
+            if has_children:
+                raise HTTPException(status_code=400, detail="cannot set parent for tag with sub-tags")
+        parent_id = int(parent_tag["id"])
+
+    # 6. 重名校验 (409)
+    current_client_id = existing.get("client_id") if existing else (body.get("client_id") or "").strip()
+    all_tags = db.list_tags()
+    for t in all_tags:
+        if t.get("deleted_at") is None:
+            if current_client_id and t.get("client_id") == current_client_id:
+                continue
+            if t.get("parent_client_id") == parent_client_id and t.get("name") == name:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"tag with name '{name}' already exists under the same parent",
+                )
+
+    return {
+        "name": name,
+        "parent_id": parent_id,
+        "color": color,
+        "is_timed": is_timed,
+        "started_at": started_at,
+    }
+
+
+@app.get("/api/tags")
+async def list_tags():
+    """全部标签，含已软删除的。"""
+    return {"items": db.list_tags()}
+
+
+@app.post("/api/tags")
+async def create_tag(body: dict):
+    """新建标签。body: {client_id?, name, parent_client_id?, color?, is_timed?, started_at?}
+    client_id 重复时幂等，返回已有的、不覆盖。
+    """
+    raw_client_id = body.get("client_id")
+    if raw_client_id is not None and not isinstance(raw_client_id, str):
+        raise HTTPException(status_code=400, detail="client_id must be a string")
+    client_id = (raw_client_id or "").strip()
+    if client_id:
+        existing = db.get_tag_by_client_id(client_id)
+        if existing:
+            return existing
+    else:
+        client_id = str(uuid.uuid4())
+
+    fields = _tag_fields_from_body(body, existing=None)
+    return db.upsert_tag(
+        client_id=client_id,
+        name=fields["name"],
+        parent_id=fields["parent_id"],
+        color=fields["color"],
+        is_timed=fields["is_timed"],
+        started_at=fields["started_at"],
+    )
+
+
+@app.patch("/api/tags/{client_id}")
+async def update_tag(client_id: str, body: dict):
+    """只更新出现的字段；不存在或已删除返回 404。"""
+    existing = db.get_tag_by_client_id(client_id)
+    if not existing or existing.get("deleted_at") is not None:
+        raise HTTPException(status_code=404, detail="tag not found")
+
+    allowed_keys = {"name", "parent_client_id", "color", "is_timed", "started_at"}
+    if not (set(body.keys()) & allowed_keys):
+        raise HTTPException(status_code=400, detail="no fields to update")
+
+    fields = _tag_fields_from_body(body, existing=existing)
+    tag = db.update_tag(client_id, **fields)
+    if tag is None:
+        raise HTTPException(status_code=404, detail="tag not found")
+    return tag
+
+
+@app.delete("/api/tags/{client_id}", status_code=204)
+async def delete_tag(client_id: str):
+    """删除一个标签。204 幂等（不存在或已删除也返回 204）；还有未删除的子标签时返回 409。"""
+    tag = db.get_tag_by_client_id(client_id)
+    if not tag or tag.get("deleted_at") is not None:
+        return Response(status_code=204)
+
+    all_tags = db.list_tags()
+    has_active_children = any(
+        t.get("parent_client_id") == client_id and t.get("deleted_at") is None
+        for t in all_tags
+    )
+    if has_active_children:
+        raise HTTPException(status_code=409, detail="cannot delete tag with active sub-tags")
+
+    db.soft_delete_tag(client_id)
     return Response(status_code=204)
 
 
