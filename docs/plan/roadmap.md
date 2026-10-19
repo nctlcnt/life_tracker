@@ -112,6 +112,17 @@
 - 还没确认：生产机器人在主频道有没有创建 thread 的权限。没有的话，主动消息会照常发在主频道，
   日志里出现「没有权限」的警告。第一条主动消息发出后要看一次。
 
+### 去掉回复里照抄的前缀、check-in 工具批次只给场景用（PR #31、#32，main `f2ea7d7`）
+
+- 发送前去掉模型照抄的 `[卡片名 · 时间]` 和 `[check_in:名字]` 前缀。staging 上出现过一次
+  `[check_in:morning · 2026-10-19 17:12]` 发到 Discord 的情况。
+- 只有带场景的 check-in 才建工具批次，原因见下面"消息卡片"一节。
+- 2026-10-19 06:48 UTC 部署到生产，容器 healthy，启动日志没有错误。
+- 部署前的备份：镜像 `life-tracker:rollback-before-check-in-batches-20261019`，数据库和 `config.json`
+  在 `data/backups/deploy-20261019-check-in-batches/`。
+- 同一天确认生产机器人可以开 thread：17:01（悉尼时间）的 check-in 开出了 thread，回复后卡片转为 active；
+  16 张没有 thread 的旧 pending 卡片已经删除。
+
 ---
 
 ## 设计记录
@@ -215,7 +226,8 @@
 
 ## 接下来
 
-1. 卡片改为 thread 已上线（见上面"已完成"）。第一条主动消息发出后，确认生产机器人开出了 thread。
+1. 减少 check-in 的 token：第 1 步（不建工具批次）已上线；第 2 步用 `context_config` 在 `random_poll` 上试着减少内容；
+   第 3 步再考虑单独的 check-in 人设模板。
 2. 更新外层 LifeMemo 的 submodule 指针（在本仓库之外，还没有确认是否已经做过）。
 3. compact 改为每天凌晨 4 点、compact prompt 补上过期信息的取舍规则。（暂缓，先不动 compact。）
 4. App 的聊天卡片界面。对应的读取 API 已经做完，见上面那一节。

@@ -14,18 +14,18 @@
 
 ## 当前基线
 
-最后更新：2026-10-19 05:47 UTC
+最后更新：2026-10-19 06:49 UTC
 
 | 检查项 | 最近执行时间（UTC） | 状态 | 结果/证据 | 下次动作 |
 |---|---|---|---|---|
-| Python 全部自动测试 | 2026-10-19 05:47 | PASS | `.venv/bin/python -m pytest -q`：663 passed、1 warning，147.03s（main `ad43a9a`，卡片改为 Discord thread） | 每次部署前重跑 |
+| Python 全部自动测试 | 2026-10-19 06:25 | PASS | `.venv/bin/python -m pytest -q`：671 passed、1 warning，148.83s（main `f2ea7d7`） | 每次部署前重跑 |
 | 前端生产构建 | 2026-08-30 06:54 | PASS | `npm run build --prefix frontend`：Vite 生产构建成功，2045 modules transformed | 每次部署前重跑 |
 | npm 干净安装 | 2026-08-30 06:54 | PASS | `npm ci` 安装 287 packages；audit findings 与既往一致，仍待专项审查，不在本次改动范围 | 审查 audit findings；依赖变更后重跑 |
-| npm Docker builder | 2026-10-19 05:44 | PASS | 用户执行 `make deploy-local`，构建 `life-tracker:local`（sha256:5c841a33）成功并重建 production app（PR #28、#29） | Dockerfile/依赖变更后重跑 |
-| Production health endpoint | 2026-10-19 05:45 | PASS | `/internal/health` 返回 `{"status":"ok"}` | 每次部署后重跑 |
-| Production 容器状态 | 2026-10-19 05:45 | PASS | app `(healthy)`；Discord bot、scheduler、outbound、batcher、tool worker（apply）、heartbeat 全部启动，启动日志零 error/exception；`conversation_cards.discord_thread_id` 迁移完成 | 每次部署后重跑 |
+| npm Docker builder | 2026-10-19 06:48 | PASS | 用户执行 `make deploy-local`，构建 `life-tracker:local`（sha256:de3fc4f9）成功并重建 production app（PR #31、#32） | Dockerfile/依赖变更后重跑 |
+| Production health endpoint | 2026-10-19 06:49 | PASS | `/internal/health` 返回 `{"status":"ok"}` | 每次部署后重跑 |
+| Production 容器状态 | 2026-10-19 06:49 | PASS | app `(healthy)`；Discord bot、scheduler、outbound、tool worker（apply）、heartbeat 全部启动，启动日志零 error/exception | 每次部署后重跑 |
 | Prompt 内容迁移（PR #23） | 2026-08-30 06:58 | PASS | 部署代码后现场重读并 PATCH `main_template`（补 3 个【】标题，单次出现校验通过）与 `tool_worker_template`（种入 `DEFAULT_TOOL_WORKER_TEMPLATE`，此前为空行）；写库前后各轨道 `/api/admin/prompts/preview` 逐字节 diff：chat/check_in/result_expression 仅新增 3 行标题、无额外空行（production `{weather}` 排在最前，未触发 tier 抬升的空行副作用），execution 内容不变（此前已由代码兜底展示同样标题）、仅时间戳字段随请求变化 | 无——已生效；main_template 若被重新排序需重新评估 today_timeline 标题处是否出现额外空行 |
-| SQLite quick check | 2026-10-19 05:45 | PASS | `PRAGMA quick_check` → `ok` | 每次部署后重跑 |
+| SQLite quick check | 2026-10-19 06:49 | PASS | `PRAGMA quick_check` → `ok` | 每次部署后重跑 |
 | Litestream 写入 R2 | 2026-10-19 05:45 | PASS | 部署后新 WAL segments 已写入 R2（generation f8f62c83c2d3df4f，index 000008cc/000008cd） | 每次部署后检查复制；每季度恢复演练 |
 | 本地 SQLite 快照恢复 | 2026-08-29 09:55 | PASS | `scripts/backup_and_verify.py --label pre-lt178-production`：在线快照 39.5 MB，`integrity_check` → `ok`，28 张表行数逐张比对通过 | 每次破坏性迁移前重跑 |
 | R2/Litestream 完整恢复 | 2026-07-11 13:30 | PASS | 从 R2 恢复到全新 `/tmp` 路径；integrity check、数据新鲜度和 API-only smoke test 均通过 | 2026-10 前重跑，或 Litestream/R2 变更后立即重跑 |
