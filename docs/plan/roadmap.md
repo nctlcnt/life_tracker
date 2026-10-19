@@ -100,6 +100,18 @@
   （shadow 模式或不开工具 worker），check-in 不再提供 `set_scene`。生产和 staging 目前都是 apply 模式。
 - 主频道上旧的 `scene:<频道 id>` 状态不再被读取，留在 `app_state` 里不影响运行。
 
+### 卡片改为 thread：上线（PR #28、#29，main `ad43a9a`）
+
+- 2026-10-19 在 staging 用真实的 Discord 验证：check-in 开出 thread，在 thread 里回复后卡片转为 active，
+  主线聊天不带卡片；用户确认界面和通知都正常。
+- 2026-10-19 05:44 UTC 部署到生产。容器 healthy，启动日志没有错误，`conversation_cards` 已加上
+  `discord_thread_id` 列。
+- 部署前的备份：镜像 `life-tracker:rollback-before-card-threads-20261019`，数据库和 `config.json`
+  在 `data/backups/deploy-20261019-card-threads/`。新加的列不影响旧代码，回滚时只换镜像即可。
+- 生产库里 16 张 10-06 之前的 pending 卡片没有 thread，第一次处理卡片时会按过期规则删除。
+- 还没确认：生产机器人在主频道有没有创建 thread 的权限。没有的话，主动消息会照常发在主频道，
+  日志里出现「没有权限」的警告。第一条主动消息发出后要看一次。
+
 ---
 
 ## 设计记录
@@ -201,9 +213,7 @@
 
 ## 接下来
 
-1. 卡片改为 thread（分支 `feat/card-threads`，第 2–4 步必须和第 1 步一起上线）：
-   - 第 2–4 步代码已完成（见上面"已完成"），还没有在真实的 Discord 上验证。
-   - 上线前在 staging 确认机器人有创建公开 thread、在 thread 里发消息的权限。
+1. 卡片改为 thread 已上线（见上面"已完成"）。第一条主动消息发出后，确认生产机器人开出了 thread。
 2. 更新外层 LifeMemo 的 submodule 指针（在本仓库之外，还没有确认是否已经做过）。
 3. compact 改为每天凌晨 4 点、compact prompt 补上过期信息的取舍规则。（暂缓，先不动 compact。）
 4. App 的聊天卡片界面。对应的读取 API 已经做完，见上面那一节。
