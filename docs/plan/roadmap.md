@@ -82,6 +82,14 @@
 - 新增 `CardService.enter_card(card_id)`：用户在卡片里说话之前调用，pending 卡片转为 active。
 - 这一步单独部署会让 check-in 一直停在 pending，必须和第 2 步一起上线。
 
+### 卡片改为 thread：第 2、3 步（同一分支）
+
+- `conversation_cards.discord_thread_id`；主动消息第一次发送时开 thread，把用户加进去。
+- 队列里的 `channel_id` 一律是主频道，实际发到哪个 thread 由 `LifeTrackerBot._card_target` 在发送时根据卡片决定。
+- thread 里的消息写进历史时 `channel_id` 写主频道；check-in 批次的输入里多了 `card_source_id`，工具结果据此找到卡片。
+- 测试：新文件 `tests/test_card_threads.py`（用替身模拟 Discord 的频道和 thread）。
+- 还没有在真实的 Discord 上跑过，staging 验证留到第 4 步之后一起做。
+
 ---
 
 ## 设计记录
@@ -119,7 +127,9 @@
 - `outbound_deliveries.channel_id` 也保持主频道。实际发到哪个 Discord 频道，在发送时根据卡片决定：
   主动消息 → 它自己的卡片的 thread；回复类消息和表情回应 → 触发消息所在卡片的 thread；不属于卡片 → 主频道。
 - check-in 工具批次的结果（例如工具执行失败的提示）发到这次 check-in 的 thread 里。卡片还是 pending 时，它和开场白一样先存在卡片里。
-- 不是由卡片开出来的 thread（例如手动建的）当作主线处理，回复仍然发在那个 thread 里。
+- 不是由卡片开出来的 thread（例如手动建的）机器人不处理，和以前一样。发送队列按对话所属的频道排队，
+  如果把这种 thread 当作主线，回复就只能发回主频道，在 thread 里说话、回复却出现在主频道会很奇怪。
+- 没有建 thread 的权限时，消息仍然发在主频道，这张卡片就没有 thread。消息必须送达。
 
 **发给 AI 的上下文**
 
@@ -182,8 +192,7 @@
 ## 接下来
 
 1. 卡片改为 thread（分支 `feat/card-threads`，第 2–4 步必须和第 1 步一起上线）：
-   - 第 2 步：卡片对应 Discord thread，thread 里的消息接收进来并归属卡片。
-   - 第 3 步：回复、工具结果、表情回应发回对应的 thread。
+   - 第 2、3 步（已完成，见上面"已完成"）：卡片对应 Discord thread；回复、工具结果、表情回应发回对应的 thread。
    - 第 4 步：thread 里聊天时标明当前卡片；场景状态按卡片分开。
    - 上线前在 staging 确认机器人有创建公开 thread、在 thread 里发消息的权限。
 2. 更新外层 LifeMemo 的 submodule 指针（在本仓库之外，还没有确认是否已经做过）。

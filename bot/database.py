@@ -771,6 +771,16 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_conversation_messages_card "
             "ON conversation_messages(card_id, id)"
         )
+        # 卡片在 Discord 里显示成 thread（见 bot/cards.py）。第一次发消息时才创建，
+        # 所以可以为空。
+        try:
+            conn.execute("ALTER TABLE conversation_cards ADD COLUMN discord_thread_id TEXT")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_cards_thread "
+            "ON conversation_cards(discord_thread_id) WHERE discord_thread_id IS NOT NULL"
+        )
 
         # 一次性兼容迁移：项目曾经只存在于 events.project_name。
         # 新版本改为用户手动项目表后，需要把已有历史项目注册进去，避免升级后 Project Overview 变空。
@@ -2452,6 +2462,24 @@ class Database:
         finally:
             conn.close()
 
+    def set_card_thread(self, card_id: int, thread_id: str) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE conversation_cards SET discord_thread_id = ? WHERE id = ?",
+            (str(thread_id), int(card_id)),
+        )
+        conn.commit()
+        conn.close()
+
+    def find_card_id_by_thread(self, thread_id: str) -> int | None:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id FROM conversation_cards WHERE discord_thread_id = ?",
+            (str(thread_id),),
+        ).fetchone()
+        conn.close()
+        return int(row["id"]) if row else None
+
     def touch_card(self, card_id: int, *, now: str, expires_at: str) -> None:
         conn = self._get_conn()
         conn.execute(
@@ -2530,12 +2558,34 @@ class Database:
             return None
         conn = self._get_conn()
         try:
-            row = conn.execute(
-                """SELECT message.card_id FROM tool_batches AS batch
-                   JOIN conversation_messages AS message
-                     ON message.id = batch.last_user_message_id
-                   WHERE batch.id = ? AND batch.source_kind = 'conversation'""",
+            batch = conn.execute(
+                "SELECT source_kind, input_json, last_user_message_id "
+                "FROM tool_batches WHERE id = ?",
                 (str(source_id),),
+            ).fetchone()
+            if batch is None:
+                return None
+            if batch["source_kind"] == "check_in":
+                # check-in 批次的结果属于这次 check-in 自己的卡片。卡片的
+                # source_id 由调度器写进批次输入；之前建的批次没有这一项。
+                try:
+                    payload = json.loads(batch["input_json"] or "{}")
+                except json.JSONDecodeError:
+                    return None
+                card_source_id = payload.get("card_source_id")
+                if not card_source_id:
+                    return None
+                row = conn.execute(
+                    "SELECT id FROM conversation_cards "
+                    "WHERE source_type = 'check_in' AND source_id = ?",
+                    (str(card_source_id),),
+                ).fetchone()
+                return int(row["id"]) if row else None
+            if batch["last_user_message_id"] is None:
+                return None
+            row = conn.execute(
+                "SELECT card_id FROM conversation_messages WHERE id = ?",
+                (int(batch["last_user_message_id"]),),
             ).fetchone()
             return int(row["card_id"]) if row and row["card_id"] is not None else None
         finally:
@@ -2590,12 +2640,17 @@ class Database:
             conn.close()
 
     def purge_expired_pending_cards(self, now: str) -> int:
-        """删除过期、从没被回复过的卡片和它们的消息。active 卡片不删。"""
+        """删除过期、从没被回复过的卡片和它们的消息。
+
+        active 卡片不删。已经开了 thread 的 pending 卡片也不删：thread 在 Discord
+        里还在，几天后在里面回复时仍然要能找到这张卡片。
+        """
         conn = self._get_conn()
         try:
             conn.execute("BEGIN IMMEDIATE")
             ids = [int(r["id"]) for r in conn.execute(
-                "SELECT id FROM conversation_cards WHERE status = 'pending' AND expires_at <= ?",
+                "SELECT id FROM conversation_cards WHERE status = 'pending' "
+                "AND discord_thread_id IS NULL AND expires_at <= ?",
                 (now,),
             ).fetchall()]
             if ids:

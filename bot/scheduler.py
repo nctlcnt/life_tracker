@@ -542,6 +542,8 @@ class Scheduler:
                             "prompt": prompt,
                             "timestamp": timestamp,
                             "check_in_name": name,
+                            # 工具批次的结果要发到这次 check-in 的卡片里
+                            "card_source_id": source_id,
                             "tool_profile": check_in.get("tool_profile") or "poll",
                             "track_scene": bool(check_in.get("track_scene")),
                             "context_config": check_in.get("context_config") or {},

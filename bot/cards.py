@@ -4,15 +4,17 @@
 - Discord 主线聊天是一整条线，不属于任何卡片。
 - AI 主动发的消息（check-in、提醒、系统通知……）各自开一张 pending 卡片，
   先存在 card_pending_messages，不进 conversation_messages。
-- 用户在某张卡片里说话（之后对应 Discord thread）：卡片转为 active，里面的
-  消息按原顺序写进 conversation_messages，然后才写用户的这条消息。
+- 用户在卡片的 Discord thread 里说话：卡片转为 active，里面的消息按原顺序
+  写进 conversation_messages，然后才写用户的这条消息。
 - AI 对用户的回复归入触发消息的卡片；conversation 工具批次以最后一条
-  用户消息为准。来源不属于任何卡片时，回复留在主线。
-- 过期：pending 卡片到期直接删除；active 卡片到期只在界面上隐去，内容保留。
+  用户消息为准，check-in 工具批次归入这次 check-in 的卡片。来源不属于任何
+  卡片时，回复留在主线。归入的卡片还是 pending 时，回复和开场白一样先存在卡片里。
+- 过期：没有 thread 的 pending 卡片到期直接删除；开了 thread 的 pending 卡片
+  保留，因为 thread 还在；active 卡片到期只在界面上隐去，内容保留。
   每次有新消息都会把过期时间往后推。
 
-上下文仍然按 conversation_messages 的 id 线性排列，所以 compact、tool batch
-的 cursor 都不需要知道卡片的存在。
+上下文仍然按 conversation_messages 的 id 线性排列，thread 里的消息也写主频道
+的 channel_id，所以 compact、tool batch 的 cursor 都不需要知道卡片和 thread 的存在。
 """
 from __future__ import annotations
 
@@ -70,6 +72,39 @@ class CardService:
     def _touch(self, card_id: int) -> None:
         now, expires = self._times()
         self.db.touch_card(card_id, now=now, expires_at=expires)
+
+    def ensure_card(self, channel_id: str, source_type: str, source_id: str) -> dict:
+        """主动消息的卡片：不存在就新建一张 pending 卡片。"""
+        card = self.db.get_card_by_source(source_type, source_id)
+        if card is None:
+            now, expires = self._times()
+            card_id = self.db.create_card(
+                channel_id=str(channel_id), source_type=source_type,
+                source_id=source_id, status="pending",
+                now=now, expires_at=expires,
+            )
+            logger.info(f"🗂️ 新卡片 #{card_id}（{source_type}），等待回复")
+            card = self.db.get_card(card_id)
+        return card
+
+    def destination_card(self, channel_id: str, *, source_type: str | None,
+                         source_id: str | None,
+                         target_discord_message_id: str | None = None) -> dict | None:
+        """一次发送应该显示在哪张卡片里；None 表示发在主线。
+
+        主动消息 → 它自己的卡片（必要时新建），source_id 要先经过 unique_source_id。
+        表情回应 → 被回应的那条消息所在的卡片。
+        回复类消息 → 触发消息所在的卡片。
+        """
+        if is_proactive(source_type):
+            self.purge_expired()
+            return self.ensure_card(channel_id, source_type, str(source_id))
+        if target_discord_message_id is not None:
+            card_id = self.db.find_card_id_by_discord_message(
+                str(target_discord_message_id))
+        else:
+            card_id = self.db.find_reply_card_id(source_type, source_id)
+        return self.db.get_card(card_id) if card_id is not None else None
 
     # --- 列表 ----------------------------------------------------------------
 
@@ -135,17 +170,8 @@ class CardService:
         """
         if is_proactive(source_type):
             self.purge_expired()
-            source_id = unique_source_id(source_id)
-            card = self.db.get_card_by_source(source_type, source_id)
-            if card is None:
-                now, expires = self._times()
-                card_id = self.db.create_card(
-                    channel_id=message["channel_id"], source_type=source_type,
-                    source_id=source_id, status="pending",
-                    now=now, expires_at=expires,
-                )
-                logger.info(f"🗂️ 新卡片 #{card_id}（{source_type}），等待回复")
-                card = self.db.get_card(card_id)
+            card = self.ensure_card(
+                message["channel_id"], source_type, unique_source_id(source_id))
             if card["status"] == "active":
                 # 同一次主动发送的后续分段到达前，用户已经回复了前面的分段
                 await _maybe_await(ingest(**message, card_id=card["id"]))
@@ -162,6 +188,11 @@ class CardService:
             await _maybe_await(ingest(**message))
             return
         self._touch(card_id)
+        card = self.db.get_card(card_id)
+        if card is not None and card["status"] == "pending":
+            # 例如 check-in 工具批次的结果：用户还没在卡片里说过话
+            self.db.add_card_pending_message(card_id, **message)
+            return
         await _maybe_await(ingest(**message, card_id=card_id))
 
 

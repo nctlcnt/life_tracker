@@ -138,6 +138,33 @@ def test_pending_cards_are_deleted_after_three_days(db, cards, clock):
     assert db.get_card_by_source("check_in", "c1") is None
 
 
+def test_pending_cards_with_a_thread_survive_expiry(db, cards, clock):
+    """thread 在 Discord 里还在，几天后在里面回复仍然要能找到卡片。"""
+    _send(db, cards, 1, "没人回", "check_in", "c1")
+    card_id = db.get_card_by_source("check_in", "c1")["id"]
+    db.set_card_thread(card_id, "777")
+    clock.advance(CARD_TTL + timedelta(days=2))
+
+    assert cards.purge_expired() == 0
+    assert db.find_card_id_by_thread("777") == card_id
+    assert _user(db, cards, 10, "晚了几天才回", in_card_of="1") == card_id
+    assert _history(db) == [("没人回", card_id), ("晚了几天才回", card_id)]
+
+
+def test_destination_card(db, cards):
+    """主动消息新建自己的卡片；回复类消息找触发消息的卡片，主线上的找不到。"""
+    created = cards.destination_card(CHANNEL, source_type="check_in", source_id="c1")
+    assert created["status"] == "pending"
+    assert cards.destination_card(
+        CHANNEL, source_type="check_in", source_id="c1")["id"] == created["id"]
+
+    _user(db, cards, 10, "主线")
+    assert cards.destination_card(CHANNEL, source_type="chat", source_id="10") is None
+    assert cards.destination_card(
+        CHANNEL, source_type="chat_tool_feedback", source_id="10",
+        target_discord_message_id="10") is None
+
+
 def test_entering_a_purged_card_falls_back_to_the_main_line(db, cards, clock):
     _send(db, cards, 1, "没人回", "check_in", "c1")
     card_id = db.get_card_by_source("check_in", "c1")["id"]
