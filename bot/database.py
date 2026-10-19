@@ -1660,9 +1660,8 @@ class Database:
             if msg:
                 msg["id"] = item["id"]
                 msg["created_at"] = item["created_at"]
-                # 卡片归属和被回复的消息：窗口装配用它们加卡片名和末尾引用。
+                # 卡片归属：窗口装配用它加卡片名。
                 msg["card_id"] = item.get("card_id")
-                msg["reply_to_message_id"] = item.get("reply_to_message_id")
                 messages.append(msg)
         return messages
 
@@ -2712,33 +2711,14 @@ class Database:
         conn.commit()
         conn.close()
 
-    def find_conversation_message_by_discord_id(self, discord_message_id: str) -> dict | None:
-        """按 Discord 消息 id 取一条已经进入对话历史的消息（含它的卡片归属）。"""
+    def get_card_tail_messages(self, card_id: int, limit: int = 4) -> list[dict]:
+        """某张卡片最后几条已进入历史的消息，按 id 正序返回，给卡片总结用。"""
         conn = self._get_conn()
-        try:
-            row = conn.execute(
-                "SELECT id, card_id, role, content, created_at, metadata_json "
-                "FROM conversation_messages WHERE discord_message_id = ?",
-                (str(discord_message_id),),
-            ).fetchone()
-            return dict(row) if row else None
-        finally:
-            conn.close()
-
-    def get_card_tail_messages(self, card_id: int, limit: int = 4,
-                               upto_id: int | None = None) -> list[dict]:
-        """某张卡片最后几条已进入历史的消息，按 id 正序返回，给末尾引用用。"""
-        conn = self._get_conn()
-        where = "card_id = ?"
-        params: list = [int(card_id)]
-        if upto_id is not None:
-            where += " AND id <= ?"
-            params.append(int(upto_id))
         try:
             rows = conn.execute(
-                f"SELECT * FROM conversation_messages WHERE {where} "
+                "SELECT * FROM conversation_messages WHERE card_id = ? "
                 "ORDER BY id DESC LIMIT ?",
-                [*params, max(int(limit), 0)],
+                (int(card_id), max(int(limit), 0)),
             ).fetchall()
         finally:
             conn.close()

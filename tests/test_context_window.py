@@ -232,7 +232,7 @@ def test_merged_assistant_run_keeps_one_anchor_per_message(db):
     assert "早呀" in blob and "该睡了" in blob
 
 
-# ── 消息卡片：上下文里的卡片名与末尾引用 ────────────────────────────────────
+# ── 消息卡片：上下文里的卡片名 ─────────────────────────────────────────
 
 def _card(db, source_type, source_id, status="active"):
     """建一张卡片，返回 id。"""
@@ -243,7 +243,7 @@ def _card(db, source_type, source_id, status="active"):
                           now=now, expires_at=later)
 
 
-def _add_in_card(db, role, content, n, card_id, reply_to=None):
+def _add_in_card(db, role, content, n, card_id):
     """写一条归属于某张卡片的会话消息。"""
     metadata = None
     if role == "user":
@@ -251,7 +251,7 @@ def _add_in_card(db, role, content, n, card_id, reply_to=None):
     return db.add_conversation_message(
         discord_message_id=f"m{n}", channel_id=CHANNEL, role=role,
         content=content, created_at=datetime.now(timezone.utc).isoformat(),
-        reply_to_message_id=reply_to, metadata=metadata, card_id=card_id,
+        metadata=metadata, card_id=card_id,
     )
 
 
@@ -296,68 +296,17 @@ def test_card_ordinal_is_per_source_type(db):
     assert labels == ["check_in1", "check_in2", "reminder1"]
 
 
-def test_reference_names_the_card_without_repeating_the_inline_quote(db):
-    """discord_bot 已经内联过引用片段时，末尾只补卡片名，不再引用一遍原话。"""
+def test_card_messages_mix_linearly_with_the_main_line(db):
+    """卡片里的消息和主线消息按进入历史的顺序排在一起，只多一个卡片名前缀，
+    不会额外插入合成消息。"""
+    _add(db, "user", "主线一句", 1)
     card_id = _card(db, "check_in", "ci-1")
-    _add_in_card(db, "assistant", "今天打算做什么？", 1, card_id)
-    db.add_conversation_message(
-        discord_message_id="m2", channel_id=CHANNEL, role="user",
-        content="写代码", created_at=datetime.now(timezone.utc).isoformat(),
-        reply_to_message_id="m1", card_id=card_id,
-        metadata={"current_content": '[2026-07-17 10:05] [回复 你说过 的消息: "今天打算做什么？"]\n写代码'},
-    )
+    _add_in_card(db, "assistant", "今天打算做什么？", 2, card_id)
+    _add_in_card(db, "user", "写代码", 3, card_id)
+    _add(db, "user", "主线又一句", 4)
 
     w = assemble_window(db, CHANNEL)
-    reference = w.messages[-2]
-    assert reference == {"role": "user", "content": "【上一条在回复卡片 check_in1】"}
-    assert "今天打算做什么？" not in reference["content"]
-    assert w.messages[-1]["content"].endswith("写代码")
-
-
-def test_reference_quotes_the_target_when_inline_quote_is_missing(db):
-    """抓取 Discord 原消息失败时不会有内联引用，末尾要补上原话。"""
-    card_id = _card(db, "check_in", "ci-1")
-    _add_in_card(db, "assistant", "今天打算做什么？", 1, card_id)
-    _add_in_card(db, "user", "写代码", 2, card_id, reply_to="m1")
-
-    reference = assemble_window(db, CHANNEL).messages[-2]
-    assert "check_in1" in reference["content"]
-    assert "今天打算做什么？" in reference["content"]
-
-
-def test_reference_pulls_more_rounds_when_target_is_folded(db):
-    """被回复的消息已折进摘要时，明文里看不到它，末尾多引用几条原话。"""
-    card_id = _card(db, "check_in", "ci-1")
-    old_ids = [
-        _add_in_card(db, "assistant", "第一句", 1, card_id),
-        _add_in_card(db, "assistant", "第二句", 2, card_id),
-        _add_in_card(db, "assistant", "第三句", 3, card_id),
-    ]
-    save_summary_state(db, CHANNEL, summary="早前摘要",
-                       upto_message_id=old_ids[-1], model="m",
-                       updated_at="2026-07-17T10:00:00+00:00")
-    _add_in_card(db, "user", "回应一下", 4, card_id, reply_to="m3")
-
-    reference = assemble_window(db, CHANNEL).messages[-2]
-    assert "早于摘要分界线" in reference["content"]
-    assert "第三句" in reference["content"] and "第二句" in reference["content"]
-
-
-def test_reference_is_not_counted_as_a_real_tail_message(db):
-    """末尾引用是合成消息：不算进 tail_count，但要算进 total_tokens。"""
-    card_id = _card(db, "check_in", "ci-1")
-    _add_in_card(db, "assistant", "今天打算做什么？", 1, card_id)
-    _add_in_card(db, "user", "写代码", 2, card_id, reply_to="m1")
-
-    w = assemble_window(db, CHANNEL)
-    assert w.tail_count == 2
-    assert len(w.messages) == 3
+    assert len(w.messages) == w.tail_count == 4
+    assert [m["content"].startswith("[check_in1 · ") for m in w.messages] == [
+        False, True, True, False]
     assert w.total_tokens == sum(message_tokens(m["content"]) for m in w.messages)
-
-
-def test_no_reference_when_the_last_message_is_not_a_reply(db):
-    card_id = _card(db, "check_in", "ci-1")
-    _add_in_card(db, "assistant", "今天打算做什么？", 1, card_id)
-    _add_in_card(db, "user", "写代码", 2, card_id)
-
-    assert len(assemble_window(db, CHANNEL).messages) == 2

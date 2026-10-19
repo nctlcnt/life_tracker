@@ -16,7 +16,6 @@ from bot.async_pipeline import (
     OutboundQueue,
 )
 from bot.ai_engine import chat, simple_completion
-from bot.card_summary import schedule_summary
 from bot.cards import CardService, is_proactive, unique_source_id
 from bot.memory import MemoryService
 from bot.weather import get_weather_brief, get_weather_detailed, geocode_address
@@ -53,7 +52,6 @@ class LifeTrackerBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.db = db
         self.memory = memory_service or MemoryService(db)
-        self.cards = CardService(db)
         self.generation_gate = generation_gate or NullGenerationGate()
         self.outbound_queue = outbound_queue
         self.batch_coordinator = batch_coordinator
@@ -100,7 +98,6 @@ class LifeTrackerBot(commands.Bot):
     async def setup_hook(self):
         """注册斜杠命令并同步到 Discord"""
         self.tree.add_command(_calendar_group(self))
-        self.tree.add_command(_conversation_group(self))
         self.tree.add_command(_weather_command(self))
         self.tree.add_command(_tz_command(self))
         await self.tree.sync()
@@ -173,21 +170,6 @@ class LifeTrackerBot(commands.Bot):
         # 当前用户消息（带时间戳前缀，和历史消息格式一致）
         current_content = f"[{timestamp}] {content_to_send}"
 
-        # 先确定这条消息属于哪张卡片。reply 的是一张 pending 卡片时，这一步会把
-        # 卡片里 AI 的消息先写进对话历史，所以必须在写入用户消息之前完成。
-        reply_to_id = (
-            str(message.reference.message_id)
-            if message.reference and message.reference.message_id
-            else None
-        )
-        card_kwargs = {}
-        try:
-            card_kwargs["card_id"] = self.cards.card_for_user_message(
-                str(message.channel.id), reply_to_id)
-        except Exception as e:
-            # 卡片出错不能挡住聊天本身：消息照常写入，只是不归属任何卡片
-            logger.exception(f"⚠️ 卡片归属失败，消息不带卡片写入: {e}")
-
         # 备份到 DB（messages 表只作备份，AI 上下文走 DB conversation log）
         self.db.add_message("user", current_content)
         row_id = await self.memory.ingest_message(
@@ -199,19 +181,17 @@ class LifeTrackerBot(commands.Bot):
             role="user",
             content=message.content or "",
             created_at=message.created_at.isoformat(),
-            reply_to_message_id=reply_to_id,
+            reply_to_message_id=(
+                str(message.reference.message_id)
+                if message.reference and message.reference.message_id
+                else None
+            ),
             metadata={
                 "content_to_send": content_to_send,
                 "current_content": current_content,
                 "message_type": str(message.type),
             },
-            **card_kwargs,
         )
-        # 卡片有了新对话就在后台补总结。只在用户消息之后触发：卡片是被回复之后
-        # 才转为 active 的，到这一步 AI 的开场白已经一起进了对话历史，总结读得到
-        # 完整的一轮。失败不影响聊天，schedule_summary 自己吞掉异常。
-        schedule_summary(self.db, card_kwargs.get("card_id"))
-
         if row_id is not None and self.batch_coordinator is not None:
             self.batch_coordinator.notify_user_message(
                 str(message.channel.id), row_id
@@ -642,100 +622,6 @@ def _calendar_group(bot: LifeTrackerBot) -> app_commands.Group:
     return group
 
 
-def _card_choice_label(card: dict) -> str:
-    """autocomplete 选项的文字。Discord 限制 100 字符，超出会整条被拒。"""
-    marker = "▶ " if card.get("is_current") else ""
-    summary = (card.get("summary") or "还没有总结").strip()
-    text = f"{marker}{card['label']} · {summary}"
-    return text[:100]
-
-
-def _conversation_group(bot: LifeTrackerBot) -> app_commands.Group:
-    """/conversation — 手动管理消息卡片（开新卡片、看列表、切换）。"""
-    group = app_commands.Group(name="conversation", description="管理对话卡片")
-
-    async def card_autocomplete(
-        interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
-        # 这里不能调模型：autocomplete 必须 3 秒内返回，总结是后台预先写好的。
-        try:
-            cards = bot.cards.list_active(str(interaction.channel_id))
-        except Exception as e:
-            logger.warning(f"⚠️ 卡片 autocomplete 读取失败: {type(e).__name__}: {e}")
-            return []
-        keyword = current.lower()
-        if keyword:
-            cards = [
-                c for c in cards
-                if keyword in c["label"].lower()
-                or keyword in (c.get("summary") or "").lower()
-            ]
-        return [
-            app_commands.Choice(name=_card_choice_label(c), value=str(c["id"]))
-            for c in cards[:25]
-        ]
-
-    @group.command(name="new", description="开一张新的对话卡片，之后的消息都归到它下面")
-    async def conversation_new(interaction: discord.Interaction):
-        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
-            return
-        try:
-            card_id = bot.cards.start_new_card(str(interaction.channel_id))
-        except Exception as e:
-            await interaction.response.send_message(
-                f"⚠️ 开新卡片失败：{type(e).__name__}: {e}", ephemeral=True)
-            return
-        await interaction.response.send_message(
-            f"✅ 已经开了一张新卡片（#{card_id}），接下来的消息都记在它下面。",
-            ephemeral=True,
-        )
-
-    @group.command(name="list", description="看看现在有哪些活跃的对话卡片")
-    async def conversation_list(interaction: discord.Interaction):
-        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
-            return
-        try:
-            cards = bot.cards.list_active(str(interaction.channel_id))
-        except Exception as e:
-            await interaction.response.send_message(
-                f"⚠️ 卡片列表读取失败：{type(e).__name__}: {e}", ephemeral=True)
-            return
-        if not cards:
-            await interaction.response.send_message(
-                "现在没有活跃的卡片。直接说话或者用 `/conversation new` 开一张。",
-                ephemeral=True,
-            )
-            return
-        lines = []
-        for card in cards:
-            marker = "▶" if card["is_current"] else "　"
-            summary = (card.get("summary") or "还没有总结").strip()
-            lines.append(f"{marker} `{card['label']}` (#{card['id']}) — {summary}")
-        text = "活跃的对话卡片（▶ 是当前卡片）\n" + "\n".join(lines)
-        await interaction.response.send_message(text[:2000], ephemeral=True)
-
-    @group.command(name="switch", description="切换到另一张对话卡片")
-    @app_commands.describe(card="从列表里选一张卡片")
-    @app_commands.autocomplete(card=card_autocomplete)
-    async def conversation_switch(interaction: discord.Interaction, card: str):
-        if config.ALLOWED_USER_ID and interaction.user.id != config.ALLOWED_USER_ID:
-            return
-        try:
-            switched = bot.cards.switch_to(int(card))
-        except ValueError as e:
-            await interaction.response.send_message(f"⚠️ {e}", ephemeral=True)
-            return
-        except Exception as e:
-            await interaction.response.send_message(
-                f"⚠️ 切换失败：{type(e).__name__}: {e}", ephemeral=True)
-            return
-        summary = (switched.get("summary") or "还没有总结").strip()
-        await interaction.response.send_message(
-            f"✅ 已经切换到卡片 #{switched['id']} — {summary}", ephemeral=True)
-
-    return group
-
-
 _COMMON_TZS = [
     "Australia/Sydney",
     "Asia/Tokyo",
@@ -906,7 +792,8 @@ async def _record_sent_chunk(db: Database | None, sent: discord.Message, role: s
     """Persist a sent Discord message when a DB is available.
 
     带 source_type 时交给卡片规则决定去向：主动消息先进 pending 卡片，
-    回复类消息进当前卡片。不带时保持原行为，直接写进对话历史。
+    回复类消息跟着触发消息所在的卡片走（触发消息在主线上就留在主线）。
+    不带时保持原行为，直接写进对话历史。
     """
     if db is None and memory_service is None:
         return

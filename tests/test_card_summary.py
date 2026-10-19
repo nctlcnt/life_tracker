@@ -1,7 +1,6 @@
 """卡片一句话总结（bot/card_summary.py）。
 
-总结必须是后台预先写好的：Discord autocomplete 要求 3 秒内返回，
-打开 /conversation list 的时候来不及现场调模型。
+总结必须是后台预先写好的：打开卡片列表的时候来不及现场调模型。
 """
 import asyncio
 
