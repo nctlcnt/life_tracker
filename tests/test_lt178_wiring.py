@@ -231,6 +231,59 @@ def test_check_in_creates_tool_batch_and_chat_side_uses_no_tools(
     assert batch["input"]["card_source_id"].startswith("interview:")
 
 
+def test_check_in_without_scene_creates_no_tool_batch(tmp_path, monkeypatch):
+    """普通 check-in 不建工具批次，也不给模型工具：工具只在用户回复后的对话批次里用。"""
+    db = make_db(tmp_path)
+    memory = MemoryService(db)
+    repository = ToolBatchRepository(db)
+    ready = []
+    coordinator = BatchCoordinator(
+        db,
+        repository,
+        channel_ids=["123"],
+        execution_mode="apply",
+        on_batch_ready=lambda batch: ready.append(batch["id"]),
+    )
+    scheduler = Scheduler(
+        db,
+        lambda *_args, **_kwargs: None,
+        memory_service=memory,
+        batch_coordinator=coordinator,
+        tool_worker_apply=True,
+    )
+    monkeypatch.setattr(scheduler_module.config, "CHANNEL_ID", 123)
+    check_in_id = db.create_check_in(
+        name="noon",
+        label="Noon",
+        enabled=True,
+        schedule_type="window",
+        time_start="12:00",
+        time_end="13:00",
+        prompt_template="{timestamp} noon",
+        tool_profile="poll",
+    )
+    captured = {}
+
+    async def fake_scheduled(_db, _prompt, _timestamp, _history, **kwargs):
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(scheduler_module, "scheduled_action", fake_scheduled)
+
+    result = asyncio.run(
+        scheduler._do_check_in(db.get_check_in(check_in_id), "2026-08-28 12:30")
+    )
+
+    assert result["ok"] is True
+    assert captured["tool_profile"] == "none"
+    assert ready == []
+    conn = db._get_conn()
+    try:
+        assert conn.execute("SELECT count(*) FROM tool_batches").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 def test_apply_reminder_expression_also_has_no_business_tools(
     tmp_path, monkeypatch
 ):

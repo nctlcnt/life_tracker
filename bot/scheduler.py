@@ -526,7 +526,11 @@ class Scheduler:
         prompt = self._render_check_in_prompt(check_in, timestamp)
 
         async with self.generation_gate:
-            if self.batch_coordinator is not None:
+            # 只有带场景的 check-in 才建工具批次：场景只能由工具 worker 写入。
+            # 其余 check-in 的批次在生产里从来没调用过工具（2026-10-13 至 10-19
+            # 共 35 个，0 次调用），每次却要多跑一轮模型；用户回复之后的工具
+            # 调用走对话批次，不受影响。
+            if self.batch_coordinator is not None and check_in.get("track_scene"):
                 try:
                     self.batch_coordinator.create_check_in(
                         channel_id=str(config.CHANNEL_ID),
