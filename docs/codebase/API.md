@@ -47,11 +47,43 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/memos?cursor=&limit=200` | 增量拉取，含已软删除的行；`{items, next_cursor, has_more}`，`limit` 上限 500 |
-| POST | `/api/memos` | body `{client_id?, content, occurred_at, images?, source?, latitude?, longitude?, place_name?}`；`occurred_at` 必须带时区，否则 400；地点三个字段作为整体处理；传 null 表示清空；不注入 AI；重复 `client_id` 幂等，返回已有内容 |
-| PATCH | `/api/memos/{memo_id}` | body `{content?, occurred_at?, images?, latitude?, longitude?, place_name?}`，只更新出现的字段；地点三个字段作为整体处理；传 null 表示清空；不注入 AI；不存在或已软删除 404 |
+| POST | `/api/memos` | body `{client_id?, content, occurred_at, images?, source?, latitude?, longitude?, place_name?, tag_client_ids?}`；`occurred_at` 必须带时区，否则 400；地点三个字段作为整体处理；传 null 表示清空；不注入 AI；重复 `client_id` 幂等，返回已有内容 |
+| PATCH | `/api/memos/{memo_id}` | body `{content?, occurred_at?, images?, latitude?, longitude?, place_name?, tag_client_ids?}`，只更新出现的字段；地点三个字段作为整体处理；传 null 表示清空；不注入 AI；不存在或已软删除 404 |
 | DELETE | `/api/memos/{memo_id}` | 软删除；不存在或已删除也返回 204（保证 App 同步队列幂等） |
 
-响应里的 `id` 是字符串，`created_at`/`updated_at`/`occurred_at`/`deleted_at` 统一是 UTC 毫秒精度 `...Z` 格式，游标是 `base64url("{updated_at}|{id}")`。
+响应里的 `id` 是字符串，`created_at`/`updated_at`/`occurred_at`/`deleted_at` 统一是 UTC 毫秒精度 `...Z` 格式，游标是 `base64url("{updated_at}|{id}")`。每个返回的 memo 始终包含 `tag_client_ids: list[str]`（仅包含未删除的标签 client_id）。写入时 `tag_client_ids` 必须是字符串数组（最多 20 个，去重）；引用不存在的标签返回 400，引用已软删除的标签会被静默忽略（避免离线/重试的推送卡住 App 同步队列）。
+
+## Tags（memo 标签）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/tags` | `{"items": [...]}`，全部标签，含已软删除的 |
+| POST | `/api/tags` | body `{client_id?, name, parent_client_id?, color?, is_timed?, started_at?}`；`client_id` 重复时幂等，返回已有的、不覆盖 |
+| PATCH | `/api/tags/{client_id}` | 只更新出现的字段；不存在或已删除返回 404 |
+| DELETE | `/api/tags/{client_id}` | 204，幂等（不存在或已删除也返回 204）；还有未删除的子标签时返回 409 |
+
+标签对象格式：
+```json
+{
+  "id": "12",
+  "client_id": "6F1C…",
+  "name": "电影",
+  "parent_client_id": "A93B…",
+  "color": "#E8A0BF",
+  "is_timed": false,
+  "started_at": null,
+  "created_at": "…",
+  "updated_at": "…",
+  "deleted_at": null
+}
+```
+校验规则：
+- `name`：字符串，去掉首尾空白后不能为空，最长 30 个字符，不能包含 `/`
+- 同一个父标签下（一级标签之间也算），未删除的标签不能重名，重名返回 409
+- `parent_client_id`：null，或一个存在、未删除、本身是一级标签的标签 client_id，不能是自己；有子标签时不能再设父标签。不满足返回 400
+- `color`：null 或匹配 `^#[0-9A-Fa-f]{6}$`
+- `is_timed`：布尔值
+- `started_at`：`is_timed` 为 true 时必填（带时区 UTC ISO）；`is_timed` 为 false 时强制写为 null
 
 ## Reminders / Todos / Deadlines
 

@@ -492,6 +492,28 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_memos_sync ON memos(updated_at, id);
             CREATE INDEX IF NOT EXISTS idx_memos_occurred ON memos(occurred_at) WHERE deleted_at IS NULL;
+
+            -- 结构化 memo 标签。
+            -- 对外一律用 client_id 关联，内部用自增 id。最多两层。
+            CREATE TABLE IF NOT EXISTS tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id TEXT NOT NULL UNIQUE,       -- App 生成的 UUID
+                name TEXT NOT NULL,
+                parent_id INTEGER,                    -- tags.id；NULL = 一级标签。最多两层
+                color TEXT,                           -- "#RRGGBB"；NULL = App 自己从调色板选
+                is_timed INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT,                      -- 计时起点，UTC 固定格式；非计时标签为 NULL
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,             -- 任何修改（含软删除）都要更新
+                deleted_at TEXT                       -- 软删除；NULL = 未删除
+            );
+
+            CREATE TABLE IF NOT EXISTS memo_tags (
+                memo_id INTEGER NOT NULL,             -- memos.id
+                tag_id INTEGER NOT NULL,              -- tags.id
+                PRIMARY KEY (memo_id, tag_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_memo_tags_tag ON memo_tags(tag_id);
         """)
         conn.commit()
         # 兼容已有库：evidence_role CHECK 扩容（contextualizes）。
@@ -2236,15 +2258,36 @@ class Database:
             item["images"] = []
         return item
 
+    @staticmethod
+    def _attach_memo_tags(conn: sqlite3.Connection, items: list[dict]):
+        if not items:
+            return
+        for item in items:
+            item["tag_client_ids"] = []
+        memo_ids = [int(item["id"]) for item in items]
+        placeholders = ",".join("?" * len(memo_ids))
+        rows = conn.execute(
+            f"SELECT mt.memo_id, t.client_id "
+            f"FROM memo_tags mt JOIN tags t ON t.id = mt.tag_id "
+            f"WHERE t.deleted_at IS NULL AND mt.memo_id IN ({placeholders})",
+            memo_ids,
+        ).fetchall()
+        tags_by_memo: dict[int, list[str]] = {}
+        for r in rows:
+            tags_by_memo.setdefault(r["memo_id"], []).append(r["client_id"])
+        for item in items:
+            item["tag_client_ids"] = tags_by_memo.get(int(item["id"]), [])
+
     def upsert_memo(self, *, client_id: str, content: str, occurred_at: str,
                     images: Optional[list] = None, source: str = "app",
                     latitude: Optional[float] = None,
                     longitude: Optional[float] = None,
-                    place_name: Optional[str] = None) -> dict:
+                    place_name: Optional[str] = None,
+                    tag_ids: Optional[list[int]] = None) -> dict:
         """新建一条 memo；client_id 已存在时不修改，直接返回已有行（幂等）。"""
         now = utc_now_iso()
         conn = self._get_conn()
-        conn.execute(
+        cursor = conn.execute(
             "INSERT INTO memos "
             "(client_id, content, occurred_at, created_at, updated_at, images_json, source, "
             "latitude, longitude, place_name) "
@@ -2253,42 +2296,70 @@ class Database:
             (client_id, content, occurred_at, now, now,
              json.dumps(images or []), source, latitude, longitude, place_name),
         )
+        if cursor.rowcount == 1 and tag_ids:
+            memo_id = cursor.lastrowid
+            unique_tag_ids = list(dict.fromkeys(tag_ids))
+            conn.executemany(
+                "INSERT INTO memo_tags (memo_id, tag_id) VALUES (?, ?)",
+                [(memo_id, tid) for tid in unique_tag_ids],
+            )
         conn.commit()
         row = conn.execute(
             "SELECT * FROM memos WHERE client_id = ?", (client_id,)
         ).fetchone()
+        memo = self._memo_row_to_dict(row)
+        self._attach_memo_tags(conn, [memo])
         conn.close()
-        return self._memo_row_to_dict(row)
+        return memo
 
     def get_memo(self, memo_id: int) -> Optional[dict]:
         """按 id 取，含已软删除的。"""
         conn = self._get_conn()
         row = conn.execute("SELECT * FROM memos WHERE id = ?", (memo_id,)).fetchone()
+        if not row:
+            conn.close()
+            return None
+        memo = self._memo_row_to_dict(row)
+        self._attach_memo_tags(conn, [memo])
         conn.close()
-        return self._memo_row_to_dict(row) if row else None
+        return memo
 
-    def update_memo(self, memo_id: int, **fields) -> Optional[dict]:
-        """只更新传入的 content / occurred_at / images / latitude / longitude / place_name；行不存在或已软删除返回 None。"""
+    def update_memo(self, memo_id: int, *, tag_ids: Optional[list[int]] = None,
+                    **fields) -> Optional[dict]:
+        """只更新传入的 content / occurred_at / images / latitude / longitude / place_name / tag_ids；
+        行不存在或已软删除返回 None。
+        """
         allowed = {"content", "occurred_at", "images", "latitude", "longitude", "place_name"}
         updates = {k: v for k, v in fields.items() if k in allowed}
         if "images" in updates:
             updates["images_json"] = json.dumps(updates.pop("images"))
-        if not updates:
+        if not updates and tag_ids is None:
             return self.get_memo(memo_id)
         updates["updated_at"] = utc_now_iso()
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         conn = self._get_conn()
-        cursor = conn.execute(
-            f"UPDATE memos SET {set_clause} WHERE id = ? AND deleted_at IS NULL",
-            (*updates.values(), memo_id),
-        )
-        conn.commit()
-        if cursor.rowcount == 0:
+        try:
+            cursor = conn.execute(
+                f"UPDATE memos SET {set_clause} WHERE id = ? AND deleted_at IS NULL",
+                (*updates.values(), memo_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+            if tag_ids is not None:
+                conn.execute("DELETE FROM memo_tags WHERE memo_id = ?", (memo_id,))
+                if tag_ids:
+                    unique_tag_ids = list(dict.fromkeys(tag_ids))
+                    conn.executemany(
+                        "INSERT INTO memo_tags (memo_id, tag_id) VALUES (?, ?)",
+                        [(memo_id, tid) for tid in unique_tag_ids],
+                    )
+            conn.commit()
+            row = conn.execute("SELECT * FROM memos WHERE id = ?", (memo_id,)).fetchone()
+            memo = self._memo_row_to_dict(row)
+            self._attach_memo_tags(conn, [memo])
+            return memo
+        finally:
             conn.close()
-            return None
-        row = conn.execute("SELECT * FROM memos WHERE id = ?", (memo_id,)).fetchone()
-        conn.close()
-        return self._memo_row_to_dict(row)
 
     def soft_delete_memo(self, memo_id: int) -> bool:
         """deleted_at = updated_at = now；已删除或不存在返回 False（不报错）。"""
@@ -2323,8 +2394,10 @@ class Database:
                 "ORDER BY updated_at, id LIMIT ?",
                 (cursor_updated_at, cursor_updated_at, cursor_id, limit),
             ).fetchall()
+        items = [self._memo_row_to_dict(r) for r in rows]
+        self._attach_memo_tags(conn, items)
         conn.close()
-        return [self._memo_row_to_dict(r) for r in rows]
+        return items
 
     def list_memos_between(self, start_utc: str, end_utc: str) -> list[dict]:
         """未删除、occurred_at 落在 [start_utc, end_utc) 的行，按 occurred_at 升序；给 prompt 注入用。"""
@@ -2684,6 +2757,125 @@ class Database:
                 msg["id"] = item["id"]
                 messages.append(msg)
         return messages
+
+    # ============ Tags ============
+
+    @staticmethod
+    def _tag_row_to_dict(row: sqlite3.Row) -> dict:
+        item = dict(row)
+        item["id"] = str(item["id"])
+        item["is_timed"] = bool(item["is_timed"])
+        item.pop("parent_id", None)
+        return item
+
+    def list_tags(self) -> list[dict]:
+        """返回全部标签，包括已软删除的。"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT t.*, p.client_id AS parent_client_id "
+            "FROM tags t LEFT JOIN tags p ON p.id = t.parent_id "
+            "ORDER BY t.id"
+        ).fetchall()
+        conn.close()
+        return [self._tag_row_to_dict(r) for r in rows]
+
+    def get_tag_by_client_id(self, client_id: str) -> Optional[dict]:
+        """按 client_id 取标签，包括已软删除的。"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT t.*, p.client_id AS parent_client_id "
+            "FROM tags t LEFT JOIN tags p ON p.id = t.parent_id "
+            "WHERE t.client_id = ?",
+            (client_id,),
+        ).fetchone()
+        conn.close()
+        return self._tag_row_to_dict(row) if row else None
+
+    def upsert_tag(self, *, client_id: str, name: str,
+                   parent_id: Optional[int] = None,
+                   color: Optional[str] = None,
+                   is_timed: bool = False,
+                   started_at: Optional[str] = None) -> dict:
+        """新建一个标签；client_id 重复时不覆盖，返回已有行（幂等）。"""
+        now = utc_now_iso()
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO tags "
+            "(client_id, name, parent_id, color, is_timed, started_at, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(client_id) DO NOTHING",
+            (client_id, name, parent_id, color, 1 if is_timed else 0, started_at, now, now),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT t.*, p.client_id AS parent_client_id "
+            "FROM tags t LEFT JOIN tags p ON p.id = t.parent_id "
+            "WHERE t.client_id = ?",
+            (client_id,),
+        ).fetchone()
+        conn.close()
+        return self._tag_row_to_dict(row)
+
+    def update_tag(self, client_id: str, **fields) -> Optional[dict]:
+        """只更新传入的字段；行不存在或已删除时返回 None。"""
+        allowed = {"name", "parent_id", "color", "is_timed", "started_at"}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if "is_timed" in updates:
+            updates["is_timed"] = 1 if updates["is_timed"] else 0
+        updates["updated_at"] = utc_now_iso()
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        conn = self._get_conn()
+        cursor = conn.execute(
+            f"UPDATE tags SET {set_clause} WHERE client_id = ? AND deleted_at IS NULL",
+            (*updates.values(), client_id),
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            conn.close()
+            return None
+        row = conn.execute(
+            "SELECT t.*, p.client_id AS parent_client_id "
+            "FROM tags t LEFT JOIN tags p ON p.id = t.parent_id "
+            "WHERE t.client_id = ?",
+            (client_id,),
+        ).fetchone()
+        conn.close()
+        return self._tag_row_to_dict(row)
+
+    def soft_delete_tag(self, client_id: str) -> bool:
+        """在同一个事务里软删除标签、更新挂了该标签且未删除的 memo 的 updated_at、删除 memo_tags 关联记录。
+        已删除或不存在时返回 False。
+        """
+        now = utc_now_iso()
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT id FROM tags WHERE client_id = ? AND deleted_at IS NULL",
+                (client_id,),
+            ).fetchone()
+            if not row:
+                return False
+            tag_id = row["id"]
+
+            conn.execute(
+                "UPDATE tags SET deleted_at = ?, updated_at = ? WHERE id = ?",
+                (now, now, tag_id),
+            )
+            conn.execute(
+                "UPDATE memos SET updated_at = ? "
+                "WHERE deleted_at IS NULL AND id IN ("
+                "    SELECT memo_id FROM memo_tags WHERE tag_id = ?"
+                ")",
+                (now, tag_id),
+            )
+            conn.execute(
+                "DELETE FROM memo_tags WHERE tag_id = ?",
+                (tag_id,),
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
 
     # ============ 应用状态 KV ============
 
