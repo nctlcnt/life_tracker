@@ -912,31 +912,6 @@ async def get_card_messages(card_id: int,
     return {"items": db.list_card_messages(card_id, limit=limit)}
 
 
-@app.get("/api/todos")
-async def get_todos(all: bool = False):
-    """获取待办列表"""
-    todos = db.get_todos(include_done=all)
-    return {"todos": todos, "count": len(todos)}
-
-
-@app.post("/api/todos")
-async def create_todo(body: dict):
-    """手动新建一条待办（New todo 模态框入口）。"""
-    content = (body.get("content") or "").strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="content required")
-    todo_id = db.add_todo(content)
-    return {"id": todo_id}
-
-
-@app.patch("/api/todos/{todo_id}/done")
-async def set_todo_done(todo_id: int, body: dict):
-    """更新待办完成状态"""
-    done = body.get("done", True)
-    db.set_todo_done(todo_id, bool(done))
-    return {"status": "ok"}
-
-
 @app.get("/api/deadlines")
 async def get_deadlines():
     """获取所有 active 的 deadline（含倒计时）"""

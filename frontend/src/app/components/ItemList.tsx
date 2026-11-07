@@ -1,11 +1,10 @@
 import { motion } from 'motion/react';
-import { Check, Circle, Clock, Brain, CalendarClock } from 'lucide-react';
+import { Clock, Brain, CalendarClock } from 'lucide-react';
 
 export interface ListItem {
   id: string;
   title: string;
   description?: string;
-  completed?: boolean;
   priority?: 'low' | 'medium' | 'high';
   dueDate?: Date;
   countdown?: string;
@@ -18,20 +17,17 @@ export interface ListItem {
 interface ItemListProps {
   title: string;
   items: ListItem[];
-  type: 'memory' | 'reminder' | 'todo' | 'deadline';
-  onToggle?: (id: string) => void;
+  type: 'memory' | 'reminder' | 'deadline';
   maxHeight?: string;
 }
 
-export function ItemList({ title, items, type, onToggle, maxHeight = '400px' }: ItemListProps) {
+export function ItemList({ title, items, type, maxHeight = '400px' }: ItemListProps) {
   const getIcon = () => {
     switch (type) {
       case 'memory':
         return <Brain className="w-4 h-4" />;
       case 'reminder':
         return <Clock className="w-4 h-4" />;
-      case 'todo':
-        return <Circle className="w-4 h-4" />;
       case 'deadline':
         return <CalendarClock className="w-4 h-4" />;
     }
@@ -67,25 +63,14 @@ export function ItemList({ title, items, type, onToggle, maxHeight = '400px' }: 
             items.map((item, idx) => (
               <motion.div
                 key={item.id}
-                className="px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer"
-                onClick={() => onToggle?.(item.id)}
+                className="px-4 py-3 hover:bg-muted/50 transition-colors"
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ duration: 0.2, delay: idx * 0.03 }}
               >
                 <div className="flex items-start gap-3">
-                  {type === 'todo' && (
-                    <div className="mt-0.5">
-                      {item.completed ? (
-                        <Check className="w-4 h-4 text-primary" />
-                      ) : (
-                        <Circle className="w-4 h-4 text-muted-foreground" />
-                      )}
-                    </div>
-                  )}
-
                   <div className="flex-1 min-w-0">
-                    <div className={`text-sm ${item.completed ? 'line-through text-muted-foreground' : 'text-foreground'}`}>
+                    <div className="text-sm text-foreground">
                       {item.title}
                     </div>
                     {item.description && (

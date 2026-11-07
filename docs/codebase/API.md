@@ -85,14 +85,11 @@
 - `is_timed`：布尔值
 - `started_at`：`is_timed` 为 true 时必填（带时区 UTC ISO）；`is_timed` 为 false 时强制写为 null
 
-## Reminders / Todos / Deadlines
+## Reminders / Deadlines
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/reminders?status=&done=` | 最近 100 条，`status` 优先于旧参数 `done` |
-| GET | `/api/todos?all=` | `all=true` 含已完成 |
-| POST | `/api/todos` | body `{content}` |
-| PATCH | `/api/todos/{todo_id}/done` | body `{done?}`（默认 true） |
 | GET | `/api/deadlines` | 所有 active deadline，附加 `countdown` 倒计时字段 |
 
 ## Check-ins（可配置定时对话）

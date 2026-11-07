@@ -335,38 +335,6 @@
   text-align: center;
 }
 
-/* TODOS */
-.dash-todo {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 0;
-  border-bottom: 1px dashed var(--border);
-  cursor: pointer;
-}
-.dash-todo:last-child { border-bottom: 0; }
-.dash-todo .box {
-  width: 14px; height: 14px;
-  border: 1.4px solid var(--border-strong);
-  border-radius: 3px;
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--foreground);
-}
-.dash-todo.done .box {
-  background: var(--foreground);
-  border-color: var(--foreground);
-  color: var(--background);
-}
-.dash-todo .box svg { width: 9px; height: 9px; }
-.dash-todo.done .label { color: var(--muted-foreground); text-decoration: line-through; }
-.dash-todo .label { font-size: 14px; flex: 1; }
-.dash-todo .pri { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-.dash-todo .pri.high { background: var(--warn); }
-.dash-todo .pri.med { background: #B5A6BC; }
-
 /* ── Footer (version label) ───────────────────────────────── */
 .dash-footer {
   padding: 10px 32px;

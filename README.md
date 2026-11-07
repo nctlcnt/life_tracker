@@ -8,7 +8,7 @@ Instead of asking you to manually maintain a planner, journal, task manager, and
 
 It is currently designed as a **single-user, self-hosted system**.
 
-![Day view: today's timeline, todos, deadlines, and reminders](docs/images/dashboard-day.png)
+![Day view: today's timeline, deadlines, and reminders](docs/images/dashboard-day.png)
 
 ---
 
@@ -33,16 +33,16 @@ You can use the assistant like a normal chatbot while it has access to selected 
 - your recent conversation history
 - today's timeline
 - upcoming deadlines
-- reminders and todos
+- reminders
 - Google Calendar events
 - current weather
 - persistent memory
 
 This allows conversations to be grounded in what is actually happening in your day rather than existing as isolated chat sessions.
 
-### ✅ Track todos, deadlines, and follow-ups
+### ✅ Track deadlines and follow-ups
 
-Life Tracker can automatically create structured tasks and deadlines from conversations.
+Life Tracker can automatically create structured reminders and deadlines from conversations.
 
 It can also create short-term follow-ups when something should be revisited later.
 
@@ -209,7 +209,6 @@ User message ───────────┤
                         └──→ Background Track ────→ Life state
                                                     │
                                                     ├─ Timeline
-                                                    ├─ Todos
                                                     ├─ Deadlines
                                                     ├─ Follow-ups
                                                     └─ Memory

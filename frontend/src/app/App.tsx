@@ -57,7 +57,6 @@ function DashboardApp() {
   const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
   const [memories, setMemories] = useState<ListItem[]>([]);
   const [reminders, setReminders] = useState<ListItem[]>([]);
-  const [todos, setTodos] = useState<ListItem[]>([]);
   const [deadlines, setDeadlines] = useState<ListItem[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [appVersion, setAppVersion] = useState<string>('');
@@ -80,7 +79,7 @@ function DashboardApp() {
   const headerDayNameEn = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][selectedDateObj.getDay()];
 
   useEffect(() => {
-    // Day needs timeline plus todos / reminders / deadlines for the right
+    // Day needs timeline plus reminders / deadlines for the right
     // rail. Memory only needs memories. Week / Project skip this entirely.
     const needsTimeline = viewMode === 'day';
     const needsDayLists = viewMode === 'day';
@@ -151,17 +150,6 @@ function DashboardApp() {
         })
         .catch(err => console.error('Failed to load reminders:', err));
 
-      fetch('/api/todos?all=true')
-        .then(res => res.json())
-        .then(data => {
-          setTodos((data.todos || []).map((t: any) => ({
-            id: String(t.id),
-            title: t.content,
-            completed: t.done === 1 || t.done === true,
-          })));
-        })
-        .catch(err => console.error('Failed to load todos:', err));
-
       fetch('/api/deadlines')
         .then(res => res.json())
         .then(data => {
@@ -176,31 +164,6 @@ function DashboardApp() {
     }
 
   }, [currentDate, viewMode, refreshKey]);
-
-  const handleTodoToggle = (id: string) => {
-    const prev = todos.find((t) => t.id === id);
-    if (!prev) return;
-    const newDone = !prev.completed;
-    setTodos((list) =>
-      list.map((todo) =>
-        todo.id === id ? { ...todo, completed: newDone } : todo
-      )
-    );
-    fetch(`/api/todos/${id}/done`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ done: newDone }),
-    }).then((res) => {
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    }).catch((err) => {
-      console.error('Failed to update todo:', err);
-      setTodos((list) =>
-        list.map((todo) =>
-          todo.id === id ? { ...todo, completed: prev.completed } : todo
-        )
-      );
-    });
-  };
 
   const shiftDate = (days: number) => {
     const d = new Date(currentDate + 'T00:00:00');
@@ -276,10 +239,8 @@ function DashboardApp() {
           <Dashboard
             date={currentDate}
             timelineEvents={timelineEvents}
-            todos={todos}
             reminders={reminders}
             deadlines={deadlines}
-            onTodoToggle={handleTodoToggle}
             onRefresh={() => setRefreshKey(k => k + 1)}
           />
         </div>

@@ -247,7 +247,7 @@ Staging 可以用于恢复后的应用级 smoke test，但不要覆盖 `data-dev
 2. 用 Litestream 0.3.13 从 R2 恢复到全新临时目录。
 3. 运行 `PRAGMA integrity_check` 并比较关键表及最新时间，计算实际 RPO。
 4. 创建临时 compose 文件，挂载恢复目录到 `/app/data`，使用 `config.dev.json`，命令设为 `python main.py --api-only`。
-5. 以独立 project 启动一个临时容器，检查 health、version、timeline、memories、todos、projects、prompts 等只读端点；结构化 trace 用 SQLite `ai_runs`/`tool_calls` 验证，不要求 JSONL Trace Viewer 日期恢复。
+5. 以独立 project 启动一个临时容器，检查 health、version、timeline、memories、projects、prompts 等只读端点；结构化 trace 用 SQLite `ai_runs`/`tool_calls` 验证，不要求 JSONL Trace Viewer 日期恢复。
 6. 检查容器日志没有 schema、SQLite 或启动异常。
 7. 停止并删除临时容器；确认 production 仍 healthy、Litestream 仍运行、`data/` 与 `data-dev/` 路径未被替换。
 8. 将恢复点、RPO、耗时和结果写入 `OPERATIONS-LOG.md`。

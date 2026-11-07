@@ -6,10 +6,8 @@ import './dashboard.css';
 interface DashboardProps {
   date: string;
   timelineEvents: TimelineEvent[];
-  todos: ListItem[];
   reminders: ListItem[];
   deadlines: ListItem[];
-  onTodoToggle: (id: string) => void;
   onRefresh: () => void;
 }
 
@@ -30,7 +28,7 @@ interface WeatherResponse {
   location?: string;
 }
 
-type ModalKind = 'event' | 'todo' | 'note' | null;
+type ModalKind = 'event' | 'note' | null;
 
 const fmtClock = (d: Date) =>
   `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -82,31 +80,13 @@ const NOW_WINDOW_MS = 5 * 60 * 1000;
 export function Dashboard({
   date,
   timelineEvents,
-  todos,
   deadlines,
   reminders,
-  onTodoToggle,
   onRefresh,
 }: DashboardProps) {
   const [heatmap, setHeatmap] = useState<HeatmapResponse | null>(null);
   const [weather, setWeather] = useState<WeatherResponse | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
-
-  // Snapshot of uncompleted todo IDs at last data refresh. Single toggles
-  // (which only flip `completed` on the same IDs) won't update this set, so
-  // a just-checked todo remains visible until the next refresh.
-  const todoIdsKey = useMemo(
-    () => todos.map(t => t.id).join('|'),
-    [todos]
-  );
-  const [visibleTodoIds, setVisibleTodoIds] = useState<Set<string>>(
-    () => new Set(todos.filter(t => !t.completed).map(t => t.id))
-  );
-  useEffect(() => {
-    setVisibleTodoIds(new Set(todos.filter(t => !t.completed).map(t => t.id)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [todoIdsKey]);
-  const visibleTodos = todos.filter(t => visibleTodoIds.has(t.id));
 
   useEffect(() => {
     fetch('/api/projects/heatmap?days=7')
@@ -300,13 +280,6 @@ export function Dashboard({
             </svg>
             New event
           </button>
-          <button type="button" onClick={() => setModal('todo')}>
-            <svg viewBox="0 0 16 16" fill="none">
-              <rect x="3" y="3" width="10" height="10" rx="1" stroke="currentColor" strokeWidth="1.5" />
-              <path d="M8 6v4M6 8h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-            New todo
-          </button>
           <button type="button" onClick={() => setModal('note')}>
             <svg viewBox="0 0 16 16" fill="none">
               <path d="M3 4h10M3 8h10M3 12h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -372,47 +345,7 @@ export function Dashboard({
           </div>
         )}
 
-        {/* 3. Todo */}
-        <div className="dash-card">
-          <h3 className="h-section">
-            To-do{' '}
-            <span className="count">
-              {todos.filter(t => !t.completed).length} of {todos.length}
-            </span>
-          </h3>
-          {visibleTodos.length === 0 ? (
-            <div className="today-empty">
-              {todos.length === 0 ? 'No todos.' : 'All caught up.'}
-            </div>
-          ) : (
-            visibleTodos.map(t => (
-              <div
-                key={t.id}
-                className={`dash-todo${t.completed ? ' done' : ''}`}
-                onClick={() => onTodoToggle(t.id)}
-              >
-                <span className="box">
-                  {t.completed && (
-                    <svg viewBox="0 0 16 16" fill="none">
-                      <path
-                        d="M3 8.5l3.5 3.5 7-7"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  )}
-                </span>
-                <span className="label">{t.title}</span>
-                {t.priority === 'high' && <span className="pri high" />}
-                {t.priority === 'medium' && <span className="pri med" />}
-              </div>
-            ))
-          )}
-        </div>
-
-        {/* 4. Upcoming reminders */}
+        {/* 3. Upcoming reminders */}
         {upcoming.length > 0 && (
           <div className="dash-card">
             <h3 className="h-section">
@@ -492,7 +425,7 @@ export function Dashboard({
 
 // ── Action modal ──────────────────────────────────────────────
 interface ActionModalProps {
-  kind: 'event' | 'todo' | 'note';
+  kind: 'event' | 'note';
   onClose: () => void;
   onCreated: () => void;
 }
@@ -505,12 +438,10 @@ function ActionModal({ kind, onClose, onCreated }: ActionModalProps) {
 
   const titles = {
     event: 'New event',
-    todo: 'New todo',
     note: 'Quick note',
   } as const;
   const placeholders = {
     event: 'What are you doing right now?',
-    todo: 'What needs to get done?',
     note: 'What do you want to remember?',
   } as const;
 
@@ -525,8 +456,6 @@ function ActionModal({ kind, onClose, onCreated }: ActionModalProps) {
       if (kind === 'event') {
         url = '/api/events';
         body = { ...body, category };
-      } else if (kind === 'todo') {
-        url = '/api/todos';
       } else {
         url = '/api/memories';
       }

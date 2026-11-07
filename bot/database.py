@@ -145,15 +145,6 @@ class Database:
                 source TEXT DEFAULT 'ai'
             );
 
-            -- Todo 表（用户个人待办，不经过 AI）
-            CREATE TABLE IF NOT EXISTS todos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                content TEXT NOT NULL,
-                done INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT (datetime('now')),
-                done_at TEXT
-            );
-
             -- 应用状态（进程无关的小型 kv，重启后恢复）
             CREATE TABLE IF NOT EXISTS app_state (
                 key TEXT PRIMARY KEY,
@@ -2192,67 +2183,6 @@ class Database:
         )
         conn.commit()
         conn.close()
-
-    # ============ Todo ============
-
-    def add_todo(self, content: str) -> int:
-        conn = self._get_conn()
-        cursor = conn.execute(
-            "INSERT INTO todos (content) VALUES (?)", (content,)
-        )
-        conn.commit()
-        todo_id = cursor.lastrowid
-        conn.close()
-        return todo_id
-
-    def get_todos(self, include_done: bool = False) -> list[dict]:
-        conn = self._get_conn()
-        if include_done:
-            rows = conn.execute(
-                "SELECT * FROM todos ORDER BY done ASC, created_at DESC"
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM todos WHERE done = 0 ORDER BY created_at DESC"
-            ).fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
-
-    def complete_todo(self, todo_id: int) -> bool:
-        conn = self._get_conn()
-        cursor = conn.execute(
-            "UPDATE todos SET done = 1, done_at = datetime('now') WHERE id = ? AND done = 0",
-            (todo_id,)
-        )
-        conn.commit()
-        affected = cursor.rowcount
-        conn.close()
-        return affected > 0
-
-    def set_todo_done(self, todo_id: int, done: bool) -> bool:
-        conn = self._get_conn()
-        if done:
-            cursor = conn.execute(
-                "UPDATE todos SET done = 1, done_at = datetime('now') WHERE id = ?",
-                (todo_id,)
-            )
-        else:
-            cursor = conn.execute(
-                "UPDATE todos SET done = 0, done_at = NULL WHERE id = ?",
-                (todo_id,)
-            )
-        conn.commit()
-        affected = cursor.rowcount
-        conn.close()
-        return affected > 0
-
-    def delete_todo(self, todo_id: int) -> bool:
-        conn = self._get_conn()
-        cursor = conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
-        conn.commit()
-        affected = cursor.rowcount
-        conn.close()
-        return affected > 0
 
     # ============ Memos ============
 
