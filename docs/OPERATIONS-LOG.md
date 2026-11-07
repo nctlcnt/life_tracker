@@ -44,6 +44,16 @@
 
 ## 演练记录
 
+### 2026-11-07 01:18 UTC — 移除 Todo 并部署到 production
+
+- 应用提交：`3c31943`（已推送 `origin/main`）。移除首页 Todo 卡片、新建入口、完成状态切换、API 和数据库访问代码；保留现有 `todos` 表及历史数据，不执行删表迁移。
+- 部署前验证：671 个 Python 测试通过（1 个既有弃用警告）；前端生产构建、Dashboard 渲染检查、Todo API 404 与新旧数据库兼容性检查通过。
+- 回滚镜像：`life-tracker:rollback-before-todo-removal-deb1d3a`（原生产镜像 `sha256:de3fc4f96091`）。在线快照：`data/backups/pre-todo-removal-20261107-011209.db`，`integrity_check` → `ok`。
+- 构建方式：为避免无锁定的 Python 依赖被自动升级，使用临时 Dockerfile `/tmp/life-tracker-todo-deploy.Dockerfile`：前端沿用标准 Node builder；runtime 继承上述回滚镜像，省略 apt/pip 安装，覆盖当前源码并清空旧 `frontend/dist` 后复制新产物；设置 `APP_VERSION=3c31943`。最终镜像 `life-tracker:local`（`sha256:b26ce593ee67`）。生产通过 `docker compose -f compose.yaml up -d --no-build --no-deps --wait app` 更新。
+- 部署后验证：app healthy，版本 API 为 `3c31943`，内部与鉴权 health 均 200；Todo API 返回 404；实际提供的前端产物不含 Todo 入口/API，New event 与 Quick note 保留；SQLite `quick_check` → `ok`，历史 Todo 数量与部署前快照一致；公网 `/app/` 返回 200。
+- 运行状态：Discord Bot、scheduler、outbound、batcher、tool worker、heartbeat 全部启动；部署后日志无 error/exception/traceback；Litestream 持续运行并写入 3 个新 WAL segments。
+- 网络审计：生产仍仅绑定 `127.0.0.1:8080`。`infra audit` 保留 4 项既有问题：8081 staging 无监听、8408 未登记、9000/9001 登记超期；本次没有修改这些服务。
+
 ### 2026-08-30 03:52 UTC — Prompt runtime preview 部署到 production
 
 - 内容：PR #21 / merge commit `0a1db04`；后台新增只读“模型实际看到什么”查看器，覆盖 chat、check-in、execution、result expression 与 planned timeline renderer 五条轨道，并显示工具 schema、Prompt 来源、统计和 section inventory。
